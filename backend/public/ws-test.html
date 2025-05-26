@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCPP WebSocket Connection Tester</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .container {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 5px;
+        }
+
+        .control-panel {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f5f5f5;
+            border-radius: 5px;
+        }
+
+        .log-container {
+            height: 300px;
+            overflow-y: auto;
+            background-color: #f8f8f8;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+
+        .log-entry {
+            margin: 5px 0;
+            padding: 5px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .success {
+            color: green;
+        }
+
+        .error {
+            color: red;
+        }
+
+        .info {
+            color: blue;
+        }
+
+        .warning {
+            color: orange;
+        }
+
+        button {
+            padding: 8px 15px;
+            margin: 5px;
+            cursor: pointer;
+        }
+
+        input,
+        select {
+            padding: 8px;
+            margin: 5px;
+            width: 250px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+
+        .status-connected {
+            background-color: green;
+        }
+
+        .status-disconnected {
+            background-color: red;
+        }
+
+        .status-connecting {
+            background-color: orange;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>OCPP WebSocket Connection Tester</h1>
+    <div class="container">
+        <div class="control-panel">
+            <h2>Connection Settings</h2>
+            <div>
+                <label for="wsUrl">WebSocket URL:</label>
+                <input type="text" id="wsUrl" value="ws://127.0.0.1:8080/ocpp/CP001" />
+            </div>
+            <div>
+                <label for="protocol">WebSocket Protocol:</label>
+                <select id="protocol">
+                    <option value="">No Protocol</option>
+                    <option value="ocpp1.6" selected>ocpp1.6</option>
+                    <option value="ocpp1.5">ocpp1.5</option>
+                </select>
+            </div>
+            <div>
+                <button id="connectBtn">Connect</button>
+                <button id="disconnectBtn" disabled>Disconnect</button>
+                <span>Status: <span class="status-indicator status-disconnected"></span> <span id="connectionStatus">Disconnected</span></span>
+            </div>
+        </div>
+
+        <div class="control-panel">
+            <h2>Test Messages</h2>
+            <div>
+                <button id="sendBootNotificationBtn" disabled>Send Boot Notification</button>
+                <button id="sendHeartbeatBtn" disabled>Send Heartbeat</button>
+                <button id="sendStatusNotificationBtn" disabled>Send Status Notification</button>
+            </div>
+        </div>
+
+        <h2>Connection Log</h2>
+        <div class="log-container" id="logContainer"></div>
+    </div>
+
+    <script>
+        let socket = null;
+        let messageCounter = 0;
+
+        // DOM elements
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const wsUrlInput = document.getElementById('wsUrl');
+        const protocolSelect = document.getElementById('protocol');
+        const logContainer = document.getElementById('logContainer');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const statusIndicator = document.querySelector('.status-indicator');
+        const sendBootNotificationBtn = document.getElementById('sendBootNotificationBtn');
+        const sendHeartbeatBtn = document.getElementById('sendHeartbeatBtn');
+        const sendStatusNotificationBtn = document.getElementById('sendStatusNotificationBtn');
+
+        // Helper for logging
+        function log(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        // Update UI connection status
+        function updateConnectionStatus(status) {
+            connectionStatus.textContent = status;
+            statusIndicator.className = 'status-indicator';
+
+            if (status === 'Connected') {
+                statusIndicator.classList.add('status-connected');
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                sendBootNotificationBtn.disabled = false;
+                sendHeartbeatBtn.disabled = false;
+                sendStatusNotificationBtn.disabled = false;
+            } else if (status === 'Connecting') {
+                statusIndicator.classList.add('status-connecting');
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            } else {
+                statusIndicator.classList.add('status-disconnected');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                sendBootNotificationBtn.disabled = true;
+                sendHeartbeatBtn.disabled = true;
+                sendStatusNotificationBtn.disabled = true;
+            }
+        }
+
+        // Connect to WebSocket
+        connectBtn.addEventListener('click', () => {
+            const url = wsUrlInput.value.trim();
+            const protocol = protocolSelect.value;
+
+            try {
+                updateConnectionStatus('Connecting');
+                log(`Attempting to connect to ${url}${protocol ? ' with protocol ' + protocol : ''}`, 'info');
+
+                // Create WebSocket with or without protocol
+                socket = protocol ? new WebSocket(url, protocol) : new WebSocket(url);
+
+                socket.onopen = (event) => {
+                    log('Connection established successfully', 'success');
+                    updateConnectionStatus('Connected');
+                };
+
+                socket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        log(`Received message: ${JSON.stringify(data)}`, 'info');
+                    } catch (e) {
+                        log(`Received message (non-JSON): ${event.data}`, 'info');
+                    }
+                };
+
+                socket.onerror = (error) => {
+                    log(`WebSocket Error: ${error.message || 'Unknown error'}`, 'error');
+                };
+
+                socket.onclose = (event) => {
+                    const reason = event.reason ? ` Reason: ${event.reason}` : '';
+                    log(`Connection closed with code: ${event.code}.${reason}`, 'warning');
+                    updateConnectionStatus('Disconnected');
+                };
+            } catch (error) {
+                log(`Failed to connect: ${error.message}`, 'error');
+                updateConnectionStatus('Disconnected');
+            }
+        });
+
+        // Disconnect WebSocket
+        disconnectBtn.addEventListener('click', () => {
+            if (socket) {
+                socket.close(1000, "User initiated disconnect");
+                log('Disconnected from server', 'info');
+            }
+        });
+
+        // Send Boot Notification
+        sendBootNotificationBtn.addEventListener('click', () => {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                messageCounter++;
+                const uniqueId = `test-${Date.now()}-${messageCounter}`;
+                const bootMessage = [
+                    2, // Call
+                    uniqueId,
+                    "BootNotification",
+                    {
+                        chargePointVendor: "Test Vendor",
+                        chargePointModel: "Test Model",
+                        chargePointSerialNumber: "SN12345",
+                        firmwareVersion: "1.0.0"
+                    }
+                ];
+
+                socket.send(JSON.stringify(bootMessage));
+                log(`Sent BootNotification with ID: ${uniqueId}`, 'info');
+            } else {
+                log('Cannot send message: Not connected', 'error');
+            }
+        });
+
+        // Send Heartbeat
+        sendHeartbeatBtn.addEventListener('click', () => {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                messageCounter++;
+                const uniqueId = `test-${Date.now()}-${messageCounter}`;
+                const heartbeatMessage = [
+                    2, // Call
+                    uniqueId,
+                    "Heartbeat",
+                    {}
+                ];
+
+                socket.send(JSON.stringify(heartbeatMessage));
+                log(`Sent Heartbeat with ID: ${uniqueId}`, 'info');
+            } else {
+                log('Cannot send message: Not connected', 'error');
+            }
+        });
+
+        // Send Status Notification
+        sendStatusNotificationBtn.addEventListener('click', () => {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                messageCounter++;
+                const uniqueId = `test-${Date.now()}-${messageCounter}`;
+                const statusMessage = [
+                    2, // Call
+                    uniqueId,
+                    "StatusNotification",
+                    {
+                        connectorId: 1,
+                        errorCode: "NoError",
+                        status: "Available"
+                    }
+                ];
+
+                socket.send(JSON.stringify(statusMessage));
+                log(`Sent StatusNotification with ID: ${uniqueId}`, 'info');
+            } else {
+                log('Cannot send message: Not connected', 'error');
+            }
+        });
+
+        // Initialize
+        log('WebSocket tester initialized. Configure and click Connect to begin.', 'info');
+    </script>
+</body>
+
+</html>

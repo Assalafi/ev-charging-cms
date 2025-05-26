@@ -1,0 +1,949 @@
+const {
+    ChargingStation,
+    Transaction,
+    MeterValue,
+    OcppMessage
+} = require('../models');
+const mqttClient = require('../mqtt/client');
+const logger = require('../utils/logger');
+
+/**
+ * Handle OCPP requests from charging stations
+ */
+async function handleRequest(chargePointId, action, uniqueId, payload) {
+    logger.info(`Handling ${action} request from ${chargePointId}`);
+
+    // Handle different OCPP actions
+    switch (action) {
+        case 'BootNotification':
+            return handleBootNotification(chargePointId, uniqueId, payload);
+        case 'Heartbeat':
+            return handleHeartbeat(chargePointId, uniqueId);
+        case 'StatusNotification':
+            return handleStatusNotification(chargePointId, uniqueId, payload);
+        case 'MeterValues':
+            return handleMeterValues(chargePointId, uniqueId, payload);
+        case 'StartTransaction':
+            return handleStartTransaction(chargePointId, uniqueId, payload);
+        case 'StopTransaction':
+            return handleStopTransaction(chargePointId, uniqueId, payload);
+        case 'Authorize':
+            return handleAuthorize(chargePointId, uniqueId, payload);
+        case 'DiagnosticsStatusNotification':
+            return handleDiagnosticsStatusNotification(chargePointId, uniqueId, payload);
+        case 'FirmwareStatusNotification':
+            return handleFirmwareStatusNotification(chargePointId, uniqueId, payload);
+        case 'DataTransfer':
+            return handleDataTransfer(chargePointId, uniqueId, payload);
+        default:
+            logger.warn(`Unhandled OCPP action: ${action} from ${chargePointId}`);
+            // Send a default response for unhandled actions
+            return [3, uniqueId, {
+                status: 'NotImplemented'
+            }];
+    }
+}
+
+/**
+ * Handle BootNotification request and automatically register stations
+ * Follows the OCPP 1.6 specification for BootNotification
+ * https://www.oasis-open.org/committees/download.php/58944/ocpp-1.6.pdf
+ */
+async function handleBootNotification(chargePointId, uniqueId, payload) {
+    try {
+        // Log the full received payload for debugging
+        logger.info(`BootNotification payload from ${chargePointId}:`, JSON.stringify(payload));
+
+        // Check if station exists in database
+        const station = await ChargingStation.findOne({
+            where: {
+                chargePointId
+            }
+        });
+
+        // Enhanced payload normalization with extremely liberal field detection
+        // This makes it more tolerant of different emulator implementations
+        const normalizedPayload = {};
+
+        // First, try to use the payload directly if it's already in the expected format
+        if (typeof payload === 'object' && payload !== null) {
+            // Handle OCPP 1.6 standard format - direct payload use
+            // Copy all fields to normalized payload (case insensitive)
+            Object.keys(payload).forEach(key => {
+                const lowerKey = key.toLowerCase();
+                if (lowerKey.includes('model')) normalizedPayload.chargePointModel = payload[key];
+                else if (lowerKey.includes('vendor')) normalizedPayload.chargePointVendor = payload[key];
+                else if (lowerKey.includes('firmware') || lowerKey.includes('version')) normalizedPayload.firmwareVersion = payload[key];
+                else if (lowerKey.includes('serial')) normalizedPayload.chargePointSerialNumber = payload[key];
+                else if (lowerKey.includes('iccid')) normalizedPayload.iccid = payload[key];
+                else if (lowerKey.includes('imsi')) normalizedPayload.imsi = payload[key];
+                else if (lowerKey.includes('meter') && lowerKey.includes('type')) normalizedPayload.meterType = payload[key];
+                else if (lowerKey.includes('meter') && lowerKey.includes('serial')) normalizedPayload.meterSerialNumber = payload[key];
+                else normalizedPayload[key] = payload[key]; // Store unknown fields as-is
+            });
+        }
+
+        // Standard field mapping as backup
+        const fieldMapping = {
+            // Lowercase OCPP 1.6 fields mapped to possible uppercase variants
+            'chargePointModel': ['chargePointModel', 'ChargePointModel', 'model', 'Model', 'chargepointmodel'],
+            'chargePointVendor': ['chargePointVendor', 'ChargePointVendor', 'vendor', 'Vendor', 'chargepointvendor'],
+            'firmwareVersion': ['firmwareVersion', 'FirmwareVersion', 'firmware', 'Firmware', 'version', 'Version'],
+            'chargePointSerialNumber': ['chargePointSerialNumber', 'ChargePointSerialNumber', 'serialNumber', 'SerialNumber', 'serial', 'Serial'],
+            'chargeBoxSerialNumber': ['chargeBoxSerialNumber', 'ChargeBoxSerialNumber'],
+            'iccid': ['iccid', 'Iccid', 'ICCID'],
+            'imsi': ['imsi', 'Imsi', 'IMSI'],
+            'meterType': ['meterType', 'MeterType'],
+            'meterSerialNumber': ['meterSerialNumber', 'MeterSerialNumber']
+        };
+
+        // For each field, check all possible variants in the payload
+        for (const [standardField, variants] of Object.entries(fieldMapping)) {
+            for (const variant of variants) {
+                if (payload[variant] !== undefined) {
+                    normalizedPayload[standardField] = payload[variant];
+                    break;
+                }
+            }
+        }
+
+        // Log the normalized payload
+        logger.info(`Normalized BootNotification payload:`, JSON.stringify(normalizedPayload));
+
+        // Use defaults for required fields if missing to make it more tolerant of emulators
+        if (!normalizedPayload.chargePointModel) {
+            if (station && station.model) {
+                normalizedPayload.chargePointModel = station.model;
+                logger.info(`Using existing model from database for ${chargePointId}: ${station.model}`);
+            } else {
+                normalizedPayload.chargePointModel = 'Unknown Model';
+                logger.warn(`Using default model for ${chargePointId} - missing in payload`);
+            }
+        }
+
+        if (!normalizedPayload.chargePointVendor) {
+            if (station && station.vendor) {
+                normalizedPayload.chargePointVendor = station.vendor;
+                logger.info(`Using existing vendor from database for ${chargePointId}: ${station.vendor}`);
+            } else {
+                normalizedPayload.chargePointVendor = 'Unknown Vendor';
+                logger.warn(`Using default vendor for ${chargePointId} - missing in payload`);
+            }
+        }
+
+        // Log the final normalized payload after applying defaults
+        logger.info(`Final BootNotification payload for ${chargePointId}:`, JSON.stringify(normalizedPayload));
+
+        // Set defaults for missing fields
+        const processedPayload = {
+            // Required fields in OCPP 1.6 (already validated above)
+            chargePointModel: normalizedPayload.chargePointModel,
+            chargePointVendor: normalizedPayload.chargePointVendor,
+
+            // Optional fields with defaults
+            firmwareVersion: normalizedPayload.firmwareVersion || '1.0.0',
+            chargePointSerialNumber: normalizedPayload.chargePointSerialNumber || normalizedPayload.chargeBoxSerialNumber || '',
+            iccid: normalizedPayload.iccid || '',
+            imsi: normalizedPayload.imsi || '',
+            meterType: normalizedPayload.meterType || '',
+            meterSerialNumber: normalizedPayload.meterSerialNumber || ''
+        };
+
+        // Prepare comprehensive boot data from normalized payload
+        const bootData = {
+            chargePointId,
+            model: processedPayload.chargePointModel,
+            vendor: processedPayload.chargePointVendor,
+            firmwareVersion: processedPayload.firmwareVersion,
+            serialNumber: processedPayload.chargePointSerialNumber,
+            iccid: processedPayload.iccid,
+            imsi: processedPayload.imsi,
+            meterType: processedPayload.meterType,
+            meterSerialNumber: processedPayload.meterSerialNumber,
+            status: 'Available',
+            lastConnection: new Date(),
+            lastHeartbeat: new Date()
+        };
+
+        let isNewStation = false;
+        let stationData;
+
+        if (station) {
+            // Update existing station information
+            await station.update(bootData);
+            logger.info(`Updated existing station data for ${chargePointId}`);
+            stationData = station.toJSON();
+        } else {
+            // Auto-register the station since it doesn't exist
+            isNewStation = true;
+
+            // Generate a descriptive name based on vendor and model
+            const generatedName = `${processedPayload.chargePointVendor} ${processedPayload.chargePointModel} (${chargePointId})`;
+
+            // Default address for auto-registered stations
+            const defaultLocation = {
+                latitude: 0,
+                longitude: 0
+            };
+
+            // Create station with comprehensive data
+            const newStation = await ChargingStation.create({
+                name: generatedName,
+                description: `Auto-registered station on ${new Date().toLocaleString()}`,
+                connectorCount: 1, // Default value, can be updated later
+                powerOutput: determineStationPower(normalizedPayload.chargePointModel), // Helper function to estimate power
+                location: defaultLocation,
+                address: 'Auto-registered (address not provided)',
+                ...bootData
+            });
+
+            logger.info(`Auto-registered new station: ${chargePointId}`, {
+                stationData: newStation.toJSON()
+            });
+            stationData = newStation.toJSON();
+        }
+
+        // Create OCPP message record with 'Received' status
+        await OcppMessage.create({
+            chargePointId,
+            uniqueId,
+            message_type: 'BootNotification',
+            action: 'BootNotification',
+            request: JSON.stringify(normalizedPayload),
+            response: JSON.stringify({
+                status: 'Accepted',
+                currentTime: new Date().toISOString(),
+                interval: 300
+            }),
+            status: 'Received',
+            timestamp: new Date()
+        });
+
+        // Publish boot notification to MQTT with auto-registration flag
+        mqttClient.publish(`ocpp/${chargePointId}/bootNotification`, JSON.stringify({
+            ...normalizedPayload,
+            isNewStation,
+            stationData,
+            timestamp: new Date().toISOString()
+        }));
+
+        // Send response according to OCPP 1.6 spec
+        return [3, uniqueId, {
+            status: 'Accepted',
+            currentTime: new Date().toISOString(),
+            interval: 300 // Heartbeat interval in seconds
+        }];
+    } catch (error) {
+        logger.error(`Error handling boot notification from ${chargePointId}:`, error);
+
+        // Even with errors, still accept the boot notification
+        // This makes the system much more tolerant of different emulator implementations
+        logger.info(`Despite error, accepting boot notification for ${chargePointId} to maintain connection`);
+
+        // Create a minimal station record if it doesn't exist
+        try {
+            // Check if station exists
+            const existingStation = await ChargingStation.findOne({
+                where: {
+                    chargePointId
+                }
+            });
+
+            if (!existingStation) {
+                // Auto-register a minimal station record
+                await ChargingStation.create({
+                    chargePointId,
+                    name: `${chargePointId} (Auto-registered)`,
+                    model: 'Unknown Model',
+                    vendor: 'Unknown Vendor',
+                    status: 'Available',
+                    lastConnection: new Date(),
+                    lastHeartbeat: new Date()
+                });
+                logger.info(`Created fallback station record for ${chargePointId}`);
+            } else {
+                // Update last connection time
+                await existingStation.update({
+                    lastConnection: new Date(),
+                    lastHeartbeat: new Date()
+                });
+            }
+
+            // Log the message as received despite the error
+            await OcppMessage.create({
+                chargePointId,
+                uniqueId,
+                message_type: 'BootNotification',
+                action: 'BootNotification',
+                request: JSON.stringify(payload || {}),
+                response: JSON.stringify({
+                    status: 'Accepted',
+                    currentTime: new Date().toISOString(),
+                    interval: 300
+                }),
+                status: 'Received',
+                timestamp: new Date()
+            });
+        } catch (err) {
+            logger.error('Error creating fallback station record:', err);
+        }
+
+        // Always accept the connection to maintain compatibility
+        return [3, uniqueId, {
+            status: 'Accepted',
+            currentTime: new Date().toISOString(),
+            interval: 300
+        }];
+    }
+}
+
+/**
+ * Determines approximate power output based on station model
+ * @param {string} model - Station model name
+ * @returns {number} - Estimated power in kW
+ */
+function determineStationPower(model) {
+    if (!model) return 22; // Default power
+
+    // Attempt to extract power from model name or use typical values by brand
+    const modelLower = model.toLowerCase();
+
+    if (modelLower.includes('dc') && modelLower.includes('fast')) return 50;
+    if (modelLower.includes('ultra') || modelLower.includes('hpc')) return 150;
+    if (modelLower.includes('3.7') || modelLower.includes('3,7')) return 3.7;
+    if (modelLower.includes('7.4') || modelLower.includes('7,4')) return 7.4;
+    if (modelLower.includes('11')) return 11;
+    if (modelLower.includes('22')) return 22;
+    if (modelLower.includes('43') || modelLower.includes('44')) return 43;
+    if (modelLower.includes('50')) return 50;
+    if (modelLower.includes('150')) return 150;
+    if (modelLower.includes('350')) return 350;
+
+    // Default power based on common AC chargers
+    return 22;
+}
+
+/**
+ * Handle Heartbeat request
+ */
+async function handleHeartbeat(chargePointId, uniqueId) {
+    try {
+        // Update last heartbeat time
+        await ChargingStation.update({
+            lastHeartbeat: new Date()
+        }, {
+            where: {
+                chargePointId
+            }
+        });
+
+        // Publish heartbeat to MQTT
+        mqttClient.publish(`ocpp/${chargePointId}/heartbeat`, JSON.stringify({
+            timestamp: new Date().toISOString()
+        }));
+
+        return [3, uniqueId, {
+            currentTime: new Date().toISOString()
+        }];
+    } catch (error) {
+        logger.error(`Error handling heartbeat from ${chargePointId}:`, error);
+        return [3, uniqueId, {}];
+    }
+}
+
+/**
+ * Handle StatusNotification request
+ */
+async function handleStatusNotification(chargePointId, uniqueId, payload) {
+    try {
+        const station = await ChargingStation.findOne({
+            where: {
+                chargePointId
+            }
+        });
+
+        if (station) {
+            // Store connector status
+            const connectorStatus = {
+                ...station.connectorStatus
+            } || {};
+            connectorStatus[payload.connectorId] = {
+                status: payload.status,
+                errorCode: payload.errorCode,
+                info: payload.info,
+                timestamp: new Date().toISOString()
+            };
+
+            // Update station status based on main connector (usually 0)
+            let stationStatus = station.status;
+            if (payload.connectorId === 0 || Object.keys(connectorStatus).length === 1) {
+                stationStatus = payload.status;
+            }
+
+            await station.update({
+                status: stationStatus,
+                errorCode: payload.errorCode,
+                connectorStatus
+            });
+        }
+
+        // Publish status notification to MQTT
+        mqttClient.publish(`ocpp/${chargePointId}/status`, JSON.stringify({
+            ...payload,
+            timestamp: new Date().toISOString()
+        }));
+
+        return [3, uniqueId, {}]; // Empty payload for StatusNotification response
+    } catch (error) {
+        logger.error(`Error handling status notification from ${chargePointId}:`, error);
+        return [3, uniqueId, {}];
+    }
+}
+
+/**
+ * Handle MeterValues request
+ */
+async function handleMeterValues(chargePointId, uniqueId, payload) {
+    try {
+        // Check if transaction exists, if not, auto-create it
+        if (payload.transactionId) {
+            const existingTransaction = await Transaction.findOne({
+                where: {
+                    transactionId: payload.transactionId
+                }
+            });
+
+            if (!existingTransaction) {
+                logger.info(`Auto-creating missing transaction ${payload.transactionId} for ${chargePointId}`);
+
+                try {
+                    // Create the missing transaction
+                    await Transaction.create({
+                        transactionId: payload.transactionId,
+                        chargePointId,
+                        connectorId: payload.connectorId || 1,
+                        idTag: 'AUTO_CREATED',
+                        startTime: new Date(),
+                        startMeterValue: 0,
+                        status: 'InProgress'
+                    });
+
+                    // Update station to Charging status
+                    await ChargingStation.update({
+                        status: 'Charging',
+                        currentTransaction: payload.transactionId
+                    }, {
+                        where: {
+                            chargePointId
+                        }
+                    });
+
+                    logger.info(`Successfully created transaction ${payload.transactionId} for ${chargePointId}`);
+                } catch (txError) {
+                    logger.error(`Failed to create transaction: ${txError.message}`);
+                    // Continue processing even if transaction creation fails
+                }
+            }
+        }
+
+        // Store meter values
+        if (payload.meterValue && Array.isArray(payload.meterValue)) {
+            const bulkMeterValues = [];
+
+            for (const meterValue of payload.meterValue) {
+                if (meterValue.sampledValue && Array.isArray(meterValue.sampledValue)) {
+                    for (const sampledValue of meterValue.sampledValue) {
+                        bulkMeterValues.push({
+                            chargePointId,
+                            connectorId: payload.connectorId,
+                            transactionId: payload.transactionId,
+                            timestamp: new Date(meterValue.timestamp),
+                            value: parseFloat(sampledValue.value),
+                            unit: sampledValue.unit || 'Wh',
+                            measurand: sampledValue.measurand || 'Energy.Active.Import.Register',
+                            phase: sampledValue.phase,
+                            location: sampledValue.location,
+                            context: sampledValue.context || 'Sample.Periodic'
+                        });
+                    }
+                }
+            }
+
+            if (bulkMeterValues.length > 0) {
+                try {
+                    await MeterValue.bulkCreate(bulkMeterValues);
+                    logger.info(`Stored ${bulkMeterValues.length} meter values for ${chargePointId}`);
+                } catch (mvError) {
+                    logger.error(`Failed to store meter values: ${mvError.message}`);
+                }
+
+                // Update current meter value in charging station
+                const energyValues = bulkMeterValues.filter(mv =>
+                    mv.measurand === 'Energy.Active.Import.Register');
+
+                if (energyValues.length > 0) {
+                    // Get the latest energy value
+                    const latestValue = energyValues.reduce((latest, current) =>
+                        new Date(current.timestamp) > new Date(latest.timestamp) ? current : latest);
+
+                    await ChargingStation.update({
+                        currentMeterValue: latestValue.value
+                    }, {
+                        where: {
+                            chargePointId
+                        }
+                    });
+
+                    // If this is for an active transaction, update transaction record
+                    if (payload.transactionId) {
+                        await Transaction.update({
+                            energyDelivered: latestValue.value
+                        }, {
+                            where: {
+                                transactionId: payload.transactionId,
+                                status: 'InProgress'
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        // Publish meter values to MQTT
+        mqttClient.publish(`ocpp/${chargePointId}/meterValues`, JSON.stringify({
+            ...payload,
+            timestamp: new Date().toISOString()
+        }));
+
+        return [3, uniqueId, {}];
+    } catch (error) {
+        logger.error(`Error handling meter values from ${chargePointId}:`, error);
+        return [3, uniqueId, {}];
+    }
+}
+
+/**
+ * Handle StartTransaction request
+ */
+async function handleStartTransaction(chargePointId, uniqueId, payload) {
+    try {
+        logger.info(`Processing StartTransaction from ${chargePointId}: ${JSON.stringify(payload)}`);
+
+        // Normalize the payload to handle different formats
+        const normalizedPayload = {
+            // Generate a transactionId if not provided
+            transactionId: payload.transactionId || Math.floor(Math.random() * 1000000) + 1,
+            // Default to connector 1 if not specified
+            connectorId: payload.connectorId || 1,
+            // Use a default idTag if not provided
+            idTag: payload.idTag || 'UNKNOWN_TAG',
+            // Start meter value defaults to 0 if not provided
+            meterStart: payload.meterStart || 0,
+            // Use provided timestamp or current time
+            timestamp: payload.timestamp || new Date().toISOString()
+        };
+
+        // Standardize time format
+        const startTime = new Date(normalizedPayload.timestamp);
+
+        // Check if this station exists
+        const station = await ChargingStation.findOne({
+            where: {
+                chargePointId
+            }
+        });
+
+        if (!station) {
+            logger.warn(`Received StartTransaction from unknown station ${chargePointId}, auto-registering`);
+            await ChargingStation.create({
+                chargePointId,
+                name: `${chargePointId} (Auto-registered)`,
+                model: 'Unknown Model',
+                vendor: 'Unknown Vendor',
+                status: 'Charging',
+                currentTransaction: normalizedPayload.transactionId,
+                currentMeterValue: normalizedPayload.meterStart,
+                lastConnection: new Date(),
+                lastHeartbeat: new Date()
+            });
+        }
+
+        // Log raw transaction data for debugging
+        logger.info(`Creating transaction for ${chargePointId} with ID: ${normalizedPayload.transactionId}`);
+
+        try {
+            // Create new transaction
+            await Transaction.create({
+                transactionId: normalizedPayload.transactionId,
+                chargePointId,
+                connectorId: normalizedPayload.connectorId,
+                idTag: normalizedPayload.idTag,
+                startTime,
+                startMeterValue: normalizedPayload.meterStart,
+                status: 'InProgress'
+            });
+        } catch (dbError) {
+            // If transaction creation fails, we still want to proceed
+            logger.error(`Error creating transaction record: ${dbError.message}`);
+        }
+
+        // Update station status regardless of transaction creation success
+        try {
+            await ChargingStation.update({
+                status: 'Charging',
+                currentTransaction: normalizedPayload.transactionId,
+                currentMeterValue: normalizedPayload.meterStart
+            }, {
+                where: {
+                    chargePointId
+                }
+            });
+
+            logger.info(`Updated station ${chargePointId} status to Charging`);
+        } catch (updateError) {
+            logger.error(`Error updating station status: ${updateError.message}`);
+        }
+
+        // Publish transaction start to MQTT
+        mqttClient.publish(`ocpp/${chargePointId}/startTransaction`, JSON.stringify({
+            ...normalizedPayload,
+            timestamp: startTime.toISOString()
+        }));
+
+        // Log full response for debugging
+        const response = {
+            idTagInfo: {
+                status: 'Accepted',
+                expiryDate: new Date(Date.now() + 86400000).toISOString(), // Valid for 24 hours
+                parentIdTag: null
+            },
+            transactionId: normalizedPayload.transactionId
+        };
+
+        logger.info(`Sending StartTransaction response to ${chargePointId}: ${JSON.stringify(response)}`);
+
+        // Always accept the transaction request with complete response according to OCPP 1.6 spec
+        return [3, uniqueId, response];
+    } catch (error) {
+        logger.error(`Error handling start transaction from ${chargePointId}:`, error);
+
+        // Generate a random transaction ID to ensure the client can proceed
+        const fallbackTransactionId = Math.floor(Math.random() * 1000000) + 1;
+        logger.info(`Using fallback transaction ID: ${fallbackTransactionId} for error recovery`);
+
+        // Even with errors, accept the transaction to maintain connection
+        return [3, uniqueId, {
+            idTagInfo: {
+                status: 'Accepted'
+            },
+            transactionId: fallbackTransactionId
+        }];
+    }
+}
+
+/**
+ * Handle StopTransaction request
+ */
+async function handleStopTransaction(chargePointId, uniqueId, payload) {
+    try {
+        // Find and update transaction
+        const transaction = await Transaction.findOne({
+            where: {
+                transactionId: payload.transactionId,
+                status: 'InProgress'
+            }
+        });
+
+        if (transaction) {
+            const stopTime = new Date(payload.timestamp) || new Date();
+            const energyDelivered = (payload.meterStop - transaction.startMeterValue) / 1000; // kWh
+
+            await transaction.update({
+                stopTime,
+                stopMeterValue: payload.meterStop,
+                energyDelivered,
+                reason: payload.reason,
+                status: 'Completed'
+            });
+
+            // Update station status
+            await ChargingStation.update({
+                status: 'Available',
+                currentTransaction: null,
+                currentMeterValue: payload.meterStop
+            }, {
+                where: {
+                    chargePointId
+                }
+            });
+
+            // Handle any meter values in the stop transaction
+            if (payload.transactionData && Array.isArray(payload.transactionData)) {
+                await handleTransactionData(chargePointId, payload.transactionId, payload.transactionData);
+            }
+
+            // Publish transaction stop to MQTT
+            mqttClient.publish(`ocpp/${chargePointId}/stopTransaction`, JSON.stringify({
+                ...payload,
+                energyDelivered,
+                timestamp: stopTime.toISOString()
+            }));
+        }
+
+        return [3, uniqueId, {
+            idTagInfo: {
+                status: 'Accepted'
+            }
+        }];
+    } catch (error) {
+        logger.error(`Error handling stop transaction from ${chargePointId}:`, error);
+        return [3, uniqueId, {
+            idTagInfo: {
+                status: 'Invalid'
+            }
+        }];
+    }
+}
+
+/**
+ * Handle transaction meter values data
+ */
+async function handleTransactionData(chargePointId, transactionId, transactionData) {
+    try {
+        const bulkMeterValues = [];
+
+        for (const meterValue of transactionData) {
+            if (meterValue.sampledValue && Array.isArray(meterValue.sampledValue)) {
+                for (const sampledValue of meterValue.sampledValue) {
+                    bulkMeterValues.push({
+                        chargePointId,
+                        connectorId: 1, // Default connector ID
+                        transactionId,
+                        timestamp: new Date(meterValue.timestamp),
+                        value: parseFloat(sampledValue.value),
+                        unit: sampledValue.unit || 'Wh',
+                        measurand: sampledValue.measurand || 'Energy.Active.Import.Register',
+                        phase: sampledValue.phase,
+                        location: sampledValue.location,
+                        context: sampledValue.context || 'Transaction.End'
+                    });
+                }
+            }
+        }
+
+        if (bulkMeterValues.length > 0) {
+            await MeterValue.bulkCreate(bulkMeterValues);
+        }
+    } catch (error) {
+        logger.error(`Error handling transaction data for ${chargePointId}:`, error);
+    }
+}
+
+/**
+ * Handle Authorize request
+ */
+async function handleAuthorize(chargePointId, uniqueId, payload) {
+    try {
+        // In a real implementation, you would check the ID tag against a database
+        // For this example, we'll accept all tags
+
+        // Publish authorization to MQTT
+        mqttClient.publish(`ocpp/${chargePointId}/authorize`, JSON.stringify({
+            ...payload,
+            timestamp: new Date().toISOString()
+        }));
+
+        return [3, uniqueId, {
+            idTagInfo: {
+                status: 'Accepted'
+            }
+        }];
+    } catch (error) {
+        logger.error(`Error handling authorize from ${chargePointId}:`, error);
+        return [3, uniqueId, {
+            idTagInfo: {
+                status: 'Invalid'
+            }
+        }];
+    }
+}
+
+/**
+ * Handle DiagnosticsStatusNotification request
+ */
+async function handleDiagnosticsStatusNotification(chargePointId, uniqueId, payload) {
+    try {
+        // Store diagnostics status in station configuration
+        const station = await ChargingStation.findOne({
+            where: {
+                chargePointId
+            }
+        });
+
+        if (station) {
+            const configuration = station.configuration || {};
+            configuration.diagnosticsStatus = {
+                status: payload.status,
+                timestamp: new Date().toISOString()
+            };
+
+            await station.update({
+                configuration
+            });
+        }
+
+        // Publish diagnostics status to MQTT
+        mqttClient.publish(`ocpp/${chargePointId}/diagnosticsStatus`, JSON.stringify({
+            ...payload,
+            timestamp: new Date().toISOString()
+        }));
+
+        return [3, uniqueId, {}];
+    } catch (error) {
+        logger.error(`Error handling diagnostics status from ${chargePointId}:`, error);
+        return [3, uniqueId, {}];
+    }
+}
+
+/**
+ * Handle FirmwareStatusNotification request
+ */
+async function handleFirmwareStatusNotification(chargePointId, uniqueId, payload) {
+    try {
+        // Store firmware status in station configuration
+        const station = await ChargingStation.findOne({
+            where: {
+                chargePointId
+            }
+        });
+
+        if (station) {
+            const configuration = station.configuration || {};
+            configuration.firmwareStatus = {
+                status: payload.status,
+                timestamp: new Date().toISOString()
+            };
+
+            await station.update({
+                configuration
+            });
+        }
+
+        // Publish firmware status to MQTT
+        mqttClient.publish(`ocpp/${chargePointId}/firmwareStatus`, JSON.stringify({
+            ...payload,
+            timestamp: new Date().toISOString()
+        }));
+
+        return [3, uniqueId, {}];
+    } catch (error) {
+        logger.error(`Error handling firmware status from ${chargePointId}:`, error);
+        return [3, uniqueId, {}];
+    }
+}
+
+/**
+ * Handle DataTransfer request
+ */
+async function handleDataTransfer(chargePointId, uniqueId, payload) {
+    try {
+        logger.info(`Processing DataTransfer from ${chargePointId} with vendorId: ${payload.vendorId}, messageId: ${payload.messageId}`);
+
+        // Check if this station exists, if not, auto-register it
+        const existingStation = await ChargingStation.findOne({
+            where: {
+                chargePointId
+            }
+        });
+
+        if (!existingStation) {
+            logger.info(`Auto-registering station ${chargePointId} from DataTransfer message`);
+
+            // Extract meter information if available
+            let meterSerial = '';
+            let meterType = '';
+
+            if (payload.data && typeof payload.data === 'string') {
+                try {
+                    const parsedData = JSON.parse(payload.data);
+
+                    if (parsedData.meters && parsedData.meters.length > 0) {
+                        meterSerial = parsedData.meters[0].meterSerial || '';
+                        meterType = parsedData.meters[0].type || '';
+                        logger.info(`Extracted meter information: Serial=${meterSerial}, Type=${meterType}`);
+                    }
+                } catch (parseError) {
+                    logger.warn(`Could not parse DataTransfer data payload: ${parseError.message}`);
+                }
+            }
+
+            // Create a new station record
+            await ChargingStation.create({
+                chargePointId,
+                name: `${chargePointId} (Auto-registered)`,
+                model: 'Unknown Model',
+                vendor: 'Unknown Vendor',
+                status: 'Available',
+                meterSerialNumber: meterSerial,
+                meterType: meterType,
+                lastConnection: new Date(),
+                lastHeartbeat: new Date()
+            });
+
+            logger.info(`Successfully registered station ${chargePointId} from DataTransfer`);
+        } else {
+            // Update last connection time
+            await existingStation.update({
+                lastConnection: new Date(),
+                lastHeartbeat: new Date()
+            });
+
+            // If we have meter information, update it
+            if (payload.data && typeof payload.data === 'string') {
+                try {
+                    const parsedData = JSON.parse(payload.data);
+
+                    if (parsedData.meters && parsedData.meters.length > 0) {
+                        const meterSerial = parsedData.meters[0].meterSerial || '';
+                        const meterType = parsedData.meters[0].type || '';
+
+                        if (meterSerial && meterType) {
+                            await existingStation.update({
+                                meterSerialNumber: meterSerial,
+                                meterType: meterType
+                            });
+                            logger.info(`Updated meter information for ${chargePointId}: Serial=${meterSerial}, Type=${meterType}`);
+                        }
+                    }
+                } catch (parseError) {
+                    logger.warn(`Could not parse DataTransfer data payload: ${parseError.message}`);
+                }
+            }
+        }
+
+        // Publish data transfer to MQTT
+        mqttClient.publish(`ocpp/${chargePointId}/dataTransfer`, JSON.stringify({
+            ...payload,
+            timestamp: new Date().toISOString()
+        }));
+
+        // Always accept the data transfer
+        return [3, uniqueId, {
+            status: 'Accepted',
+            data: {} // Optional data in response
+        }];
+    } catch (error) {
+        logger.error(`Error handling data transfer from ${chargePointId}:`, error);
+
+        // Always accept the data transfer even if there's an error
+        // This is important for T001 which uses DataTransfer as its first message
+        return [3, uniqueId, {
+            status: 'Accepted',
+            data: {}
+        }];
+    }
+}
+
+module.exports = {
+    handleRequest
+};

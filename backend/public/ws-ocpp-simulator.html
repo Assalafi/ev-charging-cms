@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCPP Charging Station Simulator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1, h2 {
+            color: #333;
+        }
+        .container {
+            display: flex;
+            gap: 20px;
+        }
+        .left-panel {
+            flex: 1;
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .right-panel {
+            flex: 2;
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select, button {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #log {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            font-family: monospace;
+            background-color: #f5f5f5;
+            margin-top: 10px;
+        }
+        .message {
+            margin-bottom: 5px;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        .incoming {
+            background-color: #e3f2fd;
+        }
+        .outgoing {
+            background-color: #e8f5e9;
+        }
+        .error {
+            background-color: #ffebee;
+        }
+        #status-badge {
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-weight: bold;
+            display: inline-block;
+            margin-left: 10px;
+        }
+        .connected {
+            background-color: #c8e6c9;
+            color: #2e7d32;
+        }
+        .disconnected {
+            background-color: #ffcdd2;
+            color: #c62828;
+        }
+        #connectorTable {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        #connectorTable th, #connectorTable td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        #connectorTable th {
+            background-color: #f2f2f2;
+        }
+        .quick-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .quick-actions button {
+            flex: 1;
+        }
+        #messageInput {
+            height: 120px;
+            font-family: monospace;
+            white-space: pre;
+        }
+    </style>
+</head>
+<body>
+    <h1>OCPP Charging Station Simulator <span id="status-badge" class="disconnected">Disconnected</span></h1>
+    
+    <div class="container">
+        <div class="left-panel">
+            <h2>Connection Settings</h2>
+            <div class="form-group">
+                <label for="serverUrl">Server URL:</label>
+                <input type="text" id="serverUrl" value="ws://localhost:8080/ocpp">
+            </div>
+            <div class="form-group">
+                <label for="stationId">Station ID:</label>
+                <input type="text" id="stationId" value="T001">
+            </div>
+            <div class="form-group">
+                <label for="protocol">OCPP Protocol:</label>
+                <select id="protocol">
+                    <option value="ocpp1.6">OCPP 1.6</option>
+                    <option value="ocpp1.5">OCPP 1.5</option>
+                    <option value="ocpp2.0.1">OCPP 2.0.1</option>
+                </select>
+            </div>
+            <button id="connectBtn">Connect</button>
+            <button id="disconnectBtn" disabled>Disconnect</button>
+            
+            <h2>Station Configuration</h2>
+            <div class="form-group">
+                <label for="connectorCount">Number of Connectors:</label>
+                <input type="number" id="connectorCount" value="2" min="1" max="8">
+            </div>
+            
+            <div class="form-group">
+                <label>Connectors:</label>
+                <table id="connectorTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="connectorTableBody">
+                        <!-- Connectors will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+            
+            <h2>Quick Actions</h2>
+            <div class="quick-actions">
+                <button id="bootNotificationBtn" disabled>Boot Notification</button>
+                <button id="heartbeatBtn" disabled>Heartbeat</button>
+            </div>
+            <div class="quick-actions">
+                <button id="statusNotificationBtn" disabled>Status Notification</button>
+                <button id="meterValuesBtn" disabled>Meter Values</button>
+            </div>
+        </div>
+        
+        <div class="right-panel">
+            <h2>Message Exchange</h2>
+            <div class="form-group">
+                <label for="messageType">Message Type:</label>
+                <select id="messageType">
+                    <option value="2">2 - Request</option>
+                    <option value="3">3 - Response</option>
+                    <option value="4">4 - Error</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="actionType">Action Type:</label>
+                <select id="actionType">
+                    <option value="BootNotification">BootNotification</option>
+                    <option value="Heartbeat">Heartbeat</option>
+                    <option value="StatusNotification">StatusNotification</option>
+                    <option value="Authorize">Authorize</option>
+                    <option value="StartTransaction">StartTransaction</option>
+                    <option value="StopTransaction">StopTransaction</option>
+                    <option value="MeterValues">MeterValues</option>
+                    <option value="DataTransfer">DataTransfer</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="messageInput">Message Payload (JSON):</label>
+                <textarea id="messageInput">{
+    "chargePointVendor": "VendorX",
+    "chargePointModel": "ModelY",
+    "chargePointSerialNumber": "SN12345",
+    "firmwareVersion": "1.0.0"
+}</textarea>
+            </div>
+            <button id="sendBtn" disabled>Send Message</button>
+            
+            <h2>Message Log</h2>
+            <div id="log"></div>
+            <button id="clearLogBtn">Clear Log</button>
+        </div>
+    </div>
+
+    <script>
+        let websocket = null;
+        let messageId = 1;
+        let connectors = [];
+        let activeTransactions = {};
+        
+        // DOM elements
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const sendBtn = document.getElementById('sendBtn');
+        const bootNotificationBtn = document.getElementById('bootNotificationBtn');
+        const heartbeatBtn = document.getElementById('heartbeatBtn');
+        const statusNotificationBtn = document.getElementById('statusNotificationBtn');
+        const meterValuesBtn = document.getElementById('meterValuesBtn');
+        const clearLogBtn = document.getElementById('clearLogBtn');
+        const statusBadge = document.getElementById('status-badge');
+        const connectorTableBody = document.getElementById('connectorTableBody');
+        
+        // Initialize connectors
+        function initConnectors() {
+            const count = parseInt(document.getElementById('connectorCount').value);
+            connectors = [];
+            
+            // Always include connector 0 (the main charge point)
+            connectors.push({
+                id: 0,
+                status: 'Available',
+                errorCode: 'NoError',
+                currentTransactionId: null
+            });
+            
+            // Add the requested number of connectors
+            for (let i = 1; i <= count; i++) {
+                connectors.push({
+                    id: i,
+                    status: 'Available',
+                    errorCode: 'NoError',
+                    currentTransactionId: null
+                });
+            }
+            
+            updateConnectorTable();
+        }
+        
+        // Update the connector table
+        function updateConnectorTable() {
+            connectorTableBody.innerHTML = '';
+            
+            connectors.forEach(connector => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${connector.id}</td>
+                    <td>${connector.status}</td>
+                    <td>
+                        <select class="connector-action" data-id="${connector.id}">
+                            <option value="">Select Action</option>
+                            <option value="startTransaction">Start Transaction</option>
+                            <option value="stopTransaction">Stop Transaction</option>
+                            <option value="changeStatus">Change Status</option>
+                        </select>
+                    </td>
+                `;
+                connectorTableBody.appendChild(row);
+            });
+            
+            // Add event listeners
+            document.querySelectorAll('.connector-action').forEach(select => {
+                select.addEventListener('change', handleConnectorAction);
+            });
+        }
+        
+        // Handle connector actions
+        function handleConnectorAction(event) {
+            const select = event.target;
+            const connectorId = parseInt(select.getAttribute('data-id'));
+            const action = select.value;
+            
+            if (!action) return;
+            
+            const connector = connectors.find(c => c.id === connectorId);
+            
+            switch (action) {
+                case 'startTransaction':
+                    if (connectorId === 0) {
+                        alert('Cannot start a transaction on connector 0');
+                        select.value = '';
+                        return;
+                    }
+                    
+                    if (connector.status !== 'Available') {
+                        alert(`Connector ${connectorId} is not available (${connector.status})`);
+                        select.value = '';
+                        return;
+                    }
+                    
+                    // Send Authorize request
+                    sendAuthorize('TAG001', () => {
+                        // Then send StartTransaction
+                        sendStartTransaction(connectorId, 'TAG001');
+                    });
+                    break;
+                
+                case 'stopTransaction':
+                    if (!connector.currentTransactionId) {
+                        alert(`No active transaction on connector ${connectorId}`);
+                        select.value = '';
+                        return;
+                    }
+                    
+                    sendStopTransaction(connector.currentTransactionId, connectorId);
+                    break;
+                
+                case 'changeStatus':
+                    const newStatus = prompt(
+                        'Enter new status: Available, Preparing, Charging, SuspendedEVSE, SuspendedEV, Finishing, Reserved, Unavailable, Faulted',
+                        connector.status
+                    );
+                    
+                    if (newStatus && isValidStatus(newStatus)) {
+                        connector.status = newStatus;
+                        updateConnectorTable();
+                        sendStatusNotification(connectorId, newStatus);
+                    } else {
+                        alert('Invalid status');
+                    }
+                    break;
+            }
+            
+            select.value = '';
+        }
+        
+        // Check if status is valid
+        function isValidStatus(status) {
+            const validStatuses = [
+                'Available', 'Preparing', 'Charging', 'SuspendedEVSE', 
+                'SuspendedEV', 'Finishing', 'Reserved', 'Unavailable', 'Faulted'
+            ];
+            return validStatuses.includes(status);
+        }
+        
+        // Connect to the OCPP server
+        connectBtn.addEventListener('click', () => {
+            const serverUrl = document.getElementById('serverUrl').value;
+            const stationId = document.getElementById('stationId').value;
+            const protocol = document.getElementById('protocol').value;
+            
+            if (!serverUrl || !stationId) {
+                alert('Please enter server URL and station ID');
+                return;
+            }
+            
+            initConnectors();
+            connect(serverUrl, stationId, protocol);
+        });
+        
+        // Disconnect from the OCPP server
+        disconnectBtn.addEventListener('click', () => {
+            if (websocket) {
+                websocket.close();
+                updateConnectionStatus(false);
+                logMessage('Disconnected from server', 'outgoing');
+            }
+        });
+        
+        // Send custom message
+        sendBtn.addEventListener('click', () => {
+            if (!websocket) {
+                alert('Not connected to server');
+                return;
+            }
+            
+            const messageType = document.getElementById('messageType').value;
+            const actionType = document.getElementById('actionType').value;
+            let payload;
+            
+            try {
+                payload = JSON.parse(document.getElementById('messageInput').value);
+            } catch (error) {
+                alert('Invalid JSON payload');
+                return;
+            }
+            
+            const message = [parseInt(messageType), generateMessageId(), actionType, payload];
+            sendMessage(message);
+        });
+        
+        // Quick action: Boot Notification
+        bootNotificationBtn.addEventListener('click', () => {
+            sendBootNotification();
+        });
+        
+        // Quick action: Heartbeat
+        heartbeatBtn.addEventListener('click', () => {
+            sendHeartbeat();
+        });
+        
+        // Quick action: Status Notification
+        statusNotificationBtn.addEventListener('click', () => {
+            // Send status for all connectors
+            connectors.forEach(connector => {
+                sendStatusNotification(connector.id, connector.status);
+            });
+        });
+        
+        // Quick action: Meter Values
+        meterValuesBtn.addEventListener('click', () => {
+            // Send meter values for active transactions
+            Object.keys(activeTransactions).forEach(transactionId => {
+                const transaction = activeTransactions[transactionId];
+                sendMeterValues(transaction.connectorId, transactionId);
+            });
+        });
+        
+        // Clear the message log
+        clearLogBtn.addEventListener('click', () => {
+            document.getElementById('log').innerHTML = '';
+        });
+        
+        // Connect to the OCPP server
+        function connect(serverUrl, stationId, protocol) {
+            const fullUrl = `${serverUrl}/${stationId}`;
+            
+            try {
+                websocket = new WebSocket(fullUrl, [protocol]);
+                
+                websocket.onopen = () => {
+                    updateConnectionStatus(true);
+                    logMessage(`Connected to ${fullUrl} using ${protocol}`, 'outgoing');
+                    
+                    // Automatically send boot notification on connect
+                    setTimeout(() => {
+                        sendBootNotification();
+                    }, 1000);
+                };
+                
+                websocket.onmessage = (event) => {
+                    const message = JSON.parse(event.data);
+                    logMessage(`Received: ${event.data}`, 'incoming');
+                    
+                    // Handle the message based on its type
+                    handleIncomingMessage(message);
+                };
+                
+                websocket.onerror = (error) => {
+                    logMessage(`WebSocket Error: ${error}`, 'error');
+                };
+                
+                websocket.onclose = () => {
+                    updateConnectionStatus(false);
+                    logMessage('Connection closed', 'outgoing');
+                };
+            } catch (error) {
+                logMessage(`Connection Error: ${error.message}`, 'error');
+            }
+        }
+        
+        // Update connection status
+        function updateConnectionStatus(isConnected) {
+            connectBtn.disabled = isConnected;
+            disconnectBtn.disabled = !isConnected;
+            sendBtn.disabled = !isConnected;
+            bootNotificationBtn.disabled = !isConnected;
+            heartbeatBtn.disabled = !isConnected;
+            statusNotificationBtn.disabled = !isConnected;
+            meterValuesBtn.disabled = !isConnected;
+            
+            statusBadge.textContent = isConnected ? 'Connected' : 'Disconnected';
+            statusBadge.className = isConnected ? 'connected' : 'disconnected';
+        }
+        
+        // Generate unique message ID
+        function generateMessageId() {
+            return `sim-${messageId++}`;
+        }
+        
+        // Send a message to the server
+        function sendMessage(message) {
+            if (!websocket) return;
+            
+            const messageStr = JSON.stringify(message);
+            websocket.send(messageStr);
+            logMessage(`Sent: ${messageStr}`, 'outgoing');
+        }
+        
+        // Log a message to the UI
+        function logMessage(message, type) {
+            const log = document.getElementById('log');
+            const messageElement = document.createElement('div');
+            messageElement.className = `message ${type}`;
+            
+            // Format the timestamp
+            const timestamp = new Date().toLocaleTimeString();
+            messageElement.textContent = `[${timestamp}] ${message}`;
+            
+            log.appendChild(messageElement);
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        // Handle incoming OCPP messages
+        function handleIncomingMessage(message) {
+            const [messageType, messageId, payload, errorDetails] = message;
+            
+            // Message type 2: Request from Central System
+            if (messageType === 2) {
+                const action = payload;
+                const data = errorDetails;
+                
+                switch (action) {
+                    case 'Reset':
+                        handleReset(messageId, data);
+                        break;
+                    
+                    case 'RemoteStartTransaction':
+                        handleRemoteStartTransaction(messageId, data);
+                        break;
+                    
+                    case 'RemoteStopTransaction':
+                        handleRemoteStopTransaction(messageId, data);
+                        break;
+                    
+                    case 'UnlockConnector':
+                        handleUnlockConnector(messageId, data);
+                        break;
+                    
+                    case 'GetDiagnostics':
+                        handleGetDiagnostics(messageId, data);
+                        break;
+                    
+                    default:
+                        // Generic response for unsupported commands
+                        sendMessage([3, messageId, {status: 'NotImplemented'}]);
+                        break;
+                }
+            }
+            // Message type 3: Response to our Request
+            else if (messageType === 3) {
+                // Here you could implement callbacks for responses
+                // For now, we just log the response
+            }
+            // Message type 4: Error
+            else if (messageType === 4) {
+                logMessage(`Error: ${JSON.stringify(errorDetails)}`, 'error');
+            }
+        }
+        
+        // Handle Reset request
+        function handleReset(messageId, data) {
+            const type = data.type || 'Soft';
+            logMessage(`Received Reset command: ${type}`, 'incoming');
+            
+            // Send confirmation
+            sendMessage([3, messageId, {status: 'Accepted'}]);
+            
+            // Simulate reset behavior
+            if (type === 'Hard') {
+                // Hard reset: Close connection and reconnect
+                setTimeout(() => {
+                    websocket.close();
+                    setTimeout(() => {
+                        connect(
+                            document.getElementById('serverUrl').value,
+                            document.getElementById('stationId').value,
+                            document.getElementById('protocol').value
+                        );
+                    }, 3000);
+                }, 1000);
+            } else {
+                // Soft reset: Just send boot notification
+                setTimeout(() => {
+                    sendBootNotification();
+                }, 1000);
+            }
+        }
+        
+        // Handle RemoteStartTransaction request
+        function handleRemoteStartTransaction(messageId, data) {
+            const { idTag, connectorId = 1 } = data;
+            logMessage(`Received RemoteStartTransaction command: ID Tag=${idTag}, Connector=${connectorId}`, 'incoming');
+            
+            const connector = connectors.find(c => c.id === connectorId);
+            
+            if (!connector) {
+                sendMessage([3, messageId, {status: 'Rejected'}]);
+                return;
+            }
+            
+            if (connector.status !== 'Available') {
+                sendMessage([3, messageId, {status: 'Rejected'}]);
+                return;
+            }
+            
+            // Accept the command
+            sendMessage([3, messageId, {status: 'Accepted'}]);
+            
+            // Simulate starting a transaction
+            setTimeout(() => {
+                sendAuthorize(idTag, () => {
+                    sendStartTransaction(connectorId, idTag);
+                });
+            }, 1000);
+        }
+        
+        // Handle RemoteStopTransaction request
+        function handleRemoteStopTransaction(messageId, data) {
+            const { transactionId } = data;
+            logMessage(`Received RemoteStopTransaction command: Transaction=${transactionId}`, 'incoming');
+            
+            // Find the transaction
+            const transaction = activeTransactions[transactionId];
+            
+            if (!transaction) {
+                sendMessage([3, messageId, {status: 'Rejected'}]);
+                return;
+            }
+            
+            // Accept the command
+            sendMessage([3, messageId, {status: 'Accepted'}]);
+            
+            // Simulate stopping the transaction
+            setTimeout(() => {
+                sendStopTransaction(transactionId, transaction.connectorId);
+            }, 1000);
+        }
+        
+        // Handle UnlockConnector request
+        function handleUnlockConnector(messageId, data) {
+            const { connectorId } = data;
+            logMessage(`Received UnlockConnector command: Connector=${connectorId}`, 'incoming');
+            
+            const connector = connectors.find(c => c.id === connectorId);
+            
+            if (!connector) {
+                sendMessage([3, messageId, {status: 'Rejected'}]);
+                return;
+            }
+            
+            // Accept the command
+            sendMessage([3, messageId, {status: 'Accepted'}]);
+            
+            // Simulate unlocking
+            if (connector.status === 'Charging') {
+                // If charging, stop the transaction first
+                if (connector.currentTransactionId) {
+                    setTimeout(() => {
+                        sendStopTransaction(connector.currentTransactionId, connectorId);
+                    }, 1000);
+                }
+            }
+        }
+        
+        // Handle GetDiagnostics request
+        function handleGetDiagnostics(messageId, data) {
+            logMessage(`Received GetDiagnostics command: ${JSON.stringify(data)}`, 'incoming');
+            
+            // Accept the command
+            sendMessage([3, messageId, {fileName: 'diagnostics.log'}]);
+        }
+        
+        // Send BootNotification message
+        function sendBootNotification() {
+            const payload = {
+                chargePointVendor: 'VendorX',
+                chargePointModel: 'ModelY',
+                chargePointSerialNumber: 'SN12345',
+                firmwareVersion: '1.0.0',
+                iccid: '',
+                imsi: '',
+                meterType: 'DBT NQC-ACDC',
+                meterSerialNumber: 'meter12345'
+            };
+            
+            sendMessage([2, generateMessageId(), 'BootNotification', payload]);
+        }
+        
+        // Send Heartbeat message
+        function sendHeartbeat() {
+            sendMessage([2, generateMessageId(), 'Heartbeat', {}]);
+        }
+        
+        // Send StatusNotification message
+        function sendStatusNotification(connectorId, status) {
+            const payload = {
+                connectorId: connectorId,
+                errorCode: 'NoError',
+                info: '',
+                status: status,
+                timestamp: new Date().toISOString(),
+                vendorId: '',
+                vendorErrorCode: ''
+            };
+            
+            sendMessage([2, generateMessageId(), 'StatusNotification', payload]);
+        }
+        
+        // Send Authorize message
+        function sendAuthorize(idTag, callback) {
+            const payload = {
+                idTag: idTag
+            };
+            
+            sendMessage([2, generateMessageId(), 'Authorize', payload]);
+            
+            // In a real implementation, we'd wait for the response
+            // For now, just proceed after a short delay
+            setTimeout(() => {
+                if (callback) callback();
+            }, 500);
+        }
+        
+        // Send StartTransaction message
+        function sendStartTransaction(connectorId, idTag) {
+            const connector = connectors.find(c => c.id === connectorId);
+            
+            if (!connector) {
+                logMessage(`Connector ${connectorId} not found`, 'error');
+                return;
+            }
+            
+            if (connector.status !== 'Available') {
+                logMessage(`Connector ${connectorId} is not available (${connector.status})`, 'error');
+                return;
+            }
+            
+            // Generate transaction ID
+            const transactionId = Math.floor(Math.random() * 1000000) + 1;
+            
+            const payload = {
+                connectorId: connectorId,
+                idTag: idTag,
+                meterStart: 0,
+                timestamp: new Date().toISOString(),
+                reservationId: 0
+            };
+            
+            sendMessage([2, generateMessageId(), 'StartTransaction', payload]);
+            
+            // Update connector status
+            connector.status = 'Charging';
+            connector.currentTransactionId = transactionId;
+            updateConnectorTable();
+            
+            // Store active transaction
+            activeTransactions[transactionId] = {
+                id: transactionId,
+                connectorId: connectorId,
+                idTag: idTag,
+                startTime: new Date(),
+                meterStart: 0,
+                meterCurrent: 0
+            };
+            
+            // Simulate meter values updating
+            simulateMeterValues(transactionId, connectorId);
+        }
+        
+        // Send StopTransaction message
+        function sendStopTransaction(transactionId, connectorId) {
+            const transaction = activeTransactions[transactionId];
+            
+            if (!transaction) {
+                logMessage(`Transaction ${transactionId} not found`, 'error');
+                return;
+            }
+            
+            const connector = connectors.find(c => c.id === connectorId);
+            
+            if (!connector) {
+                logMessage(`Connector ${connectorId} not found`, 'error');
+                return;
+            }
+            
+            const payload = {
+                transactionId: transactionId,
+                meterStop: transaction.meterCurrent,
+                timestamp: new Date().toISOString(),
+                reason: 'Remote'
+            };
+            
+            sendMessage([2, generateMessageId(), 'StopTransaction', payload]);
+            
+            // Update connector status
+            connector.status = 'Available';
+            connector.currentTransactionId = null;
+            updateConnectorTable();
+            
+            // Remove active transaction
+            delete activeTransactions[transactionId];
+        }
+        
+        // Send MeterValues message
+        function sendMeterValues(connectorId, transactionId) {
+            const transaction = activeTransactions[transactionId];
+            
+            if (!transaction) {
+                logMessage(`Transaction ${transactionId} not found`, 'error');
+                return;
+            }
+            
+            // Increment meter value
+            transaction.meterCurrent += 0.1;
+            
+            const meterValue = {
+                timestamp: new Date().toISOString(),
+                sampledValue: [
+                    {
+                        value: transaction.meterCurrent.toFixed(1),
+                        context: 'Sample.Periodic',
+                        measurand: 'Energy.Active.Import.Register',
+                        unit: 'kWh'
+                    },
+                    {
+                        value: (Math.random() * 32).toFixed(1),
+                        context: 'Sample.Periodic',
+                        measurand: 'Power.Active.Import',
+                        unit: 'kW'
+                    }
+                ]
+            };
+            
+            const payload = {
+                connectorId: connectorId,
+                transactionId: transactionId,
+                meterValue: [meterValue]
+            };
+            
+            sendMessage([2, generateMessageId(), 'MeterValues', payload]);
+        }
+        
+        // Simulate meter values updating
+        function simulateMeterValues(transactionId, connectorId) {
+            if (!activeTransactions[transactionId]) return;
+            
+            sendMeterValues(connectorId, transactionId);
+            
+            // Schedule next update
+            setTimeout(() => {
+                simulateMeterValues(transactionId, connectorId);
+            }, 15000);
+        }
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            initConnectors();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with TimescaleDB for time-series data
+  database:
+    image: timescale/timescaledb:latest-pg14
+    container_name: ev-cms-db
+    environment:
+      POSTGRES_USER: evuser
+      POSTGRES_PASSWORD: evpass
+      POSTGRES_DB: ev_cms
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evuser -d ev_cms"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # EMQX MQTT Broker with WebSocket support
+  mqtt:
+    image: emqx/emqx:4.4.14
+    container_name: ev-cms-mqtt
+    ports:
+      - "1883:1883"   # MQTT
+      - "8083:8083"   # MQTT over WebSocket
+      - "18083:18083" # Dashboard
+    environment:
+      - EMQX_ALLOW_ANONYMOUS=true
+      - EMQX_DASHBOARD__DEFAULT_USERNAME=admin
+      - EMQX_DASHBOARD__DEFAULT_PASSWORD=public
+    volumes:
+      - emqx_data:/opt/emqx/data
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx_ctl", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  # Node.js Backend for OCPP server and API
+  backend:
+    build: ./backend
+    container_name: ev-cms-backend
+    ports:
+      - "3000:3000"   # REST API
+      - "8080:8080"   # WebSocket for OCPP
+    environment:
+      - NODE_ENV=development
+      - DB_HOST=database
+      - DB_USER=evuser
+      - DB_PASSWORD=evpass
+      - DB_NAME=ev_cms
+      - JWT_SECRET=ev_charging_secret_key_change_in_production
+      - MQTT_HOST=mqtt
+      - MQTT_PORT=1883
+      - MQTT_WS_PORT=8083
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      database:
+        condition: service_healthy
+      mqtt:
+        condition: service_healthy
+    command: npm run dev
+
+  # React Frontend for dashboard
+  frontend:
+    build: ./frontend
+    container_name: ev-cms-frontend
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  emqx_data:
