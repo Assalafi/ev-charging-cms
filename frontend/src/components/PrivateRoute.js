@@ -6,9 +6,9 @@ function PrivateRoute({ children }) {
   const { isAuthenticated, isInitialized } = useAuth();
   const location = useLocation();
 
-  // If auth is still initializing, don't redirect yet
+  // Show loading state while auth is initializing
   if (!isInitialized) {
-    return null;
+    return <div>Loading...</div>;
   }
 
   if (!isAuthenticated) {

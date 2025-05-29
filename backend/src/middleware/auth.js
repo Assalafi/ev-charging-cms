@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
+const config = require('../../../config/backend').backend;
 
 /**
  * Authentication middleware
@@ -19,10 +20,10 @@ function authenticate(req, res, next) {
   const token = authHeader.split(' ')[1];
   
   // Special case for development testing
-  if (token === 'dev-mock-token-for-testing' && process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV !== 'production' && config.security.devMockToken && token === config.security.devMockToken) {
     logger.warn('Using development mock token - INSECURE FOR PRODUCTION');
     // Create a mock admin user for development
-    req.user = {
+    req.user = config.security.devMockUser || {
       id: 1,
       email: 'admin@example.com',
       role: 'admin',
@@ -32,11 +33,14 @@ function authenticate(req, res, next) {
   }
   
   try {
-    // Verify token
-    const decoded = jwt.verify(
-      token, 
-      process.env.JWT_SECRET || 'ev_charging_secret_key_change_in_production'
-    );
+    // Verify token with consistent secret
+    const secret = process.env.JWT_SECRET || config.security.jwtSecret || 'ev-charging-secure-secret';
+    const decoded = jwt.verify(token, secret);
+    
+    // Ensure the decoded token has required fields
+    if (!decoded.id || !decoded.username) {
+      throw new Error('Invalid token payload');
+    }
     
     // Attach user data to request
     req.user = decoded;

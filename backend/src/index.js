@@ -7,6 +7,16 @@ const routes = require('./routes');
 const ocppServer = require('./ocpp/server');
 const mqttClient = require('./mqtt/client');
 
+// Load configuration
+const config = require('../../config/backend').backend;
+
+// Debug configuration
+logger.info('Configuration loaded:', {
+  http: config.http,
+  websocket: config.websocket,
+  database: config.database
+});
+
 // Create Express app
 const app = express();
 const server = http.createServer(app);
@@ -16,11 +26,11 @@ app.use(cors());
 app.use(express.json());
 
 // Serve static files from public directory
-app.use('/public', express.static('public'));
-app.use(express.static('public'));
+app.use('/public', express.static(config.static.publicDir));
+app.use(express.static(config.static.publicDir));
 
 // API routes
-app.use('/api', routes);
+app.use(config.http.apiPrefix, routes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -30,15 +40,15 @@ app.get('/health', (req, res) => {
 // OCPP WebSocket server will be initialized in startServer()
 
 // Connect to MQTT broker if enabled
-if (process.env.MQTT_ENABLED !== 'false') {
-  mqttClient.connect();
+if (config.mqtt.enabled) {
+  mqttClient.connect(config.mqtt.broker, config.mqtt.options);
 } else {
   logger.info('MQTT is disabled by configuration');
 }
 
-// Database connection and server start
-const PORT = process.env.PORT || 3000;
-const WS_PORT = process.env.WS_PORT || 8080;
+// Get port configuration
+const PORT = config.http.port;
+const WS_PORT = config.websocket.port;
 
 async function startServer() {
   try {
@@ -46,13 +56,13 @@ async function startServer() {
     await sequelize.authenticate();
     logger.info('Database connection established successfully');
     
-    // Temporarily disable schema alteration to avoid enum casting issues
-    await sequelize.sync({ alter: false });
-    logger.info('Database models synchronized (without schema alterations)');
+    // Sync database with configured options
+    await sequelize.sync(config.database.sync);
+    logger.info('Database models synchronized');
     
     // Start HTTP server for REST API
-    server.listen(PORT, () => {
-      logger.info(`HTTP server running on port ${PORT}`);
+    server.listen(PORT, config.http.host, () => {
+      logger.info(`HTTP server running on ${config.http.baseUrl}`);
     });
     
     // Start dedicated WebSocket server for OCPP
@@ -60,11 +70,12 @@ async function startServer() {
     const wsServer = http.createServer();
     
     // Initialize the OCPP server with this dedicated WebSocket server
-    ocppServer.init(wsServer);
+    ocppServer.init(wsServer, { path: config.websocket.path });
     
     // Start listening on the WebSocket port
-    wsServer.listen(WS_PORT, () => {
-      logger.info(`OCPP WebSocket server running on port ${WS_PORT}`);
+    const wsHost = config.websocket.host || 'localhost';
+    wsServer.listen(WS_PORT, wsHost, () => {
+      logger.info(`OCPP WebSocket server running on ws://${wsHost}:${WS_PORT}${config.websocket.path}`);
       logger.info(`OCPP server initialized successfully: ${ocppServer._isInitialized() ? 'Yes' : 'No'}`);
     });
   } catch (error) {

@@ -46,7 +46,6 @@ import { DateRangePicker } from 'react-date-range';
 import transactionService from '../../services/transactionService';
 import stationService from '../../services/stationService';
 import api from '../../services/api';
-import nigerianTransactionService from '../../services/nigerianTransactionService';
 import { formatCurrency, calculatePrice } from '../../utils/currencyFormatter';
 
 function TransactionList() {
@@ -81,179 +80,149 @@ function TransactionList() {
     }
   });
   
-  // Nigerian mock data for fallback if API fails
-  const NIGERIAN_MOCK_TRANSACTIONS = [
-    {
-      id: 128,
-      transactionId: 100003,
-      chargingStationId: 42,
-      chargePointId: 'CP002',
-      connectorId: 1,
-      idTag: 'NG-LAGOS-003',
-      startTime: '2025-05-22T19:13:27.253Z',
-      stopTime: null,
-      startMeterValue: 0,
-      stopMeterValue: null,
-      energyDelivered: 8.7,
-      status: 'InProgress',
-      charging_station: { name: 'Station Beta', model: 'PowerCharge', vendor: 'ABB' }
-    },
-    {
-      id: 127,
-      transactionId: 100002,
-      chargingStationId: 41,
-      chargePointId: 'CP001',
-      connectorId: 1,
-      idTag: 'NG-ABUJA-002',
-      startTime: '2025-05-22T07:13:27.253Z',
-      stopTime: '2025-05-22T08:13:27.253Z',
-      startMeterValue: 0,
-      stopMeterValue: 22.3,
-      energyDelivered: 22.3,
-      status: 'Completed',
-      charging_station: { name: 'Station Alpha', model: 'EV3000', vendor: 'ChargePoint' }
-    },
-    {
-      id: 126,
-      transactionId: 100001,
-      chargingStationId: 39,
-      chargePointId: 'T002',
-      connectorId: 1,
-      idTag: 'NG-LAGOS-001',
-      startTime: '2025-05-21T19:13:27.253Z',
-      stopTime: '2025-05-21T20:13:27.253Z',
-      startMeterValue: 0,
-      stopMeterValue: 35.5,
-      energyDelivered: 35.5,
-      status: 'Completed',
-      charging_station: { name: 'Auto-registered T002', model: 'Model', vendor: 'Vendor' }
+  // Define fetchTransactions function
+  const fetchTransactions = async () => {
+    try {
+      // First, try without any date filters to see if we can get any data
+      const baseParams = {
+        limit: rowsPerPage,
+        offset: page * rowsPerPage,
+        sort: 'startTime',
+        order: 'DESC',
+        ...(filters.stationId && { chargePointId: filters.stationId }),
+        ...(filters.status && { status: filters.status }),
+        ...(filters.idTag && { idTag: filters.idTag }),
+      };
+      
+      console.log('Trying initial fetch without date filters...');
+      const initialResponse = await api.get('/transactions', { params: baseParams });
+      
+      if (initialResponse.data?.transactions?.length > 0) {
+        console.log('Successfully fetched transactions without date filters');
+        return initialResponse.data.transactions;
+      }
+      
+      // If no results, try with date filters if they exist
+      if (filters.dateRange?.startDate || filters.dateRange?.endDate) {
+        console.log('No results without date filters, trying with date range...');
+        const params = {
+          ...baseParams,
+          ...(filters.dateRange?.startDate && { startDate: filters.dateRange.startDate.toISOString() }),
+          ...(filters.dateRange?.endDate && { endDate: filters.dateRange.endDate.toISOString() })
+        };
+        
+        console.log('Fetching transactions with date filters:', params);
+        const response = await api.get('/transactions', { params });
+        return response.data?.transactions || [];
+      }
+      
+      // If we get here, return empty array
+      return [];
+    } catch (error) {
+      console.error('Error in fetchTransactions:', {
+        message: error.message,
+        response: error.response?.data,
+        config: error.config
+      });
+      throw error;
     }
-  ];
-
-  // Nigerian mock stations
-  const NIGERIAN_MOCK_STATIONS = [
-    { id: 39, chargePointId: 'T002', name: 'Auto-registered T002', model: 'Model', vendor: 'Vendor', firmwareVersion: '1.0.0' },
-    { id: 41, chargePointId: 'CP001', name: 'Station Alpha', model: 'EV3000', vendor: 'ChargePoint', firmwareVersion: '2.1.3' },
-    { id: 42, chargePointId: 'CP002', name: 'Station Beta', model: 'PowerCharge', vendor: 'ABB', firmwareVersion: '3.0.1' }
-  ];
-
+  };
+  
   // Fetch data from the database with separate API calls
   const fetchData = async () => {
     setLoading(true);
+    console.log('Starting to fetch data...');
     
     // First, let's get the stations
     try {
-      const stationsResponse = await axios({
-        method: 'get',
-        url: 'http://localhost:3000/api/stations',
+      console.log('Fetching stations...');
+      const token = localStorage.getItem('token');
+      console.log('Using token for stations:', token ? 'Token exists' : 'No token found');
+      
+      const stationsResponse = await api.get('/stations', {
         headers: {
-          'Authorization': 'Bearer dev-mock-token-for-testing',
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       });
       
-      console.log('Stations API response:', stationsResponse.data);
+      console.log('Stations API response status:', stationsResponse.status);
+      console.log('Stations API response data:', stationsResponse.data);
       
-      if (stationsResponse.data && stationsResponse.data.stations) {
-        setStations(stationsResponse.data.stations);
+      // Handle stations response
+      if (stationsResponse.data) {
+        if (Array.isArray(stationsResponse.data)) {
+          console.log('Setting stations from direct array');
+          setStations(stationsResponse.data);
+        } else if (stationsResponse.data.stations) {
+          console.log('Setting stations from response.data.stations');
+          setStations(stationsResponse.data.stations);
+        } else if (stationsResponse.data.data) {
+          console.log('Setting stations from response.data.data');
+          setStations(stationsResponse.data.data);
+        } else {
+          console.warn('Unexpected stations response format:', stationsResponse.data);
+        }
+      } else {
+        console.warn('Empty stations response');
       }
     } catch (stationsError) {
-      console.error('Error fetching stations:', stationsError);
+      console.error('Error fetching stations:', {
+        message: stationsError.message,
+        response: stationsError.response ? {
+          status: stationsError.response.status,
+          statusText: stationsError.response.statusText,
+          data: stationsError.response.data
+        } : 'No response'
+      });
+      
+      setErrorState({
+        hasError: true,
+        type: 'error',
+        message: 'Failed to load charging stations.'
+      });
     }
     
-    // Now, get the transactions separately
+    // Then fetch transactions
     try {
-      console.log('Fetching transactions with filters:', filters);
+      console.log('Fetching transactions...');
+      const transactions = await fetchTransactions();
+      console.log('Raw transactions from fetchTransactions:', transactions);
       
-      // Build query parameters
-      const params = {};
-      if (filters.stationId) params.chargePointId = filters.stationId;
-      if (filters.status) params.status = filters.status;
-      if (filters.idTag) params.idTag = filters.idTag;
-      if (filters.dateRange.startDate) params.startDate = filters.dateRange.startDate.toISOString();
-      if (filters.dateRange.endDate) params.endDate = filters.dateRange.endDate.toISOString();
-      
-      // Attempt to use mock data for now since API seems to fail
-      let txData = null;
-      
-      // Try direct API call first
-      try {
-        console.log('Trying direct API call first...');
-        const directResponse = await fetch('http://localhost:3000/api/transactions', {
-          method: 'GET',
-          headers: {
-            'Authorization': 'Bearer dev-mock-token-for-testing',
-            'Content-Type': 'application/json'
-          }
-        });
-        
-        if (directResponse.ok) {
-          txData = await directResponse.json();
-          console.log('Direct API call success:', txData);
-        } else {
-          console.error('Direct API call failed with status:', directResponse.status);
-        }
-      } catch (directError) {
-        console.error('Direct API call error:', directError);
-      }
-      
-      // If direct call failed, try axios
-      if (!txData) {
-        try {
-          console.log('Trying axios as fallback...');
-          const axiosResponse = await axios({
-            method: 'get',
-            url: 'http://localhost:3000/api/transactions',
-            headers: {
-              'Authorization': 'Bearer dev-mock-token-for-testing',
-              'Content-Type': 'application/json'
-            },
-            params: params
+      if (transactions && transactions.length > 0) {
+        console.log(`Processing ${transactions.length} transactions`);
+        const processedTransactions = transactions.map(tx => {
+          // Debug log for each transaction
+          console.log('Processing transaction:', {
+            id: tx.id,
+            transactionId: tx.transactionId,
+            chargePointId: tx.chargePointId,
+            status: tx.status,
+            startTime: tx.startTime,
+            stopTime: tx.stopTime,
+            charging_station: tx.charging_station
           });
           
-          txData = axiosResponse.data;
-          console.log('Axios API call success:', txData);
-        } catch (axiosError) {
-          console.error('Axios API call error:', axiosError);
-        }
-      }
-      
-      // If both API calls failed, use mock data
-      if (!txData) {
-        console.log('API calls failed, using mock data');
-        // Filter mock transactions according to filters
-        let filteredMockTransactions = [...NIGERIAN_MOCK_TRANSACTIONS];
-        
-        if (filters.stationId) {
-          filteredMockTransactions = filteredMockTransactions.filter(tx => 
-            tx.chargePointId === filters.stationId);
-        }
-        
-        if (filters.status) {
-          filteredMockTransactions = filteredMockTransactions.filter(tx => 
-            tx.status === filters.status);
-        }
-        
-        if (filters.idTag) {
-          filteredMockTransactions = filteredMockTransactions.filter(tx => 
-            tx.idTag.includes(filters.idTag));
-        }
-        
-        txData = {
-          success: true,
-          transactions: filteredMockTransactions
-        };
-      }
-      
-      // Process transaction data
-      if (txData && txData.transactions && txData.transactions.length > 0) {
-        const processedTransactions = txData.transactions.map(tx => ({
-          ...tx,
-          startTime: tx.startTime ? new Date(tx.startTime) : null,
-          stopTime: tx.stopTime ? new Date(tx.stopTime) : null,
-          energyDelivered: typeof tx.energyDelivered === 'number' ? tx.energyDelivered : 0,
-          status: tx.status || 'Unknown'
-        }));
+          return {
+            ...tx,
+            transactionId: tx.transactionId || tx.id, // Handle both formats
+            chargePointId: tx.chargePointId || (tx.charging_station ? tx.charging_station.chargePointId : null),
+            startTime: tx.startTime ? new Date(tx.startTime) : null,
+            stopTime: tx.stopTime ? new Date(tx.stopTime) : null,
+            energyDelivered: typeof tx.energyDelivered === 'number' 
+              ? tx.energyDelivered 
+              : (tx.stopMeterValue && tx.startMeterValue 
+                  ? parseFloat((tx.stopMeterValue - tx.startMeterValue).toFixed(2))
+                  : 0),
+            status: tx.status || 'Completed',
+            charging_station: tx.charging_station || {
+              name: tx.chargePointId ? `Station ${tx.chargePointId}` : 'Unknown Station',
+              model: 'N/A',
+              vendor: 'N/A',
+              chargePointId: tx.chargePointId || 'N/A'
+            }
+          };
+        });
         
         console.log('Processed transactions:', processedTransactions);
         setTransactions(processedTransactions);
@@ -263,26 +232,51 @@ function TransactionList() {
           message: ''
         });
       } else {
-        console.log('No transactions found');
+        // No transactions found in the database
+        console.log('No transactions found in the database');
         setTransactions([]);
         setErrorState({
           hasError: true,
           type: 'info',
-          message: 'No transactions found. Try adjusting your filters or start a new charging session.'
+          message: 'No transactions found in the database.'
         });
       }
     } catch (error) {
-      console.error('Error in transaction processing:', error);
-      console.error('Error details:', error.response ? error.response.data : 'No response data');
-      console.error('Error status:', error.response ? error.response.status : 'No status');
-      console.error('Error message:', error.message);
+      console.error('Failed to fetch transactions:', {
+        message: error.message,
+        response: error.response ? {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data
+        } : 'No response',
+        stack: error.stack
+      });
+      
+      // Set a more specific error message based on the response status
+      let errorMessage = 'Failed to load transactions from the server. Please try again later.';
+      
+      if (error.response) {
+        if (error.response.status === 401) {
+          errorMessage = 'Authentication failed. Please log in again.';
+        } else if (error.response.status === 403) {
+          errorMessage = 'You do not have permission to view transactions.';
+        } else if (error.response.status === 404) {
+          errorMessage = 'The transactions endpoint was not found.';
+        } else if (error.response.status >= 500) {
+          errorMessage = 'Server error. Please try again later.';
+        }
+      } else if (error.message === 'Network Error') {
+        errorMessage = 'Unable to connect to the server. Please check your internet connection.';
+      }
+      
       setTransactions([]);
       setErrorState({
         hasError: true,
         type: 'error',
-        message: `Error: ${error.message}. ${error.response ? `Status: ${error.response.status}` : ''}`
+        message: errorMessage
       });
     } finally {
+      console.log('Finished loading data');
       setLoading(false);
     }
   };

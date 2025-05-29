@@ -34,7 +34,8 @@ import {
     MoreVert as MoreIcon,
     Update as FirmwareIcon,
     Description as LogsIcon,
-    Info as InfoIcon
+    Info as InfoIcon,
+    FiberManualRecord as FiberManualRecordIcon
 } from '@mui/icons-material';
 import {
     Chart as ChartJS,
@@ -99,34 +100,79 @@ function Dashboard() {
     const fetchDashboardData = async () => {
         setLoading(true);
         try {
-            // Fetch summary statistics
-            const statsResponse = await api.get('/stations/stats/summary');
-            const stationsResponse = await api.get('/stations');
-            const transactionsResponse = await api.get('/transactions?limit=5');
-            const energyResponse = await api.get('/transactions/stats/energy?period=week');
-
-            // Get station stats from statsResponse
+            // Fetch all data in parallel
+            const [
+                todayTransactions,
+                statsResponse,
+                stationsResponse,
+                transactionsResponse,
+                energyResponse,
+                stationUsageResponse
+            ] = await Promise.all([
+                // Get today's transactions
+                api.get('/transactions', {
+                    params: {
+                        startDate: new Date().setHours(0, 0, 0, 0),
+                        endDate: new Date().setHours(23, 59, 59, 999),
+                        status: 'Completed'
+                    }
+                }),
+                // Get summary statistics
+                api.get('/stations/stats/summary'),
+                // Get all stations
+                api.get('/stations'),
+                // Get recent transactions
+                api.get('/transactions?limit=5'),
+                // Get weekly energy stats
+                api.get('/transactions/stats/energy?period=week'),
+                // Get station usage
+                api.get('/transactions/stats/usage?period=month')
+            ]);
+            
+            // Calculate daily energy and revenue from today's transactions
+            let dailyEnergy = 0;
+            let dailyRevenue = 0;
+            
+            console.log('Today\'s transactions:', todayTransactions.data);
+            
+            if (todayTransactions.data?.transactions?.length > 0) {
+                todayTransactions.data.transactions.forEach(transaction => {
+                    // Sum up energy delivered (convert to number if it's a string)
+                    const energy = parseFloat(transaction.energyDelivered) || 0;
+                    dailyEnergy += energy;
+                    
+                    // Sum up amount (convert to number if it's a string)
+                    const amount = parseFloat(transaction.amount) || 0;
+                    dailyRevenue += amount;
+                    
+                    console.log('Transaction:', {
+                        id: transaction.id,
+                        energyDelivered: transaction.energyDelivered,
+                        amount: transaction.amount,
+                        timestamp: transaction.timestamp || transaction.startTime
+                    });
+                });
+            }
+            
+            console.log('Calculated values:', { dailyEnergy, dailyRevenue });
+            
+            // Get station stats
             const stats = statsResponse.data.stats || {};
-            console.log('Station stats from API:', stats);
+            const stationCount = stationsResponse.data.stations?.length || 0;
 
-            // Get station count from stations response as backup
-            const stationCount = stationsResponse.data.stations ? stationsResponse.data.stations.length : 0;
-
-            // Get energy data
-            const energyToday = energyResponse.data.totalEnergy || 0;
-
-            // Set stats with prioritizing actual data
-            setStats({
-                // Use stats from stats endpoint if available, otherwise use station count
+            // Update stats with all data
+            setStats(prev => ({
+                ...prev,
                 totalStations: stats.totalStations || stationCount,
                 connectedStations: stats.connectedStations || 0,
                 activeTransactions: stats.activeTransactions || 0,
-                energyToday: energyToday,
-                revenueToday: calculatePrice(energyToday)
-            });
+                energyToday: dailyEnergy,
+                revenueToday: dailyRevenue
+            }));
 
-            setStations(stationsResponse.data.stations);
-            setTransactions(transactionsResponse.data.transactions);
+            // Update stations and transactions
+            setStations(stationsResponse.data.stations || []);
+            setTransactions(transactionsResponse.data.transactions || []);
 
             // Process weekly energy data to ensure we have all days of the week
             const processedWeeklyData = () => {
@@ -243,18 +289,19 @@ function Dashboard() {
                 }]
             });
 
-            // Fetch station usage data
-            const usageResponse = await api.get('/transactions/stats/usage?period=month');
-
-            setStationUsage({
-                labels: usageResponse.data.stationUsage.map(item =>
-                    item.charging_station ?.name || item.chargePointId),
-                datasets: [{
-                    label: 'Transactions',
-                    data: usageResponse.data.stationUsage.map(item => parseInt(item.count)),
-                    backgroundColor: 'rgba(56, 142, 60, 0.8)',
-                }]
-            });
+            // Process station usage data
+            if (stationUsageResponse?.data?.stationUsage) {
+                setStationUsage({
+                    labels: stationUsageResponse.data.stationUsage.map(item =>
+                        item.charging_station?.name || item.chargePointId || 'Unknown'
+                    ),
+                    datasets: [{
+                        label: 'Transactions',
+                        data: stationUsageResponse.data.stationUsage.map(item => parseInt(item.count) || 0),
+                        backgroundColor: 'rgba(56, 142, 60, 0.8)',
+                    }]
+                });
+            }
 
             setLoading(false);
         } catch (error) {
@@ -365,788 +412,553 @@ function Dashboard() {
         },
     };
 
-    return ( <
-        Box >
-        <
-        Box sx = {
-            {
+    return (
+        <Box>
+            <Box sx={{
                 mb: 3,
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center'
-            }
-        } >
-        <
-        Box >
-        <
-        Typography variant = "h4"
-        component = "h1" >
-        Dashboard <
-        /Typography> <
-        Typography variant = "subtitle2"
-        color = "primary" >
-        EV Charging Network - {
-            format(new Date(), 'EEEE, dd MMMM yyyy')
-        } <
-        /Typography> <
-        /Box> <
-        Box >
-        <
-        Button variant = "outlined"
-        startIcon = {
-            < FirmwareIcon / >
-        }
-        sx = {
-            {
-                mr: 1
-            }
-        }
-        onClick = {
-            handleFirmwareClick
-        } >
-        Firmware <
-        /Button> <
-        Button variant = "outlined"
-        startIcon = {
-            < LogsIcon / >
-        }
-        sx = {
-            {
-                mr: 1
-            }
-        }
-        onClick = {
-            handleDiagnosticsClick
-        } >
-        Diagnostics <
-        /Button> <
-        IconButton onClick = {
-            fetchDashboardData
-        } >
-        <
-        RefreshIcon / >
-        <
-        /IconButton> <
-        /Box> <
-        /Box>
+            }}>
+                <Box>
+                    <Typography variant="h4" component="h1">
+                        Dashboard
+                    </Typography>
+                    <Typography variant="subtitle2" color="primary">
+                        EV Charging Network - {format(new Date(), 'EEEE, dd MMMM yyyy')}
+                    </Typography>
+                </Box>
+                <Box>
+                    <Button 
+                        variant="outlined"
+                        startIcon={<FirmwareIcon />}
+                        sx={{ mr: 1 }}
+                        onClick={handleFirmwareClick}
+                    >
+                        Firmware
+                    </Button>
+                    <Button 
+                        variant="outlined"
+                        startIcon={<LogsIcon />}
+                        sx={{ mr: 1 }}
+                        onClick={handleDiagnosticsClick}
+                    >
+                        Diagnostics
+                    </Button>
+                    <IconButton onClick={fetchDashboardData}>
+                        <RefreshIcon />
+                    </IconButton>
+                </Box>
+            </Box>
 
-        {
-            loading && < LinearProgress sx = {
-                {
-                    mb: 3
-                }
-            }
-            />}
+            {loading && <LinearProgress sx={{ mb: 3 }} />}
+            <Grid container spacing={3} sx={{ mb: 3 }}>
+                <Grid item xs={12} sm={6} md={2}>
+                    <Paper 
+                        elevation={2}
+                        sx={{
+                            p: 2,
+                            height: '100%',
+                            borderRadius: 2,
+                            background: 'linear-gradient(45deg, #f5f7fa 0%, #eef2f5 100%)',
+                            '&:hover': {
+                                boxShadow: 3
+                            }
+                        }}
+                    >
+                        <Box sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            mb: 1
+                        }}>
+                            <StationIcon 
+                                fontSize="large" 
+                                color="primary"
+                                sx={{ mr: 1 }}
+                            />
+                            <Typography 
+                                variant="h6"
+                                color="text.secondary"
+                                sx={{
+                                    fontWeight: 'medium'
+                                }}
+                            >
+                                Total Stations
+                            </Typography>
+                        </Box>
+                        <Typography 
+                            variant="h4"
+                            component="div"
+                            sx={{
+                                fontWeight: 'bold',
+                                mb: 1
+                            }}
+                        >
+                            {stats.totalStations}
+                        </Typography>
+                        <Tooltip title="Connected / Total Stations">
+                            <LinearProgress 
+                                variant="determinate"
+                                value={(stats.connectedStations / stats.totalStations) * 100 || 0}
+                                sx={{
+                                    height: 6,
+                                    borderRadius: 3,
+                                    mb: 1
+                                }}
+                            />
+                        </Tooltip>
+                        <Box sx={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                        }}>
+                            <Typography variant="caption" color="text.secondary">
+                                {`${stats.connectedStations || 0} Connected`}
+                            </Typography>
+                            <Tooltip title="Station Uptime">
+                                <Typography 
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{
+                                        display: 'flex',
+                                        alignItems: 'center'
+                                    }}
+                                >
+                                    <FiberManualRecordIcon 
+                                        fontSize="small"
+                                        sx={{
+                                            color: 'success.main',
+                                            fontSize: '0.75rem',
+                                            mr: 0.5
+                                        }}
+                                    />
+                                    {'98.5%'}
+                                </Typography>
+                            </Tooltip>
+                        </Box>
+                    </Paper>
+                </Grid>
 
-            {
-                /* Stats cards */ } <
-            Grid container spacing = {
-                3
-            }
-            sx = {
-                    {
-                        mb: 3
-                    }
-                } >
-                <
-                Grid item xs = {
-                    12
-                }
-            sm = {
-                6
-            }
-            md = {
-                    2
-                } >
-                <
-                Paper elevation = {
-                    2
-                }
-            sx = {
-                    {
-                        p: 2,
-                        height: '100%',
-                        borderRadius: 2
-                    }
-                } >
-                <
-                Box sx = {
-                    {
-                        display: 'flex',
-                        alignItems: 'center'
-                    }
-                } >
-                <
-                StationIcon color = "primary"
-            sx = {
-                {
-                    fontSize: 36,
-                    mr: 1
-                }
-            }
-            /> <
-            Box >
-                <
-                Typography variant = "h5"
-            component = "div" > {
-                    stats.totalStations
-                } <
-                /Typography> <
-                Typography variant = "body2"
-            color = "text.secondary" >
-                Total Stations <
-                /Typography> <
-                /Box> <
-                /Box> <
-                /Paper> <
-                /Grid>
+                <Grid item xs={12} sm={6} md={2}>
+                    <Paper 
+                        elevation={2}
+                        sx={{
+                            p: 2,
+                            height: '100%',
+                            borderRadius: 2,
+                            background: 'linear-gradient(45deg, #f5f7fa 0%, #eef2f5 100%)',
+                            '&:hover': {
+                                boxShadow: 3
+                            }
+                        }}
+                    >
+                        <Box sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            mb: 1
+                        }}>
+                            <ChargingIcon 
+                                fontSize="large" 
+                                color="success"
+                                sx={{ mr: 1 }}
+                            />
+                            <Typography 
+                                variant="h6"
+                                color="text.secondary"
+                                sx={{
+                                    fontWeight: 'medium'
+                                }}
+                            >
+                                Connected Stations
+                            </Typography>
+                        </Box>
+                        <Typography 
+                            variant="h4"
+                            component="div"
+                            sx={{
+                                fontWeight: 'bold',
+                                mb: 1
+                            }}
+                        >
+                            {stats.connectedStations}
+                        </Typography>
+                        <Tooltip title="Connected / Total Stations">
+                            <LinearProgress 
+                                variant="determinate"
+                                value={(stats.connectedStations / stats.totalStations) * 100 || 0}
+                                sx={{
+                                    height: 6,
+                                    borderRadius: 3,
+                                    mb: 1
+                                }}
+                            />
+                        </Tooltip>
+                        <Box sx={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                        }}>
+                            <Typography variant="caption" color="text.secondary">
+                                {`${stats.totalStations || 0} Total`}
+                            </Typography>
+                            <Tooltip title="Station Uptime">
+                                <Typography 
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{
+                                        display: 'flex',
+                                        alignItems: 'center'
+                                    }}
+                                >
+                                    <FiberManualRecordIcon 
+                                        fontSize="small"
+                                        sx={{
+                                            color: 'success.main',
+                                            fontSize: '0.75rem',
+                                            mr: 0.5
+                                        }}
+                                    />
+                                    {'98.5%'}
+                                </Typography>
+                            </Tooltip>
+                        </Box>
+                    </Paper>
+                </Grid>
 
-                <
-                Grid item xs = {
-                    12
-                }
-            sm = {
-                6
-            }
-            md = {
-                    2
-                } >
-                <
-                Paper elevation = {
-                    2
-                }
-            sx = {
-                    {
-                        p: 2,
-                        height: '100%',
-                        borderRadius: 2
-                    }
-                } >
-                <
-                Box sx = {
-                    {
-                        display: 'flex',
-                        alignItems: 'center'
-                    }
-                } >
-                <
-                ChargingIcon color = "success"
-            sx = {
-                {
-                    fontSize: 36,
-                    mr: 1
-                }
-            }
-            /> <
-            Box >
-                <
-                Typography variant = "h5"
-            component = "div" > {
-                    stats.connectedStations
-                } <
-                /Typography> <
-                Typography variant = "body2"
-            color = "text.secondary" >
-                Connected Stations <
-                /Typography> <
-                /Box> <
-                /Box> <
-                /Paper> <
-                /Grid>
+                <Grid item xs={12} sm={6} md={2}>
+                    <Paper 
+                        elevation={2}
+                        sx={{
+                            p: 2,
+                            height: '100%',
+                            borderRadius: 2,
+                            background: 'linear-gradient(45deg, #f5f7fa 0%, #eef2f5 100%)',
+                            '&:hover': {
+                                boxShadow: 3
+                            }
+                        }}
+                    >
+                        <Box sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            mb: 1
+                        }}>
+                            <TransactionIcon 
+                                fontSize="large" 
+                                color="primary"
+                                sx={{ mr: 1 }}
+                            />
+                            <Typography 
+                                variant="h6"
+                                color="text.secondary"
+                                sx={{
+                                    fontWeight: 'medium'
+                                }}
+                            >
+                                Active Transactions
+                            </Typography>
+                        </Box>
+                        <Typography 
+                            variant="h4"
+                            component="div"
+                            sx={{
+                                fontWeight: 'bold',
+                                mb: 1
+                            }}
+                        >
+                            {stats.activeTransactions}
+                        </Typography>
+                        <Tooltip title="Active / Total Transactions">
+                            <LinearProgress 
+                                variant="determinate"
+                                value={(stats.activeTransactions / stats.totalTransactions) * 100 || 0}
+                                sx={{
+                                    height: 6,
+                                    borderRadius: 3,
+                                    mb: 1
+                                }}
+                            />
+                        </Tooltip>
+                        <Box sx={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                        }}>
+                            <Typography variant="caption" color="text.secondary">
+                                {`${stats.totalTransactions || 0} Total`}
+                            </Typography>
+                            <Tooltip title="Transaction Success Rate">
+                                <Typography 
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{
+                                        display: 'flex',
+                                        alignItems: 'center'
+                                    }}
+                                >
+                                    <FiberManualRecordIcon 
+                                        fontSize="small"
+                                        sx={{
+                                            color: 'success.main',
+                                            fontSize: '0.75rem',
+                                            mr: 0.5
+                                        }}
+                                    />
+                                    {'99.9%'}
+                                </Typography>
+                            </Tooltip>
+                        </Box>
+                    </Paper>
+                </Grid>
 
-                <
-                Grid item xs = {
-                    12
-                }
-            sm = {
-                6
-            }
-            md = {
-                    2
-                } >
-                <
-                Paper elevation = {
-                    2
-                }
-            sx = {
-                    {
-                        p: 2,
-                        height: '100%',
-                        borderRadius: 2
-                    }
-                } >
-                <
-                Box sx = {
-                    {
-                        display: 'flex',
-                        alignItems: 'center'
-                    }
-                } >
-                <
-                TransactionIcon color = "primary"
-            sx = {
-                {
-                    fontSize: 36,
-                    mr: 1
-                }
-            }
-            /> <
-            Box >
-                <
-                Typography variant = "h5"
-            component = "div" > {
-                    stats.activeTransactions
-                } <
-                /Typography> <
-                Typography variant = "body2"
-            color = "text.secondary" >
-                Active Transactions <
-                /Typography> <
-                /Box> <
-                /Box> <
-                /Paper> <
-                /Grid>
+                {/* Active Transactions Card */}
+                <Grid item xs={12} sm={6} md={2}>
+                    <Paper elevation={2} sx={{ p: 2, height: '100%', borderRadius: 2 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                            <TransactionIcon color="primary" sx={{ fontSize: 36, mr: 1 }} />
+                            <Box>
+                                <Typography variant="h5" component="div">
+                                    {stats.activeTransactions}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                    Active Transactions
+                                </Typography>
+                            </Box>
+                        </Box>
+                    </Paper>
+                </Grid>
 
-                <
-                Grid item xs = {
-                    12
-                }
-            sm = {
-                6
-            }
-            md = {
-                    2
-                } >
-                <
-                Paper elevation = {
-                    2
-                }
-            sx = {
-                    {
-                        p: 2,
-                        height: '100%',
-                        borderRadius: 2
-                    }
-                } >
-                <
-                Box sx = {
-                    {
-                        display: 'flex',
-                        alignItems: 'center'
-                    }
-                } >
-                <
-                EnergyIcon color = "warning"
-            sx = {
-                {
-                    fontSize: 36,
-                    mr: 1
-                }
-            }
-            /> <
-            Box >
-                <
-                Typography variant = "h5"
-            component = "div" > {
-                (stats.energyToday || 0).toFixed(2)
-            }
-            kWh
-                <
-                /Typography> <
-                Typography variant = "body2"
-            color = "text.secondary" >
-                Energy Today <
-                /Typography> <
-                /Box> <
-                /Box> <
-                /Paper> <
-                /Grid>
+                {/* Energy Today Card */}
+                <Grid item xs={12} sm={6} md={2}>
+                    <Paper elevation={2} sx={{ p: 2, height: '100%', borderRadius: 2 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                            <EnergyIcon color="warning" sx={{ fontSize: 36, mr: 1 }} />
+                            <Box>
+                                <Typography variant="h4" component="div">
+                                    {stats.energyToday.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} kWh
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                    Energy Today
+                                </Typography>
+                            </Box>
+                        </Box>
+                    </Paper>
+                </Grid>
 
-                <
-                Grid item xs = {
-                    12
-                }
-            sm = {
-                6
-            }
-            md = {
-                    4
-                } >
-                <
-                Paper elevation = {
-                    2
-                }
-            sx = {
-                    {
-                        p: 2,
-                        height: '100%',
-                        borderRadius: 2
-                    }
-                } >
-                <
-                Box sx = {
-                    {
-                        display: 'flex',
-                        alignItems: 'center'
-                    }
-                } >
-                <
-                IconButton sx = {
-                    {
-                        backgroundColor: 'rgba(0, 120, 0, 0.1)',
-                        mr: 1
-                    }
-                } >
-                <
-                Typography variant = "h6"
-            color = "success.main"
-            sx = {
-                    {
-                        fontWeight: 'bold'
-                    }
-                } > ₦ < /Typography> <
-                /IconButton> <
-                Box >
-                <
-                Typography variant = "h5"
-            component = "div" > {
-                    formatCurrency(stats.revenueToday || 0)
-                } <
-                /Typography> <
-                Typography variant = "body2"
-            color = "text.secondary"
-            sx = {
-                    {
-                        display: 'flex',
-                        alignItems: 'center'
-                    }
-                } >
-                Nigerian Revenue Today <
-                Tooltip title = "Revenue based on Nigerian electricity pricing model with peak/off-peak rates" >
-                <
-                InfoIcon fontSize = "small"
-            sx = {
-                {
-                    ml: 0.5,
-                    color: 'text.secondary'
-                }
-            }
-            /> <
-            /Tooltip> <
-            /Typography> <
-            /Box> <
-            /Box> <
-            /Paper> <
-            /Grid> <
-            /Grid>
+                <Grid item xs={12} sm={6} md={2}>
+                    <Paper elevation={2} sx={{ p: 2, height: '100%', borderRadius: 2 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                            <IconButton sx={{ backgroundColor: 'rgba(0, 120, 0, 0.1)', mr: 1 }}>
+                                <Typography variant="h6" color="success.main" sx={{ fontWeight: 'bold' }}>₦</Typography>
+                            </IconButton>
+                            <Box>
+                                <Typography variant="h4" component="div">
+                                    ₦{stats.revenueToday.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary" sx={{ display: 'flex', alignItems: 'center' }}>
+                                    Revenue Today
+                                    <Tooltip title="Revenue based on Nigerian electricity pricing model with peak/off-peak rates">
+                                        <InfoIcon fontSize="small" sx={{ ml: 0.5, color: 'text.secondary' }} />
+                                    </Tooltip>
+                                </Typography>
+                            </Box>
+                        </Box>
+                    </Paper>
+                </Grid>
+            </Grid>
 
-            {
-                /* Space for optional content */ }
+            {/* Main content */}
+            <Grid container spacing={3}>
+                {/* Stations section */}
+                <Grid item xs={12} md={6}>
+                    <Card sx={{ height: '100%', borderRadius: 2 }}>
+                        <CardHeader
+                            title="Charging Stations"
+                            action={
+                                <IconButton onClick={() => navigate('/stations')}>
+                                    <MoreIcon />
+                                </IconButton>
+                            }
+                        />
+                        <Divider />
+                        <CardContent sx={{ maxHeight: 350, overflow: 'auto' }}>
+                            {stations.length === 0 ? (
+                                <Typography variant="body2" color="text.secondary" align="center">
+                                    No stations available
+                                </Typography>
+                            ) : (
+                                <List>
+                                    {stations.slice(0, 5).map((station) => {
+                                        const realtimeStatus = getRealtimeStatus(station.chargePointId);
+                                        const displayStatus = realtimeStatus || station.status;
 
-            {
-                /* Main content */ } <
-            Grid container spacing = {
-                    3
-                } > {
-                    /* Stations section */ } <
-                Grid item xs = {
-                    12
-                }
-            md = {
-                    6
-                } >
-                <
-                Card sx = {
-                    {
-                        height: '100%',
-                        borderRadius: 2
-                    }
-                } >
-                <
-                CardHeader
-            title = "Charging Stations"
-            action = {
-                <
-                IconButton onClick = {
-                    () => navigate('/stations')
-                } >
-                <
-                MoreIcon / >
-                <
-                /IconButton>
-            }
-            /> <
-            Divider / >
-                <
-                CardContent sx = {
-                    {
-                        maxHeight: 350,
-                        overflow: 'auto'
-                    }
-                } > {
-                    stations.length === 0 ? ( <
-                        Typography variant = "body2"
-                        color = "text.secondary"
-                        align = "center" >
-                        No stations available <
-                        /Typography>
-                    ) : ( <
-                        List > {
-                            stations.slice(0, 5).map((station) => {
-                                const realtimeStatus = getRealtimeStatus(station.chargePointId);
-                                const displayStatus = realtimeStatus || station.status;
+                                        return (
+                                            <React.Fragment key={station.chargePointId}>
+                                                <ListItem 
+                                                    button 
+                                                    onClick={() => handleStationClick(station.chargePointId)}
+                                                >
+                                                    <ListItemText 
+                                                        primary={
+                                                            <Box 
+                                                                sx={{
+                                                                    display: 'flex',
+                                                                    alignItems: 'center',
+                                                                    justifyContent: 'space-between'
+                                                                }}
+                                                                component="span"
+                                                            >
+                                                                <Typography variant="subtitle1" component="span">
+                                                                    {station.name}
+                                                                </Typography>
+                                                                <Chip
+                                                                    label={displayStatus}
+                                                                    size="small"
+                                                                    color={getStatusColor(displayStatus)}
+                                                                />
+                                                            </Box>
+                                                        }
+                                                        secondary={
+                                                            <Box 
+                                                                sx={{
+                                                                    display: 'flex',
+                                                                    alignItems: 'center',
+                                                                    justifyContent: 'space-between',
+                                                                    mt: 1
+                                                                }}
+                                                                component="span"
+                                                            >
+                                                                <Typography variant="body2" color="text.secondary" component="span">
+                                                                    ID: {station.chargePointId}
+                                                                </Typography>
+                                                                <Typography variant="body2" color="text.secondary" component="span">
+                                                                    {station.model} • {station.vendor}
+                                                                </Typography>
+                                                            </Box>
+                                                        }
+                                                    />
+                                                </ListItem>
+                                                <Divider />
+                                            </React.Fragment>
+                                        );
+                                    })}
+                                </List>
+                            )}
+                        </CardContent>
+                        <Box sx={{ mt: 2, display: 'flex', justifyContent: 'center', pb: 2 }}>
+                            <Button
+                                variant="outlined"
+                                size="small"
+                                onClick={() => navigate('/stations')}
+                            >
+                                View All Stations
+                            </Button>
+                        </Box>
+                    </Card>
+                </Grid>
 
-                                return ( <
-                                    React.Fragment key = {
-                                        station.chargePointId
-                                    } >
-                                    <
-                                    ListItem button onClick = {
-                                        () => handleStationClick(station.chargePointId)
-                                    } >
-                                    <
-                                    ListItemText primary = {
-                                        <
-                                        Box sx = {
-                                            {
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'space-between'
-                                            }
-                                        }
-                                        component = "span" >
-                                        <
-                                        Typography variant = "subtitle1"
-                                        component = "span" > {
-                                            station.name
-                                        } <
-                                        /Typography> <
-                                        Chip
-                                        label = {
-                                            displayStatus
-                                        }
-                                        size = "small"
-                                        color = {
-                                            getStatusColor(displayStatus)
-                                        }
-                                        /> <
-                                        /Box>
-                                    }
-                                    secondary = {
-                                        <
-                                        Box sx = {
-                                            {
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'space-between',
-                                                mt: 1
-                                            }
-                                        }
-                                        component = "span" >
-                                        <
-                                        Typography variant = "body2"
-                                        color = "text.secondary"
-                                        component = "span" >
-                                        ID: {
-                                            station.chargePointId
-                                        } <
-                                        /Typography> <
-                                        Typography variant = "body2"
-                                        color = "text.secondary"
-                                        component = "span" > {
-                                            station.model
-                                        }• {
-                                            station.vendor
-                                        } <
-                                        /Typography> <
-                                        /Box>
-                                    }
-                                    /> <
-                                    /ListItem> <
-                                    Divider / >
-                                    <
-                                    /React.Fragment>
-                                );
-                            })
-                        } <
-                        /List>
-                    )
-                }
+        {/* Pricing Widget */}
+        <Grid item xs={12} md={3}>
+            <PricingWidget />
+        </Grid>
 
-                <
-                Box sx = {
-                    {
-                        mt: 2,
-                        display: 'flex',
-                        justifyContent: 'center'
-                    }
-                } >
-                <
-                Button
-            variant = "outlined"
-            size = "small"
-            onClick = {
-                    () => navigate('/stations')
-                } >
-                View All Stations <
-                /Button> <
-                /Box> <
-                /CardContent> <
-                /Card> <
-                /Grid>
+            {/* Recent transactions */}
+            <Grid item xs={12} md={3}>
+                <Card sx={{
+                    height: '100%',
+                    borderRadius: 2
+                }}>
+                    <CardHeader
+                        title="Recent Transactions"
+                        action={
+                            <IconButton onClick={() => navigate('/transactions')}>
+                                <MoreIcon />
+                            </IconButton>
+                        }
+                    />
+                    <Divider />
+                    <CardContent sx={{ maxHeight: 350, overflow: 'auto' }}>
+                        {transactions.length === 0 ? (
+                            <Typography variant="body2" color="text.secondary" align="center">
+                                No transactions available
+                            </Typography>
+                        ) : (
+                            <List>
+                                {transactions.map((transaction) => (
+                                    <React.Fragment key={transaction.id}>
+                                        <ListItem 
+                                            button 
+                                            onClick={() => navigate(`/transactions/${transaction.transactionId}`)}
+                                        >
+                                            <ListItemText 
+                                                primary={
+                                                    <Box 
+                                                        sx={{
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            justifyContent: 'space-between'
+                                                        }}
+                                                        component="span"
+                                                    >
+                                                        <Typography variant="subtitle1" component="span">
+                                                            Transaction #{transaction.transactionId}
+                                                        </Typography>
+                                                        <Chip
+                                                            label={transaction.status}
+                                                            size="small"
+                                                            color={transaction.status === 'InProgress' ? 'primary' : 'success'}
+                                                        />
+                                                    </Box>
+                                                }
+                                                secondary={
+                                                    <Box sx={{ mt: 1 }} component="span">
+                                                        <Grid container spacing={1} component="span">
+                                                            <Grid item xs={6} component="span">
+                                                                <Typography variant="body2" color="text.secondary" component="span">
+                                                                    Station: {transaction.charging_station?.name || transaction.chargePointId}
+                                                                </Typography>
+                                                            </Grid>
+                                                            <Grid item xs={6} component="span">
+                                                                <Typography variant="body2" color="text.secondary" component="span">
+                                                                    Start: {format(new Date(transaction.startTime), 'dd MMM yyyy HH:mm')}
+                                                                </Typography>
+                                                            </Grid>
+                                                            <Grid item xs={6} component="span">
+                                                                <Typography variant="body2" color="text.secondary" component="span">
+                                                                    ID Tag: {transaction.idTag}
+                                                                </Typography>
+                                                            </Grid>
+                                                            <Grid item xs={6} component="span">
+                                                                <Typography variant="body2" color="text.secondary" component="span">
+                                                                    Energy: {transaction.energyDelivered?.toFixed(2) || 0} kWh
+                                                                </Typography>
+                                                            </Grid>
+                                                        </Grid>
+                                                    </Box>
+                                                }
+                                            />
+                                        </ListItem>
+                                        <Divider />
+                                    </React.Fragment>
+                                ))}
+                            </List>
+                        )}
+                    </CardContent>
+                    <Box sx={{ mt: 2, display: 'flex', justifyContent: 'center', pb: 2 }}>
+                        <Button
+                            variant="outlined"
+                            size="small"
+                            onClick={() => navigate('/transactions')}
+                        >
+                            View All Transactions
+                        </Button>
+                    </Box>
+                </Card>
+            </Grid>
 
-            {
-                /* Pricing Widget */ } <
-            Grid item xs = {
-                12
-            }
-            md = {
-                    3
-                } >
-                <
-                PricingWidget / >
-                <
-                /Grid>
-
-            {
-                /* Recent transactions */ } <
-            Grid item xs = {
-                12
-            }
-            md = {
-                    3
-                } >
-                <
-                Card sx = {
-                    {
-                        height: '100%',
-                        borderRadius: 2
-                    }
-                } >
-                <
-                CardHeader
-            title = "Recent Transactions"
-            action = {
-                <
-                IconButton onClick = {
-                    () => navigate('/transactions')
-                } >
-                <
-                MoreIcon / >
-                <
-                /IconButton>
-            }
-            /> <
-            Divider / >
-                <
-                CardContent sx = {
-                    {
-                        maxHeight: 350,
-                        overflow: 'auto'
-                    }
-                } > {
-                    transactions.length === 0 ? ( <
-                        Typography variant = "body2"
-                        color = "text.secondary"
-                        align = "center" >
-                        No transactions available <
-                        /Typography>
-                    ) : ( <
-                        List > {
-                            transactions.map((transaction) => ( <
-                                React.Fragment key = {
-                                    transaction.id
-                                } >
-                                <
-                                ListItem button onClick = {
-                                    () => navigate(`/transactions/${transaction.transactionId}`)
-                                } >
-                                <
-                                ListItemText primary = {
-                                    <
-                                    Box sx = {
-                                        {
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'space-between'
-                                        }
-                                    }
-                                    component = "span" >
-                                    <
-                                    Typography variant = "subtitle1"
-                                    component = "span" >
-                                    Transaction # {
-                                        transaction.transactionId
-                                    } <
-                                    /Typography> <
-                                    Chip
-                                    label = {
-                                        transaction.status
-                                    }
-                                    size = "small"
-                                    color = {
-                                        transaction.status === 'InProgress' ? 'primary' : 'success'
-                                    }
-                                    /> <
-                                    /Box>
-                                }
-                                secondary = {
-                                    <
-                                    Box sx = {
-                                        {
-                                            mt: 1
-                                        }
-                                    }
-                                    component = "span" >
-                                    <
-                                    Grid container spacing = {
-                                        1
-                                    }
-                                    component = "span" >
-                                    <
-                                    Grid item xs = {
-                                        6
-                                    }
-                                    component = "span" >
-                                    <
-                                    Typography variant = "body2"
-                                    color = "text.secondary"
-                                    component = "span" >
-                                    Station: {
-                                        transaction.charging_station ?.name || transaction.chargePointId
-                                    } <
-                                    /Typography> <
-                                    /Grid> <
-                                    Grid item xs = {
-                                        6
-                                    }
-                                    component = "span" >
-                                    <
-                                    Typography variant = "body2"
-                                    color = "text.secondary"
-                                    component = "span" >
-                                    Start: {
-                                        format(new Date(transaction.startTime), 'dd MMM yyyy HH:mm')
-                                    } <
-                                    /Typography> <
-                                    /Grid> <
-                                    Grid item xs = {
-                                        6
-                                    }
-                                    component = "span" >
-                                    <
-                                    Typography variant = "body2"
-                                    color = "text.secondary"
-                                    component = "span" >
-                                    ID Tag: {
-                                        transaction.idTag
-                                    } <
-                                    /Typography> <
-                                    /Grid> <
-                                    Grid item xs = {
-                                        6
-                                    }
-                                    component = "span" >
-                                    <
-                                    Typography variant = "body2"
-                                    color = "text.secondary"
-                                    component = "span" >
-                                    Energy: {
-                                        transaction.energyDelivered ?.toFixed(2) || 0
-                                    }
-                                    kWh <
-                                    /Typography> <
-                                    /Grid> <
-                                    /Grid> <
-                                    /Box>
-                                }
-                                /> <
-                                /ListItem> <
-                                Divider / >
-                                <
-                                /React.Fragment>
-                            ))
-                        } <
-                        /List>
-                    )
-                }
-
-                <
-                Box sx = {
-                    {
-                        mt: 2,
-                        display: 'flex',
-                        justifyContent: 'center'
-                    }
-                } >
-                <
-                Button
-            variant = "outlined"
-            size = "small"
-            onClick = {
-                    () => navigate('/transactions')
-                } >
-                View All Transactions <
-                /Button> <
-                /Box> <
-                /CardContent> <
-                /Card> <
-                /Grid>
-
-            {
-                /* Energy Consumption Chart */ } <
-            Grid item xs = {
-                    12
-                } >
-                <
-                Card sx = {
-                    {
-                        height: '100%',
-                        borderRadius: 2,
-                        mt: 3
-                    }
-                } >
-                <
-                CardHeader
-            title = {
-                <
-                Box display = "flex"
-                alignItems = "center" >
-                <
-                Typography variant = "h6"
-                component = "div" > Energy Consumption < /Typography> <
-                Tooltip title = "Shows energy consumption patterns across charging stations" >
-                <
-                IconButton size = "small" >
-                <
-                InfoIcon fontSize = "small" / >
-                <
-                /IconButton> <
-                /Tooltip> <
-                /Box>
-            }
-            /> <
-            CardContent sx = {
-                    {
-                        height: 300
-                    }
-                } >
-                <
-                Line options = {
-                    lineChartOptions
-                }
-            data = {
-                energyData
-            }
-            height = {
-                270
-            }
-            /> <
-            /CardContent> <
-            /Card> <
-            /Grid> <
-            /Grid> <
-            /Box>
+            {/* End of main content */}
+            </Grid>
+        </Box>
         );
     }
 

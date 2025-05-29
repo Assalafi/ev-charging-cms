@@ -10,22 +10,22 @@ const axios = require('axios');
 const http = require('http');
 const WebSocket = require('ws');
 
+// Load configuration
+const config = require('../config/dashboard').dashboard;
+const API_URL = `${config.api.baseUrl}${config.api.prefix}`;
+
 // Create Express app
 const app = express();
 const server = http.createServer(app);
 
-// Configuration
-const PORT = 3001;
-const API_URL = 'http://localhost:3000/api';
-
 // Serve static files
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, config.staticDir)));
 app.use(express.json());
 
 // API proxy routes to communicate with the backend
-app.get('/api/stations', async (req, res) => {
+app.get(config.routes.stations, async (req, res) => {
   try {
-    const response = await axios.get(`${API_URL}/stations/diagnostic`);
+    const response = await axios.get(`${API_URL}${config.api.endpoints.stations}`);
     res.json(response.data);
   } catch (error) {
     console.error('Error fetching stations:', error.message);
@@ -33,9 +33,9 @@ app.get('/api/stations', async (req, res) => {
   }
 });
 
-app.get('/api/stations/:id', async (req, res) => {
+app.get(config.routes.stationDetail, async (req, res) => {
   try {
-    const response = await axios.get(`${API_URL}/stations/diagnostic/${req.params.id}`);
+    const response = await axios.get(`${API_URL}${config.api.endpoints.stationDetail.replace(':id', req.params.id)}`);
     res.json(response.data);
   } catch (error) {
     console.error(`Error fetching station ${req.params.id}:`, error.message);
@@ -43,9 +43,9 @@ app.get('/api/stations/:id', async (req, res) => {
   }
 });
 
-app.get('/api/stations/:id/connectors', async (req, res) => {
+app.get(config.routes.connectors, async (req, res) => {
   try {
-    const response = await axios.get(`${API_URL}/stations/diagnostic/${req.params.id}/connectors`);
+    const response = await axios.get(`${API_URL}${config.api.endpoints.connectors.replace(':id', req.params.id)}`);
     res.json(response.data);
   } catch (error) {
     console.error(`Error fetching connectors for ${req.params.id}:`, error.message);
@@ -53,9 +53,9 @@ app.get('/api/stations/:id/connectors', async (req, res) => {
   }
 });
 
-app.get('/api/stations/:id/transactions', async (req, res) => {
+app.get(config.routes.transactions, async (req, res) => {
   try {
-    const response = await axios.get(`${API_URL}/stations/diagnostic/${req.params.id}/transactions`, {
+    const response = await axios.get(`${API_URL}${config.api.endpoints.transactions.replace(':id', req.params.id)}`, {
       params: req.query
     });
     res.json(response.data);
@@ -65,9 +65,9 @@ app.get('/api/stations/:id/transactions', async (req, res) => {
   }
 });
 
-app.post('/api/stations/:id/start-transaction', async (req, res) => {
+app.post(config.routes.startTransaction, async (req, res) => {
   try {
-    const response = await axios.post(`${API_URL}/stations/diagnostic/${req.params.id}/remote-start`, req.body);
+    const response = await axios.post(`${API_URL}${config.api.endpoints.startTransaction.replace(':id', req.params.id)}`, req.body);
     res.json(response.data);
   } catch (error) {
     console.error(`Error starting transaction for ${req.params.id}:`, error.message);
@@ -75,9 +75,9 @@ app.post('/api/stations/:id/start-transaction', async (req, res) => {
   }
 });
 
-app.post('/api/stations/:id/stop-transaction', async (req, res) => {
+app.post(config.routes.stopTransaction, async (req, res) => {
   try {
-    const response = await axios.post(`${API_URL}/stations/diagnostic/${req.params.id}/remote-stop`, req.body);
+    const response = await axios.post(`${API_URL}${config.api.endpoints.stopTransaction.replace(':id', req.params.id)}`, req.body);
     res.json(response.data);
   } catch (error) {
     console.error(`Error stopping transaction for ${req.params.id}:`, error.message);
@@ -85,9 +85,9 @@ app.post('/api/stations/:id/stop-transaction', async (req, res) => {
   }
 });
 
-app.get('/api/ocpp/status', async (req, res) => {
+app.get(config.routes.ocppStatus, async (req, res) => {
   try {
-    const response = await axios.get(`${API_URL}/ocpp/status`);
+    const response = await axios.get(`${API_URL}${config.api.endpoints.ocppStatus}`);
     res.json(response.data);
   } catch (error) {
     console.error('Error fetching OCPP status:', error.message);
@@ -97,16 +97,16 @@ app.get('/api/ocpp/status', async (req, res) => {
 
 // Serve the main HTML file for all other routes
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.sendFile(path.join(__dirname, config.staticDir, 'index.html'));
 });
 
 // Start the server
-server.listen(PORT, () => {
-  console.log(`Web Dashboard running on http://localhost:${PORT}`);
+server.listen(config.port, config.host, () => {
+  console.log(`Web Dashboard running on ${config.baseUrl}`);
 });
 
 // WebSocket server for real-time updates
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ server, path: config.wsPath });
 
 wss.on('connection', (ws) => {
   console.log('Client connected to WebSocket');
@@ -117,7 +117,7 @@ wss.on('connection', (ws) => {
   // Set up interval to send updates
   const interval = setInterval(() => {
     sendOcppStatus(ws);
-  }, 5000);
+  }, config.updateInterval);
   
   ws.on('close', () => {
     console.log('Client disconnected from WebSocket');

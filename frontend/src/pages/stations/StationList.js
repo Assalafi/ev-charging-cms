@@ -46,11 +46,14 @@ import {
   Sync as SyncIcon,
   BatteryChargingFull as ChargingIcon,
   Description as LogsIcon,
-  Delete as DeleteIcon
+  Delete as DeleteIcon,
+  Visibility as VisibilityIcon
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import api from '../../services/api';
+import tagService from '../../services/tagService';
 import stationService from '../../services/stationService';
+import remoteCommandService from '../../services/remoteCommandService';
 import { useMQTT } from '../../contexts/MQTTContext';
 
 function StationList() {
@@ -66,6 +69,14 @@ function StationList() {
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [anchorEl, setAnchorEl] = useState(null);
   const [selectedStation, setSelectedStation] = useState(null);
+  const [startTransactionDialogOpen, setStartTransactionDialogOpen] = useState(false);
+  const [authorizedTags, setAuthorizedTags] = useState([]);
+  const [selectedTag, setSelectedTag] = useState('');
+  
+  // Transaction state
+  const [activeTransactions, setActiveTransactions] = useState([]);
+  const [selectedTransaction, setSelectedTransaction] = useState(null);
+  const [stopTransactionDialogOpen, setStopTransactionDialogOpen] = useState(false);
   
   // Delete station dialog
   const [openDeleteDialog, setOpenDeleteDialog] = useState(false);
@@ -104,6 +115,22 @@ function StationList() {
   useEffect(() => {
     fetchStations();
   }, []);
+  
+  // Update selected station when MQTT status changes
+  useEffect(() => {
+    if (selectedStation && stationStatus) {
+      // If we have a selected station and its status changes in MQTT
+      const updatedStatus = stationStatus[selectedStation.chargePointId];
+      if (updatedStatus) {
+        // Update the selected station with the new status
+        setSelectedStation(prev => ({
+          ...prev,
+          status: typeof updatedStatus === 'object' ? updatedStatus.status : updatedStatus,
+          isConnected: true // If we're getting MQTT updates, it must be connected
+        }));
+      }
+    }
+  }, [stationStatus, selectedStation]);
   
   // Handle menu open
   const handleMenuOpen = (event, station) => {
@@ -192,30 +219,107 @@ function StationList() {
     }
   };
   
-  // Handle remote start transaction
-  const handleRemoteStart = async () => {
+  // Fetch authorized tags
+  const fetchAuthorizedTags = async () => {
+    try {
+      const response = await tagService.getAllTags();
+      if (response.success && response.tags) {
+        setAuthorizedTags(response.tags);
+      } else {
+        console.error('Error fetching authorized tags:', response.message);
+        setError('Error fetching authorized tags');
+      }
+    } catch (error) {
+      console.error('Error fetching authorized tags:', error);
+      setError('Error fetching authorized tags');
+    }
+  };
+
+  // Open the start transaction dialog
+  const handleRemoteStart = () => {
     if (!selectedStation) return;
+    fetchAuthorizedTags();
+    setSelectedTag('');
+    setStartTransactionDialogOpen(true);
+    handleMenuClose();
+  };
+  
+  // Submit the start transaction request
+  const submitStartTransaction = async () => {
+    if (!selectedStation || !selectedTag) return;
     
     try {
-      await api.post(`/stations/${selectedStation.chargePointId}/remote-start`, {
-        idTag: 'test-user-id'
-      });
-      handleMenuClose();
+      // Use remoteCommandService for consistent API endpoint handling
+      await remoteCommandService.remoteStart(
+        selectedStation.chargePointId, 
+        selectedTag,
+        1 // Default connector ID
+      );
+      setStartTransactionDialogOpen(false);
+      setSuccess('Transaction started successfully');
+      setTimeout(() => setSuccess(null), 3000);
     } catch (error) {
       console.error('Error starting transaction:', error);
       setError('Failed to start transaction');
     }
   };
   
-  // Handle remote stop transaction
-  const handleRemoteStop = async () => {
-    if (!selectedStation) return;
+  // Fetch active transactions for a station
+  const fetchActiveTransactions = async (stationId) => {
+    if (!stationId) return;
     
     try {
-      await api.post(`/stations/${selectedStation.chargePointId}/remote-stop`, {
-        transactionId: selectedStation.currentTransaction
-      });
+      const response = await api.get(`/stations/${stationId}/transactions?status=InProgress`);
+      if (response.data && response.data.transactions) {
+        setActiveTransactions(response.data.transactions);
+        return response.data.transactions;
+      } else {
+        setActiveTransactions([]);
+        return [];
+      }
+    } catch (error) {
+      console.error('Error fetching active transactions:', error);
+      setError('Failed to fetch active transactions');
+      setActiveTransactions([]);
+      return [];
+    }
+  };
+
+  // Handle opening stop transaction dialog
+  const handleOpenStopDialog = async () => {
+    if (!selectedStation) return;
+    
+    // Fetch active transactions
+    const transactions = await fetchActiveTransactions(selectedStation.chargePointId);
+    
+    if (transactions.length === 0) {
+      setError('No active transactions found for this station');
+      return;
+    } else if (transactions.length === 1) {
+      // If only one transaction, select it automatically
+      setSelectedTransaction(transactions[0]);
+      setStopTransactionDialogOpen(true);
       handleMenuClose();
+    } else if (transactions.length > 1) {
+      // If multiple transactions, let user select
+      setSelectedTransaction(transactions[0]);
+      setStopTransactionDialogOpen(true);
+      handleMenuClose();
+    }
+  };
+  
+  // Handle remote stop transaction
+  const handleRemoteStop = async () => {
+    if (!selectedStation || !selectedTransaction) return;
+    
+    try {
+      await remoteCommandService.remoteStop(
+        selectedStation.chargePointId,
+        selectedTransaction.transactionId
+      );
+      setStopTransactionDialogOpen(false);
+      setSuccess('Transaction stopped successfully');
+      setTimeout(() => setSuccess(null), 3000);
     } catch (error) {
       console.error('Error stopping transaction:', error);
       setError('Failed to stop transaction');
@@ -333,18 +437,50 @@ function StationList() {
     }
   };
   
-  // Get real-time status
-  const getRealtimeStatus = (chargePointId) => {
-    const realtimeStatus = stationStatus[chargePointId];
-    if (realtimeStatus) {
-      return realtimeStatus.status || null;
-    }
-    return null;
-  };
   
   // Get connection status
   const getConnectionStatus = (station) => {
+    // Check if we have MQTT status for this station - if so, it's definitely connected
+    if (stationStatus && stationStatus[station.chargePointId]) {
+      return 'Connected';
+    }
+    
+    // Fall back to the stored connection status
     return station.isConnected ? 'Connected' : 'Disconnected';
+  };
+  
+  // Check if station is connected
+  const isStationConnected = (station) => {
+    if (!station) return false;
+    
+    // Check for MQTT status first (most up-to-date)
+    if (stationStatus && station.chargePointId && stationStatus[station.chargePointId]) {
+      return true;
+    }
+    
+    // Fall back to the station's stored connection status
+    return !!station.isConnected;
+  };
+  
+  // Get realtime status from MQTT context
+  const getRealtimeStatus = (chargePointId) => {
+    const statusData = stationStatus[chargePointId];
+    if (!statusData) return null;
+    
+    // Extract just the status string from the status object
+    return typeof statusData === 'object' && statusData.status ? statusData.status : statusData;
+  };
+
+  // Check if station is charging
+  const isStationCharging = (station) => {
+    if (!station) return false;
+    
+    // Check for genuine charging status only - don't rely on currentTransaction
+    // which might contain outdated data
+    return (
+      station.status === 'Charging' || 
+      (station.status && station.status.toLowerCase().includes('charging'))
+    );
   };
   
   return (
@@ -490,12 +626,22 @@ function StationList() {
                           {station.firmwareVersion || 'Unknown'}
                         </TableCell>
                         <TableCell>
-                          <IconButton 
-                            size="small"
-                            onClick={(e) => handleMenuOpen(e, station)}
-                          >
-                            <MoreIcon />
-                          </IconButton>
+                          <Box sx={{ display: 'flex' }}>
+                            <IconButton 
+                              size="small"
+                              onClick={() => handleViewStation(station.chargePointId)}
+                              title="View Details"
+                            >
+                              <VisibilityIcon fontSize="small" />
+                            </IconButton>
+                            <IconButton 
+                              size="small"
+                              onClick={(e) => handleMenuOpen(e, station)}
+                              title="More Actions"
+                            >
+                              <MoreIcon />
+                            </IconButton>
+                          </Box>
                         </TableCell>
                       </TableRow>
                     );
@@ -523,12 +669,7 @@ function StationList() {
         open={Boolean(anchorEl)}
         onClose={handleMenuClose}
       >
-        <MenuItem onClick={() => { handleViewStation(selectedStation?.chargePointId); handleMenuClose(); }}>
-          <ListItemIcon>
-            <SettingsIcon fontSize="small" />
-          </ListItemIcon>
-          <ListItemText>View Details</ListItemText>
-        </MenuItem>
+        {/* View Details button moved to main table */}
         <MenuItem onClick={handleViewTransactions}>
           <ListItemIcon>
             <HistoryIcon fontSize="small" />
@@ -536,19 +677,31 @@ function StationList() {
           <ListItemText>Transactions</ListItemText>
         </MenuItem>
         <Divider />
-        {selectedStation?.status !== 'Charging' ? (
-          <MenuItem onClick={handleRemoteStart}>
+        {!isStationCharging(selectedStation) ? (
+          <MenuItem 
+            onClick={handleRemoteStart}
+            disabled={!isStationConnected(selectedStation)}
+          >
             <ListItemIcon>
-              <StartIcon fontSize="small" color="success" />
+              <StartIcon fontSize="small" color={isStationConnected(selectedStation) ? "success" : "disabled"} />
             </ListItemIcon>
-            <ListItemText>Start Transaction</ListItemText>
+            <ListItemText>
+              Start Transaction
+              {!isStationConnected(selectedStation) && " (Disconnected)"}
+            </ListItemText>
           </MenuItem>
         ) : (
-          <MenuItem onClick={handleRemoteStop}>
+          <MenuItem 
+            onClick={handleOpenStopDialog}
+            disabled={!isStationConnected(selectedStation)}
+          >
             <ListItemIcon>
-              <StopIcon fontSize="small" color="error" />
+              <StopIcon fontSize="small" color={isStationConnected(selectedStation) ? "error" : "disabled"} />
             </ListItemIcon>
-            <ListItemText>Stop Transaction</ListItemText>
+            <ListItemText>
+              Stop Transaction
+              {!isStationConnected(selectedStation) && " (Disconnected)"}
+            </ListItemText>
           </MenuItem>
         )}
         <MenuItem onClick={handleReset}>
@@ -695,6 +848,121 @@ function StationList() {
             disabled={addStationLoading || !newStation.chargePointId || !newStation.name || !newStation.vendor || !newStation.model}
           >
             {addStationLoading ? <CircularProgress size={24} /> : 'Add Station'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+      
+      {/* Start Transaction Dialog */}
+      <Dialog
+        open={startTransactionDialogOpen}
+        onClose={() => setStartTransactionDialogOpen(false)}
+        aria-labelledby="start-transaction-dialog-title"
+      >
+        <DialogTitle id="start-transaction-dialog-title">
+          Start Transaction
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Select an authorized tag to start a charging transaction on {selectedStation?.name || 'this station'}.
+          </DialogContentText>
+          <TextField
+            name="tag"
+            label="Authorized Tag"
+            fullWidth
+            select
+            value={selectedTag}
+            onChange={(e) => setSelectedTag(e.target.value)}
+            margin="dense"
+            helperText={authorizedTags.length === 0 ? "Loading authorized tags..." : "Select an authorized tag"}
+          >
+            {authorizedTags.length === 0 ? (
+              <MenuItem disabled>Loading tags...</MenuItem>
+            ) : (
+              authorizedTags.map((tag) => (
+                <MenuItem key={tag.id} value={tag.tagId}>
+                  {tag.tagId}
+                </MenuItem>
+              ))
+            )}
+          </TextField>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setStartTransactionDialogOpen(false)} color="primary">
+            Cancel
+          </Button>
+          <Button 
+            onClick={submitStartTransaction} 
+            color="primary" 
+            variant="contained"
+            disabled={!selectedTag}
+          >
+            Start Transaction
+          </Button>
+        </DialogActions>
+      </Dialog>
+      
+      {/* Stop Transaction Dialog */}
+      <Dialog
+        open={stopTransactionDialogOpen}
+        onClose={() => setStopTransactionDialogOpen(false)}
+        aria-labelledby="stop-transaction-dialog-title"
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle id="stop-transaction-dialog-title">
+          Stop Transaction
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Select the transaction to stop on {selectedStation?.name || 'this station'}.
+          </DialogContentText>
+          {activeTransactions.length > 0 ? (
+            <TextField
+              name="transactionId"
+              label="Transaction"
+              fullWidth
+              select
+              value={selectedTransaction?.transactionId || ''}
+              onChange={(e) => {
+                const transaction = activeTransactions.find(t => t.transactionId.toString() === e.target.value);
+                setSelectedTransaction(transaction);
+              }}
+              margin="dense"
+            >
+              {activeTransactions.map((transaction) => (
+                <MenuItem key={transaction.transactionId} value={transaction.transactionId.toString()}>
+                  ID: {transaction.transactionId} - Tag: {transaction.idTag} - 
+                  Started: {new Date(transaction.startTime).toLocaleString()}
+                </MenuItem>
+              ))}
+            </TextField>
+          ) : selectedTransaction ? (
+            <Box sx={{ my: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1, border: '1px solid #e0e0e0' }}>
+              <Typography variant="body2">Transaction ID: {selectedTransaction.transactionId}</Typography>
+              {selectedTransaction.idTag !== 'Unknown' && (
+                <Typography variant="body2">ID Tag: {selectedTransaction.idTag}</Typography>
+              )}
+              {selectedTransaction.startTime !== 'Unknown' && (
+                <Typography variant="body2">
+                  Started: {new Date(selectedTransaction.startTime).toLocaleString()}
+                </Typography>
+              )}
+            </Box>
+          ) : (
+            <Typography color="error">No active transactions found</Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setStopTransactionDialogOpen(false)} color="primary">
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleRemoteStop} 
+            color="error" 
+            variant="contained"
+            disabled={!selectedTransaction}
+          >
+            Stop Transaction
           </Button>
         </DialogActions>
       </Dialog>

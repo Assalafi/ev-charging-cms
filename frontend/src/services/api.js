@@ -12,19 +12,10 @@ const api = axios.create({
 // Request interceptor for adding auth token
 api.interceptors.request.use(
   (config) => {
-    // In development mode, always use the dev token for easier testing
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Using development mock token for API request');
-      config.headers.Authorization = `Bearer dev-mock-token-for-testing`;
-      return config;
-    }
-    
-    // Production mode - get token from localStorage
     const token = localStorage.getItem('token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
-    
     return config;
   },
   (error) => {

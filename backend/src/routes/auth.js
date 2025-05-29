@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { User } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const logger = require('../utils/logger');
+const config = require('../../../config/backend').backend;
 
 const router = express.Router();
 
@@ -52,7 +53,8 @@ router.post('/login', async (req, res) => {
     // Update last login
     await user.update({ lastLogin: new Date() });
     
-    // Generate JWT token
+    // Generate JWT token with consistent secret
+    const secret = process.env.JWT_SECRET || config.security.jwtSecret || 'ev-charging-secure-secret';
     const token = jwt.sign(
       { 
         id: user.id, 
@@ -60,7 +62,7 @@ router.post('/login', async (req, res) => {
         email: user.email, 
         role: user.role 
       },
-      process.env.JWT_SECRET || 'ev_charging_secret_key_change_in_production',
+      secret,
       { expiresIn: '24h' }
     );
     

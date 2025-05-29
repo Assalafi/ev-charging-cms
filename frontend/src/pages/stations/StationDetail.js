@@ -51,6 +51,8 @@ import api from "../../services/api";
 import { useMQTT } from "../../contexts/MQTTContext";
 import LocationSelector from "../../components/LocationSelector";
 import stationService from "../../services/stationService";
+import remoteCommandService from "../../services/remoteCommandService";
+import tagService from "../../services/tagService";
 import RemoteCommandPanel from "../../components/RemoteCommandPanel";
 
 // Tab panel component
@@ -105,6 +107,9 @@ function StationDetail() {
   const [messagesLimit, setMessagesLimit] = useState(20);
   const [totalMessages, setTotalMessages] = useState(0);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  
+  // Authorized tags state
+  const [authorizedTags, setAuthorizedTags] = useState([]);
 
   // Pagination state for transactions
   const [transactionsPage, setTransactionsPage] = useState(0);
@@ -395,6 +400,20 @@ function StationDetail() {
     }
   };
 
+  // Fetch authorized tags from API
+  const fetchAuthorizedTags = async () => {
+    try {
+      const response = await tagService.getAllTags();
+      if (response.success && response.tags) {
+        setAuthorizedTags(response.tags);
+      } else {
+        console.error('Error fetching authorized tags:', response.message);
+      }
+    } catch (error) {
+      console.error('Error fetching authorized tags:', error);
+    }
+  };
+
   // Open command dialog
   const handleOpenCommandDialog = (command) => {
     setCommandType(command);
@@ -402,8 +421,10 @@ function StationDetail() {
     // Set default parameters based on command type
     switch (command) {
       case "RemoteStart":
+        // Fetch available tags when opening start transaction dialog
+        fetchAuthorizedTags();
         setCommandParams({
-          idTag: "test-user-id",
+          idTag: "",
         });
         break;
       case "RemoteStop":
@@ -586,10 +607,22 @@ function StationDetail() {
               name="idTag"
               label="ID Tag"
               fullWidth
+              select
               value={commandParams.idTag || ""}
               onChange={handleCommandParamChange}
               margin="dense"
-            />
+              helperText={authorizedTags.length === 0 ? "Loading authorized tags..." : "Select an authorized tag"}
+            >
+              {authorizedTags.length === 0 ? (
+                <MenuItem disabled>Loading tags...</MenuItem>
+              ) : (
+                authorizedTags.map((tag) => (
+                  <MenuItem key={tag.id} value={tag.tagId}>
+                    {tag.tagId}
+                  </MenuItem>
+                ))
+              )}
+            </TextField>
           )}
           {commandType === "RemoteStop" && (
             <TextField

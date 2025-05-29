@@ -1,171 +1,147 @@
-# EV Charging Station CMS
+# EV Charging CMS
 
-A comprehensive Content Management System for EV Charging Stations with real-time monitoring, OCPP support, and advanced station management features.
+A comprehensive Content Management System for Electric Vehicle Charging Stations with OCPP support.
 
 ## Features
 
-- **Real-time station monitoring** using MQTT and WebSockets
-- **OCPP 1.6** compliant charging station management
-- **User authentication** with role-based access control
-- **Transaction tracking** with detailed metrics and reporting
-- **Firmware management** system for remote updates
-- **Diagnostic logs** collection and analysis
-- **Responsive UI** built with React and Material UI
+- Real-time charging station monitoring
+- OCPP 1.6 protocol support
+- Firmware management system
+- Diagnostic logs system
+- User authentication and authorization
+- Budget management and tracking
+- Responsive web dashboard
 
-## Architecture
+## Project Structure
 
-- **Backend**: Node.js with Express, Sequelize ORM
-- **Frontend**: React with Material UI
-- **Database**: PostgreSQL with TimescaleDB for time-series data
-- **Message Broker**: EMQX MQTT broker
-- **Authentication**: JWT-based authentication
-
-## Installation
-
-### Prerequisites
-- Node.js (v14+)
-- npm or yarn
-- PostgreSQL database
-- MQTT broker (like EMQX)
-
-### Backend Setup
-```bash
-# Navigate to backend directory
-cd backend
-
-# Install dependencies
-npm install
-
-# Start the server
-npm start
+```
+/
+├── backend/           # Node.js backend application
+├── frontend/          # React frontend application
+├── config/            # Centralized configuration
+│   ├── default.js     # Default configuration
+│   ├── development.js # Development overrides
+│   ├── production.js  # Production overrides
+│   └── index.js      # Configuration loader
+├── database/          # Database scripts and migrations
+├── scripts/          # Utility scripts
+└── docker/           # Docker configuration
 ```
 
-### Frontend Setup
-```bash
-# Navigate to frontend directory
-cd frontend
+## Configuration
 
-# Install dependencies
-npm install
+The project uses a centralized configuration system with environment-specific overrides:
 
-# Start the development server
-npm start
-```
+### Backend Configuration
 
-## Usage
+1. Copy the appropriate environment file:
+   ```bash
+   cp backend/.env.production backend/.env
+   ```
 
-1. Access the frontend at http://localhost:3001
-2. API server runs at http://localhost:3000
-3. Default admin credentials: admin@example.com / password (change in production)
+2. Update the environment variables in `.env`:
+   ```env
+   NODE_ENV=production
+   BACKEND_URL=https://api.ev-cms.com
+   DB_HOST=your-db-host
+   DB_PORT=5432
+   DB_NAME=ev_charging_cms
+   DB_USER=your-db-user
+   DB_PASSWORD=your-db-password
+   JWT_SECRET=your-jwt-secret
+   LOG_LEVEL=warn
+   ```
+
+### Frontend Configuration
+
+1. Copy the appropriate environment file:
+   ```bash
+   cp frontend/.env.production frontend/.env
+   ```
+
+2. Update the environment variables in `.env`:
+   ```env
+   REACT_APP_NODE_ENV=production
+   REACT_APP_API_URL=https://api.ev-cms.com/api
+   REACT_APP_WS_URL=wss://api.ev-cms.com/ocpp
+   ```
+
+## Development Setup
+
+1. Install dependencies:
+   ```bash
+   # Backend
+   cd backend
+   npm install
+
+   # Frontend
+   cd ../frontend
+   npm install
+   ```
+
+2. Start development servers:
+   ```bash
+   # Backend (from backend directory)
+   npm run dev
+
+   # Frontend (from frontend directory)
+   npm start
+   ```
+
+## Production Deployment
+
+1. Ensure all configuration files are properly set up:
+   - `config/production.js`
+   - `backend/.env.production`
+   - `frontend/.env.production`
+
+2. Run the deployment script:
+   ```bash
+   sudo ./deploy.sh
+   ```
+
+   The script will:
+   - Update code from repository
+   - Set up environment files
+   - Install dependencies
+   - Build the frontend
+   - Configure Nginx
+   - Set up SSL certificates
+   - Start/restart the application
+
+3. Verify the deployment:
+   - Frontend: https://ev-cms.com
+   - Backend API: https://api.ev-cms.com
+   - WebSocket: wss://api.ev-cms.com/ocpp
+
+## Database Setup
+
+1. Install PostgreSQL and TimescaleDB extension
+2. Create the database:
+   ```bash
+   createdb ev_charging_cms
+   ```
+3. Run migrations:
+   ```bash
+   cd backend
+   NODE_ENV=production node setup-db.js
+   ```
+
+## Monitoring
+
+The application includes built-in monitoring features:
+- PM2 process monitoring
+- Database query logging (in development)
+- Application logs in JSON format (in production)
+
+## Security
+
+- All sensitive configuration is stored in environment variables
+- SSL/TLS encryption for all communications
+- JWT-based authentication
+- Rate limiting for API endpoints
+- Secure WebSocket connections for OCPP
 
 ## License
 
-MIT
-
-## Prerequisites
-
-- Node.js (v14 or later)
-- npm (v6 or later)
-- PostgreSQL (v12 or later) with TimescaleDB extension
-- EMQX MQTT Broker
-- Docker and Docker Compose (recommended)
-
-## Quick Start
-
-1. **Clone the repository**
-
-2. **Run the setup script**
-   ```
-   ./scripts/setup.sh
-   ```
-   This will:
-   - Install backend and frontend dependencies
-   - Initialize the database
-   - Create necessary directories
-   - Check if Docker services are running
-
-3. **Start the services**
-   ```
-   # Using Docker Compose (recommended)
-   docker-compose up -d
-   
-   # Or start each service individually
-   # Start the backend
-   cd backend && npm start
-   
-   # Start the frontend
-   cd frontend && npm start
-   ```
-
-4. **Access the application**
-   - Frontend: http://localhost:3001
-   - Backend API: http://localhost:3000/api
-   - MQTT WebSocket: ws://localhost:8083/mqtt
-
-## Default Login
-
-- Username: `admin`
-- Password: `admin123`
-
-## Database Structure
-
-The EV Charging CMS uses a PostgreSQL database with the following core tables:
-
-- `users`: User accounts with authentication data
-- `charging_stations`: Charging station information
-  - Primary identifier: `chargePointId` (string)
-- `transactions`: Charging session records
-- `ocpp_messages`: OCPP communication logs
-  - Status field: Enum with values ['Sent', 'Received', 'Failed', 'Pending', 'Timeout']
-- `meter_values`: Time-series data for energy measurements
-- `firmware`: Firmware version management
-- `firmware_updates`: Firmware update tracking
-- `diagnostic_logs`: Diagnostic log management
-
-## Main Components
-
-### Frontend
-
-- **Dashboard**: Overview of system status and key metrics
-- **Stations**: Charging station management and monitoring
-- **Transactions**: Transaction history and details
-- **Firmware Management**: Remote firmware update capabilities
-- **Diagnostic Tools**: Request and analyze diagnostic logs
-- **Settings**: System configuration
-
-### Backend
-
-- **Authentication API**: User login and session management
-- **Stations API**: Charging station data and control
-- **Transactions API**: Transaction history and reporting
-- **OCPP Server**: WebSocket server for OCPP communication
-- **MQTT Client**: Broker integration for real-time updates
-
-## Development
-
-### Directory Structure
-
-```
-ev-cms-new/
-├── backend/             # Node.js backend
-│   ├── src/             # Source code
-│   ├── uploads/         # Storage for firmware and logs
-│   └── ...
-├── frontend/            # React frontend
-│   ├── src/             # Source code
-│   │   ├── components/  # UI components
-│   │   ├── contexts/    # React contexts (auth, MQTT)
-│   │   ├── pages/       # Page components
-│   │   └── services/    # API services
-│   └── ...
-├── database/            # Database scripts
-│   └── init.sql         # Database initialization
-├── scripts/             # Utility scripts
-│   ├── init-db.sh       # Database initialization script
-│   └── setup.sh         # Project setup script
-└── docker-compose.yml   # Docker Compose configuration
-```
-
-## License
-
-[MIT](LICENSE)
+Proprietary software. All rights reserved.

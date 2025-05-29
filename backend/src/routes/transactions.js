@@ -5,6 +5,134 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 
+// Health check endpoints - must be defined before authentication middleware
+router.get('/health', async (req, res) => {
+  try {
+    // Check database connection
+    await sequelize.authenticate();
+    
+    // Check if tables exist using the correct table names from schema
+    const [results] = await sequelize.query(
+      `SELECT table_name 
+       FROM information_schema.tables 
+       WHERE table_schema = 'public' 
+       AND table_name IN ('transactions', 'charging_stations')`
+    );
+    
+    const tables = results.map(r => r.table_name);
+    logger.debug('Found tables:', tables);
+    
+    // Check if we can query the tables
+    try {
+      await Transaction.count();
+      await ChargingStation.count();
+    } catch (error) {
+      logger.error('Error querying tables:', error);
+      return res.status(500).json({
+        status: 'error',
+        message: 'Error querying database tables',
+        error: error.message
+      });
+    }
+    
+    // Check if there are any transactions
+    const transactionCount = await Transaction.count();
+    
+    res.json({
+      status: 'ok',
+      database: 'connected',
+      tables: {
+        transactions: { exists: true, count: transactionCount },
+        charging_stations: { exists: true }
+      },
+      env: process.env.NODE_ENV || 'development'
+    });
+    
+  } catch (error) {
+    logger.error('Health check failed:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Health check failed',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// Schema check endpoint
+router.get('/schema-check', async (req, res) => {
+  try {
+    // Get transactions table structure
+    const [transactionColumns] = await sequelize.query(`
+      SELECT column_name, data_type, is_nullable, column_default 
+      FROM information_schema.columns 
+      WHERE table_schema = 'public' 
+      AND table_name = 'transactions'
+      ORDER BY ordinal_position
+    `);
+    
+    // Get charging_stations table structure
+    const [stationColumns] = await sequelize.query(`
+      SELECT column_name, data_type, is_nullable, column_default 
+      FROM information_schema.columns 
+      WHERE table_schema = 'public' 
+      AND table_name = 'charging_stations'
+      ORDER BY ordinal_position
+    `);
+    
+    // Get foreign key relationships
+    const [foreignKeys] = await sequelize.query(`
+      SELECT
+        tc.table_schema, 
+        tc.constraint_name, 
+        tc.table_name, 
+        kcu.column_name, 
+        ccu.table_schema AS foreign_table_schema,
+        ccu.table_name AS foreign_table_name,
+        ccu.column_name AS foreign_column_name 
+      FROM 
+        information_schema.table_constraints AS tc 
+        JOIN information_schema.key_column_usage AS kcu
+          ON tc.constraint_name = kcu.constraint_name
+          AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage AS ccu
+          ON ccu.constraint_name = tc.constraint_name
+          AND ccu.table_schema = tc.table_schema
+      WHERE tc.constraint_type = 'FOREIGN KEY' 
+        AND (tc.table_name = 'transactions' OR tc.table_name = 'charging_stations')
+    `);
+    
+    res.json({
+      status: 'ok',
+      tables: {
+        transactions: {
+          columns: transactionColumns,
+          rowCount: await Transaction.count()
+        },
+        charging_stations: {
+          columns: stationColumns,
+          rowCount: await ChargingStation.count()
+        }
+      },
+      foreignKeys
+    });
+    
+  } catch (error) {
+    logger.error('Schema check failed:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Schema check failed',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// Apply authentication middleware to all routes below this line
+router.use(authenticate);
+
+
+
 /**
  * @route   GET /api/transactions
  * @desc    Get all transactions with pagination
@@ -30,45 +158,187 @@ router.get('/', authenticate, async (req, res) => {
     if (chargePointId) where.chargePointId = chargePointId;
     if (idTag) where.idTag = idTag;
     
-    // Date filters
-    if (startDate) {
-      where.startTime = {
-        ...where.startTime,
-        [sequelize.Op.gte]: new Date(startDate)
-      };
+    // Date filters with enhanced logging
+    if (startDate || endDate) {
+      where.startTime = {};
+      
+      if (startDate) {
+        try {
+          const start = new Date(startDate);
+          if (!isNaN(start.getTime())) {
+            where.startTime[sequelize.Op.gte] = start;
+            logger.debug(`Filtering transactions after: ${start.toISOString()}`);
+          } else {
+            logger.warn(`Invalid startDate format: ${startDate}`);
+          }
+        } catch (error) {
+          logger.error(`Error parsing startDate ${startDate}:`, error);
+        }
+      }
+      
+      if (endDate) {
+        try {
+          const end = new Date(endDate);
+          if (!isNaN(end.getTime())) {
+            // Add one day to include the entire end date
+            end.setDate(end.getDate() + 1);
+            where.startTime[sequelize.Op.lt] = end; // Use lt (less than) instead of lte
+            logger.debug(`Filtering transactions before: ${end.toISOString()}`);
+          } else {
+            logger.warn(`Invalid endDate format: ${endDate}`);
+          }
+        } catch (error) {
+          logger.error(`Error parsing endDate ${endDate}:`, error);
+        }
+      }
+      
+      // If no valid dates were set, remove the startTime condition
+      if (Object.keys(where.startTime).length === 0) {
+        delete where.startTime;
+      }
     }
     
-    if (endDate) {
-      where.startTime = {
-        ...where.startTime,
-        [sequelize.Op.lte]: new Date(endDate)
-      };
-    }
+    // Log the complete where clause
+    logger.debug('Final query where clause:', JSON.stringify(where, null, 2));
     
     // Execute query
-    const transactions = await Transaction.findAndCountAll({
-      where,
-      order: [[sort, order]],
-      limit: parseInt(limit),
-      offset: parseInt(offset),
-      include: [
-        {
-          model: ChargingStation,
-          attributes: ['name', 'model', 'vendor']
-        }
-      ]
-    });
+    let count, rows;
+    try {
+      // Log the full query parameters
+      // Log the raw SQL query
+      const queryOptions = {
+        where,
+        order: [[sort, order]],
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        include: [
+          {
+            model: ChargingStation,
+            as: 'charging_station',
+            attributes: ['name', 'model', 'vendor', 'chargePointId'],
+            required: false
+          }
+        ],
+        logging: (sql) => {
+          logger.debug('Executing SQL query:', sql);
+        },
+        raw: true,
+        nest: true
+      };
+      
+      const result = await Transaction.findAndCountAll(queryOptions);
+      
+      count = result.count;
+      rows = result.rows.map(row => ({
+        ...row,
+        charging_station: row.charging_station || {}
+      }));
+      
+      logger.debug(`Found ${rows.length} transactions matching query`);
+      
+    } catch (dbError) {
+      logger.error('Database error in transactions query:', {
+        error: dbError.message,
+        stack: dbError.stack,
+        query: dbError.sql
+      });
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Database error while retrieving transactions',
+        error: process.env.NODE_ENV === 'development' ? dbError.message : undefined
+      });
+    }
+    
+    // Format the response to match frontend expectations
+    const formattedTransactions = rows.map(tx => ({
+      ...tx.get({ plain: true }),
+      charging_station: tx.charging_station || {
+        name: 'Unknown Station',
+        model: 'N/A',
+        vendor: 'N/A',
+        chargePointId: tx.chargePointId || 'N/A'
+      }
+    }));
     
     res.json({
       success: true,
-      count: transactions.count,
-      transactions: transactions.rows
+      count,
+      transactions: formattedTransactions
     });
   } catch (error) {
-    logger.error('Error fetching transactions:', error);
+    logger.error('Unexpected error in transactions endpoint:', {
+      error: error.message,
+      stack: error.stack,
+      query: error.sql,
+      params: req.query
+    });
+    
     res.status(500).json({
       success: false,
-      message: 'Failed to retrieve transactions'
+      message: 'An unexpected error occurred while processing your request',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
+ * @route   POST /api/transactions/complete/:id
+ * @desc    Mark a transaction as complete (for fixing stuck transactions)
+ * @access  Private
+ */
+router.post('/complete/:id', authenticate, async (req, res) => {
+  try {
+    const transactionId = req.params.id;
+    
+    // Try to find by transactionId first (which may be a numeric ID)
+    let transaction = await Transaction.findOne({
+      where: { transactionId: parseInt(transactionId) || transactionId }
+    });
+    
+    // If not found, try looking up by the database ID
+    if (!transaction) {
+      transaction = await Transaction.findByPk(transactionId);
+    }
+    
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
+      });
+    }
+    
+    // Only update if transaction is in progress or has no status
+    if (transaction.status !== 'InProgress' && transaction.status !== null) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot complete transaction with status: ${transaction.status}`
+      });
+    }
+    
+    // Set end time if not already set
+    const endTime = transaction.stopTime || new Date();
+    
+    // Update the transaction
+    await transaction.update({
+      status: 'Completed',
+      stopTime: endTime,
+      stopReason: req.body.reason || 'Manually completed due to error',
+      updatedAt: new Date()
+    });
+    
+    logger.info(`Transaction ${transactionId} manually marked as complete`);
+    
+    res.json({
+      success: true,
+      message: 'Transaction marked as complete',
+      transaction
+    });
+  } catch (error) {
+    logger.error(`Error marking transaction ${req.params.id} as complete:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark transaction as complete'
     });
   }
 });
@@ -336,6 +606,76 @@ router.get('/stats/usage', authenticate, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to retrieve usage statistics'
+    });
+  }
+});
+
+/**
+ * @route   POST /api/transactions/complete
+ * @desc    Mark a transaction as complete (for fixing stuck transactions)
+ * @access  Private
+ */
+router.post('/complete', authenticate, async (req, res) => {
+  try {
+    const { transactionId, reason } = req.body;
+    
+    if (!transactionId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transaction ID is required'
+      });
+    }
+    
+    // Try to find by transactionId first (which may be a numeric ID)
+    let transaction = await Transaction.findOne({
+      where: { 
+        transactionId: parseInt(transactionId) || transactionId 
+      }
+    });
+    
+    // If not found, try looking up by the database ID
+    if (!transaction) {
+      transaction = await Transaction.findByPk(transactionId);
+    }
+    
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
+      });
+    }
+    
+    // Only update if transaction is in progress or has no status
+    if (transaction.status !== 'InProgress' && transaction.status !== null) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot complete transaction with status: ${transaction.status}`
+      });
+    }
+    
+    // Set end time if not already set
+    const endTime = transaction.stopTime || new Date();
+    
+    // Update the transaction
+    await transaction.update({
+      status: 'Completed',
+      stopTime: endTime,
+      stopReason: reason || 'Manually completed due to error',
+      updatedAt: new Date()
+    });
+    
+    logger.info(`Transaction ${transactionId} manually marked as complete`);
+    
+    res.json({
+      success: true,
+      message: 'Transaction marked as complete',
+      transaction
+    });
+  } catch (error) {
+    logger.error(`Error marking transaction as complete:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark transaction as complete'
     });
   }
 });

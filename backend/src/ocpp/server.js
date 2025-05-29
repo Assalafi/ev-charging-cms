@@ -1,15 +1,11 @@
 const WebSocket = require('ws');
 const url = require('url');
-const {
-    v4: uuidv4
-} = require('uuid');
+const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
-const {
-    ChargingStation,
-    OcppMessage
-} = require('../models');
+const { ChargingStation, OcppMessage } = require('../models');
 const mqttClient = require('../mqtt/client');
 const messageHandlers = require('./messageHandlers');
+const config = require('../../../config/backend').backend;
 
 // Using global singleton pattern to ensure all imports share the same state
 let instance = null;
@@ -23,8 +19,8 @@ function createServerState() {
         // WebSocket server instance
         wss: null,
         
-        // Define supported protocols
-        SUPPORTED_PROTOCOLS: ['ocpp1.6', 'ocpp1.5', 'ocpp2.0.1'],
+        // Define supported protocols from config
+        SUPPORTED_PROTOCOLS: config.ocpp.supportedVersions || ['ocpp1.6', 'ocpp1.5', 'ocpp2.0.1'],
         
         // Track connection numbers for diagnostics
         connectionCount: 0,
@@ -33,7 +29,12 @@ function createServerState() {
         initialized: false,
         
         // Initialization timestamp
-        initTime: null
+        initTime: null,
+        
+        // OCPP Configuration
+        heartbeatInterval: config.ocpp.heartbeatInterval,
+        meterValueSampleInterval: config.ocpp.meterValueSampleInterval,
+        defaultConnectorTimeout: config.ocpp.defaultConnectorTimeout
     };
 }
 
@@ -66,7 +67,7 @@ function init(server) {
     serverState.wss = new WebSocket.Server({
         noServer: true,
         // Very important: maxPayload must be high enough for OCPP messages
-        maxPayload: 5 * 1024 * 1024, // 5MB
+        maxPayload: config.ocpp.maxPayloadSize || 5 * 1024 * 1024, // Default to 5MB
         // Add permissive settings to prevent abnormal closures
         perMessageDeflate: {
             zlibDeflateOptions: {
@@ -800,9 +801,9 @@ function _createStandaloneServer() {
     // Initialize the WebSocket server with this HTTP server
     init(server);
     
-    // Start listening on port 8080
-    server.listen(8080, () => {
-        logger.info('Standalone WebSocket server listening on port 8080');
+    // Start listening on configured port
+    server.listen(config.websocket.port, config.websocket.host, () => {
+        logger.info(`Standalone WebSocket server listening on ${config.websocket.host}:${config.websocket.port}`);
     });
     
     return serverState.wss;

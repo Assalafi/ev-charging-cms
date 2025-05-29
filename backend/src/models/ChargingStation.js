@@ -65,4 +65,15 @@ module.exports = (sequelize) => {
       { unique: true, fields: ['chargePointId'] }
     ]
   });
+
+  // Define associations
+  ChargingStation.associate = (models) => {
+    ChargingStation.hasMany(models.Transaction, {
+      foreignKey: 'chargePointId',
+      sourceKey: 'chargePointId',
+      as: 'transactions'
+    });
+  };
+
+  return ChargingStation;
 };

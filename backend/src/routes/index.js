@@ -2,12 +2,14 @@ const express = require('express');
 const authRoutes = require('./auth');
 const stationRoutes = require('./stations');
 const transactionRoutes = require('./transactions');
+const { authenticate } = require('../middleware/auth'); // Import the authenticate middleware
 const ocppRoutes = require('./ocpp');
 const settingsRoutes = require('./settings');
 const pricingRoutes = require('./pricing');
 const remoteCommandsRoutes = require('./remoteCommands');
 const remoteControlRoutes = require('./remoteControl');
 const meterValuesRoutes = require('./meterValues');
+const tagsRoutes = require('./tags');
 // Temporarily commenting out simulator routes due to import issues
 // const simulatorRoutes = require('./simulator');
 
@@ -18,11 +20,15 @@ router.use('/auth', authRoutes);
 router.use('/stations', stationRoutes);
 router.use('/transactions', transactionRoutes);
 router.use('/ocpp', ocppRoutes);
+
+// Direct route for marking transactions as complete (to avoid routing conflicts)
+router.post('/complete-transaction/:id', authenticate, require('./completeTransaction'));
 router.use('/settings', settingsRoutes);
 router.use('/pricing', pricingRoutes);
 router.use('/remote-commands', remoteCommandsRoutes);
 router.use('/remote', remoteControlRoutes); // New OCPP 1.6 compliant remote control endpoints
 router.use('/meter-values', meterValuesRoutes);
+router.use('/tags', tagsRoutes);
 // Temporarily commenting out simulator routes due to import issues
 // router.use('/simulator', simulatorRoutes);
 

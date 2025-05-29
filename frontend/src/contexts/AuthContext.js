@@ -17,35 +17,39 @@ export function AuthProvider({ children }) {
   // Initialize auth state from localStorage on component mount
   useEffect(() => {
     const initAuth = async () => {
-      const storedToken = localStorage.getItem('token');
-      
-      if (storedToken) {
-        try {
+      try {
+        const storedToken = localStorage.getItem('token');
+        
+        if (storedToken) {
           // Check if token is expired
           const decodedToken = jwtDecode(storedToken);
           const currentTime = Date.now() / 1000;
           
           if (decodedToken.exp > currentTime) {
             // Set auth header for all requests
-            axios.defaults.headers.common['Authorization'] = `Bearer ${storedToken}`;
+            api.defaults.headers.common['Authorization'] = `Bearer ${storedToken}`;
             
             // Get user profile
             const response = await api.get('/auth/me');
-            setCurrentUser(response.data.user);
-            setToken(storedToken);
+            if (response.data.success) {
+              setCurrentUser(response.data.user);
+              setToken(storedToken);
+            } else {
+              throw new Error('Failed to get user profile');
+            }
           } else {
-            // Token is expired
-            localStorage.removeItem('token');
-            delete axios.defaults.headers.common['Authorization'];
+            throw new Error('Token expired');
           }
-        } catch (error) {
-          console.error('Auth initialization error:', error);
-          localStorage.removeItem('token');
-          delete axios.defaults.headers.common['Authorization'];
         }
+      } catch (error) {
+        console.error('Auth initialization error:', error);
+        localStorage.removeItem('token');
+        delete api.defaults.headers.common['Authorization'];
+        setCurrentUser(null);
+        setToken(null);
+      } finally {
+        setIsInitialized(true);
       }
-      
-      setIsInitialized(true);
     };
 
     initAuth();
@@ -59,13 +63,17 @@ export function AuthProvider({ children }) {
         password
       });
       
+      if (!response.data.success) {
+        throw new Error(response.data.message || 'Login failed');
+      }
+      
       const { token, user } = response.data;
       
       // Save token to localStorage
       localStorage.setItem('token', token);
       
       // Set auth header for all requests
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       
       setCurrentUser(user);
       setToken(token);
@@ -73,9 +81,13 @@ export function AuthProvider({ children }) {
       return { success: true, user };
     } catch (error) {
       console.error('Login error:', error);
+      localStorage.removeItem('token');
+      delete api.defaults.headers.common['Authorization'];
+      setCurrentUser(null);
+      setToken(null);
       return {
         success: false,
-        message: error.response?.data?.message || 'Login failed'
+        message: error.response?.data?.message || error.message || 'Login failed'
       };
     }
   };

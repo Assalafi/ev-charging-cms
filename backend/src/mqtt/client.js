@@ -1,12 +1,14 @@
 const mqtt = require('mqtt');
 const logger = require('../utils/logger');
-
-// Determine if MQTT is enabled
-const mqttEnabled = process.env.MQTT_ENABLED !== 'false';
+const config = require('../../../config/backend').backend;
 
 // Store MQTT client and topic subscriptions
 let client = null;
 const topicSubscriptions = new Map();
+
+// Get MQTT configuration
+const mqttConfig = config.mqtt;
+const mqttEnabled = mqttConfig.enabled;
 
 /**
  * Connect to MQTT broker
@@ -18,16 +20,14 @@ function connect() {
     return null;
   }
 
-  const host = process.env.MQTT_HOST || 'localhost';
-  const port = process.env.MQTT_PORT || '1883';
-  const clientId = `ev_cms_backend_${Math.random().toString(16).substring(2, 8)}`;
-  
-  const connectUrl = `mqtt://${host}:${port}`;
+  const clientId = mqttConfig.options.clientId || `ev_cms_backend_${Math.random().toString(16).substring(2, 8)}`;
+  const connectUrl = mqttConfig.broker;
   
   logger.info(`Connecting to MQTT broker at ${connectUrl}`);
   
   try {
     client = mqtt.connect(connectUrl, {
+      ...mqttConfig.options,
       clientId,
       clean: true,
       connectTimeout: 4000,
@@ -152,7 +152,7 @@ function publish(topic, message) {
  */
 function disconnect() {
   // Skip if MQTT is disabled
-  if (process.env.MQTT_ENABLED === 'false') {
+  if (!mqttEnabled) {
     return Promise.resolve();
   }
 

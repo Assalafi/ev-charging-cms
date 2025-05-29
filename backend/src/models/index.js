@@ -1,20 +1,22 @@
 const { Sequelize } = require('sequelize');
 const logger = require('../utils/logger');
+const config = require('../../../config/backend').backend;
 
-// Initialize Sequelize with PostgreSQL
+// Initialize Sequelize with PostgreSQL using centralized config
 const sequelize = new Sequelize(
-  'ev_charging_cms',
-  'abubakar',
-  '',
+  config.database.name,
+  config.database.user,
+  config.database.password,
   {
-    host: 'localhost',
-    port: 5432,
-    dialect: 'postgres',
-    logging: msg => logger.debug(msg),
+    host: config.database.host,
+    port: config.database.port,
+    dialect: config.database.dialect,
+    logging: config.database.logging ? msg => logger.debug(msg) : false,
     define: {
       underscored: false,
       timestamps: true
-    }
+    },
+    pool: config.database.pool // Connection pool settings from config
   }
 );
 

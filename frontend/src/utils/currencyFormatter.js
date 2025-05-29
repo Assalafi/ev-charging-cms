@@ -59,15 +59,15 @@ export const getPricingSettings = async () => {
     try {
         const now = Date.now();
         const cacheExpiry = 5 * 60 * 1000; // Cache for 5 minutes
-        
+
         // Use cached settings if available and fresh
         if (cachedSettings && (now - lastFetchTime < cacheExpiry)) {
             return cachedSettings;
         }
-        
+
         // Fetch from database
         const response = await pricingService.getPricingSettings();
-        
+
         if (response && response.success && response.settings) {
             cachedSettings = response.settings;
             lastFetchTime = now;
@@ -77,7 +77,7 @@ export const getPricingSettings = async () => {
         }
     } catch (error) {
         console.error('Error fetching pricing settings from database:', error);
-        
+
         // Default Nigerian EV charging rates if DB fetch fails
         return {
             baseRate: 120, // ₦120 per kWh base rate
@@ -115,7 +115,7 @@ export const calculatePrice = (energyKwh, isMember = false) => {
     // Ensure energyKwh is a number and non-negative
     const energy = Math.max(0, parseFloat(energyKwh));
     console.log('Energy value being calculated:', energy);
-    
+
     // Calculate with the best settings available
     // First try API settings from database if available
     try {
@@ -124,17 +124,17 @@ export const calculatePrice = (energyKwh, isMember = false) => {
             console.log('Using cached DB settings for price calculation');
             return calculatePriceWithSettings(energy, isMember, cachedSettings);
         }
-        
+
         // No cached settings, use defaults but trigger a refresh for future calculations
         console.log('No cached settings, using defaults but refreshing');
-        
+
         // Trigger background refresh of settings (doesn't wait for result)
         getPricingSettings().then(settings => {
             console.log('Settings refreshed from database for future calculations');
         }).catch(error => {
             console.error('Failed to refresh pricing settings:', error);
         });
-        
+
         // Meanwhile, return calculation with defaults
         return calculatePriceWithSettings(energy, isMember, DEFAULT_SETTINGS);
     } catch (error) {
@@ -154,19 +154,19 @@ export const calculatePrice = (energyKwh, isMember = false) => {
 const calculatePriceWithSettings = (energy, isMember, settings) => {
     // Ensure settings is valid
     settings = settings || DEFAULT_SETTINGS;
-    
+
     // Get base rate with fallback
     const baseRate = settings.baseRate || DEFAULT_SETTINGS.baseRate;
-    
+
     // Calculate raw price
     let totalPrice = energy * baseRate;
     console.log('Raw price calculation:', energy, 'kWh ×', baseRate, '=', totalPrice);
-    
+
     // Apply minimum charge
     const minimumCharge = settings.minimumCharge || DEFAULT_SETTINGS.minimumCharge;
     totalPrice = Math.max(totalPrice, minimumCharge);
     console.log('After minimum charge applied:', totalPrice);
-    
+
     // Apply member discount if applicable
     if (isMember) {
         const discountRate = settings.memberDiscount || DEFAULT_SETTINGS.memberDiscount;
@@ -174,7 +174,7 @@ const calculatePriceWithSettings = (energy, isMember, settings) => {
         totalPrice = totalPrice - discountAmount;
         console.log('After member discount applied:', totalPrice);
     }
-    
+
     return totalPrice;
 };
 

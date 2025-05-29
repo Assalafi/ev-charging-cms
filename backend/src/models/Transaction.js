@@ -73,4 +73,15 @@ module.exports = (sequelize) => {
             }
         ]
     });
+
+    // Define associations
+    Transaction.associate = (models) => {
+        Transaction.belongsTo(models.ChargingStation, {
+            foreignKey: 'chargePointId',
+            targetKey: 'chargePointId',
+            as: 'charging_station'
+        });
+    };
+
+    return Transaction;
 };
