@@ -1,22 +1,25 @@
 const { Sequelize } = require('sequelize');
 const logger = require('../utils/logger');
+const config = require('../../../config/backend').backend;
 
-// Initialize Sequelize with PostgreSQL
+// Initialize Sequelize with PostgreSQL using centralized config
 const sequelize = new Sequelize(
-  process.env.DB_NAME || 'ev_charging_prod',
-  process.env.DB_USER || 'assalafi',
-  process.env.DB_PASSWORD || 'Assalafi@139',
+  config.database.name,
+  config.database.user,
+  config.database.password,
   {
-    host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT || '5432', 10),
-    dialect: 'postgres',
-    logging: msg => logger.debug(msg),
+    host: config.database.host,
+    port: config.database.port,
+    dialect: config.database.dialect,
+    logging: config.database.logging ? msg => logger.debug(msg) : false,
     define: {
       underscored: false,
       timestamps: true
-    }
+    },
+    pool: config.database.pool // Connection pool settings from config
   }
 );
+
 // Import models
 const User = require('./User')(sequelize);
 const ChargingStation = require('./ChargingStation')(sequelize);

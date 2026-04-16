@@ -150,13 +150,10 @@ function init(server) {
             
             // Set isAlive flag for heartbeat checks
             ws.isAlive = true;
-            ws.connectionStartTime = Date.now(); // Track when connection started
-            ws.missedHeartbeats = 0; // Initialize missed heartbeats counter
             
             // Immediately add to connection map
             serverState.connectedStations.set(chargePointId, ws);
             logger.info(`Added ${chargePointId} to connection map on upgrade, map size: ${serverState.connectedStations.size}`);
-            logger.debug(`Connection started at ${new Date().toISOString()} for ${chargePointId}`);
             
             // Emit the connection event with the protocol information
             serverState.wss.emit('connection', ws, request, protocol);
@@ -174,12 +171,8 @@ function init(server) {
         logger.debug(`Heartbeat check: ${serverState.wss.clients.size} active connections`);
         
         serverState.wss.clients.forEach((ws) => {
-            // Only check connections that have been established for more than 1 minute
-            // This prevents new connections from being terminated too quickly
-            const connectionAge = ws.connectionStartTime ? (Date.now() - ws.connectionStartTime) / 1000 : 0;
-            
-            // More tolerant connection checking - only terminate after 3 missed heartbeats
-            if (ws.missedHeartbeats >= 3 && connectionAge > 60) {
+            // Check if the connection has been inactive for two full cycles
+            if (ws.missedHeartbeats >= 2) {
                 logger.warn(`Terminating inactive connection for ${ws.chargePointId || 'unknown station'} after missing ${ws.missedHeartbeats} heartbeats`);
                 if (ws.chargePointId) {
                     serverState.connectedStations.delete(ws.chargePointId);
@@ -319,15 +312,6 @@ function init(server) {
             ws.on('pong', () => {
                 logger.debug(`Received pong from ${chargePointId}`);
                 ws.isAlive = true; // Mark as alive when pong received
-                ws.missedHeartbeats = 0; // Reset missed heartbeat counter
-                
-                // Send acknowledgement heartbeat message to help keep connection alive
-                try {
-                    // Send a small ping to acknowledge the pong (helps some clients)
-                    ws.ping(() => {});
-                } catch (err) {
-                    logger.error(`Error sending ping acknowledgment to ${chargePointId}:`, err);
-                }
             });
 
             // Handle pings to keep connection alive
@@ -343,19 +327,12 @@ function init(server) {
 
             // Handle messages from charging station
             ws.on('message', async (message) => {
-                // Any message from the client indicates the connection is alive
-                ws.isAlive = true;
-                ws.missedHeartbeats = 0; // Reset missed heartbeat counter
                 try {
                     // Log the raw message for debugging
                     logger.info(`RAW MESSAGE from ${chargePointId}: ${message.toString()}`);
 
                     // Parse message
                     const data = JSON.parse(message);
-                    
-                    // Keep connection alive (reset the connection check timer) on any OCPP message
-                    ws.isAlive = true;
-                    ws.missedHeartbeats = 0;
 
                     logger.debug(`Received from ${chargePointId}:`);
 

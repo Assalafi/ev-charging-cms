@@ -1,7 +1,7 @@
 exports.dashboard = {
     port: process.env.DASHBOARD_PORT || 3002,
-    host: process.env.DASHBOARD_HOST || 'localhost',
-    baseUrl: process.env.DASHBOARD_URL || 'http://localhost:3002',
+    host: process.env.DASHBOARD_HOST || '0.0.0.0',
+    baseUrl: process.env.DASHBOARD_URL || 'https://evcharging.eride.ng',
     wsPath: '/ws',
     updateInterval: 5000, // WebSocket update interval in ms
     staticDir: 'public',
@@ -15,7 +15,7 @@ exports.dashboard = {
         ocppStatus: '/api/ocpp/status'
     },
     api: {
-        baseUrl: process.env.BACKEND_URL || 'http://localhost:3000',
+        baseUrl: process.env.BACKEND_URL || 'https://evcharging.eride.ng',
         prefix: '/api',
         endpoints: {
             stations: '/stations/diagnostic',

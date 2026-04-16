@@ -24,13 +24,15 @@ export function MQTTProvider({ children }) {
     }
 
     // MQTT broker URL from environment variable
-    const url = process.env.REACT_APP_MQTT_WS_URL || `ws://localhost:8083/mqtt`;
+    const url = process.env.REACT_APP_MQTT_WS_URL || `wss://evcharging.eride.ng/mqtt/`;
     const clientId = `ev_cms_web_${Math.random().toString(16).substring(2, 10)}`;
     const options = {
       clientId,
       clean: true,
       reconnectPeriod: 5000,
-      connectTimeout: 30 * 1000
+      connectTimeout: 30 * 1000,
+  username: process.env.REACT_APP_MQTT_USERNAME || 'ev_cms_admin',
+  password: process.env.REACT_APP_MQTT_PASSWORD || 'Assalafi@139'
     };
 
     console.log('Connecting to MQTT broker...');

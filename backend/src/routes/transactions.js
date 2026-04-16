@@ -1,5 +1,6 @@
 const express = require('express');
 const { Transaction, ChargingStation, MeterValue, sequelize } = require('../models');
+const { Op } = require('sequelize');
 const { authenticate } = require('../middleware/auth');
 const logger = require('../utils/logger');
 
@@ -166,7 +167,7 @@ router.get('/', authenticate, async (req, res) => {
         try {
           const start = new Date(startDate);
           if (!isNaN(start.getTime())) {
-            where.startTime[sequelize.Op.gte] = start;
+            where.startTime[Op.gte] = start;
             logger.debug(`Filtering transactions after: ${start.toISOString()}`);
           } else {
             logger.warn(`Invalid startDate format: ${startDate}`);
@@ -182,7 +183,7 @@ router.get('/', authenticate, async (req, res) => {
           if (!isNaN(end.getTime())) {
             // Add one day to include the entire end date
             end.setDate(end.getDate() + 1);
-            where.startTime[sequelize.Op.lt] = end; // Use lt (less than) instead of lte
+            where.startTime[Op.lt] = end; // Use lt (less than) instead of lte
             logger.debug(`Filtering transactions before: ${end.toISOString()}`);
           } else {
             logger.warn(`Invalid endDate format: ${endDate}`);
@@ -252,7 +253,7 @@ router.get('/', authenticate, async (req, res) => {
     
     // Format the response to match frontend expectations
     const formattedTransactions = rows.map(tx => ({
-      ...tx.get({ plain: true }),
+      ...tx,
       charging_station: tx.charging_station || {
         name: 'Unknown Station',
         model: 'N/A',
@@ -427,7 +428,7 @@ router.get('/stats/energy', authenticate, async (req, res) => {
     try {
       // Build where clause
       const where = {
-        stopTime: { [sequelize.Op.gte]: startDate }
+        stopTime: { [Op.gte]: startDate }
       };
       
       if (chargePointId) {
@@ -556,7 +557,7 @@ router.get('/stats/usage', authenticate, async (req, res) => {
     try {
       stationUsage = await Transaction.findAll({
         where: {
-          startTime: { [sequelize.Op.gte]: startDate }
+          startTime: { [Op.gte]: startDate }
         },
         attributes: [
           'chargePointId',
@@ -581,7 +582,7 @@ router.get('/stats/usage', authenticate, async (req, res) => {
       try {
         stationUsage = await Transaction.findAll({
           where: {
-            startTime: { [sequelize.Op.gte]: startDate }
+            startTime: { [Op.gte]: startDate }
           },
           attributes: [
             'chargePointId',

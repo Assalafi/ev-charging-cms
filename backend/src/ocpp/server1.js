@@ -6,9 +6,6 @@ const { ChargingStation, OcppMessage } = require('../models');
 const mqttClient = require('../mqtt/client');
 const messageHandlers = require('./messageHandlers');
 const config = require('../../../config/backend').backend;
-const fs = require('fs');
-const https = require('https');
-const http = require('http');
 
 // Using global singleton pattern to ensure all imports share the same state
 let instance = null;
@@ -94,21 +91,8 @@ function init(server) {
     server.on('upgrade', (request, socket, head) => {
         // Extract station ID from URL
         const parsedUrl = url.parse(request.url, true);
-        const pathname = parsedUrl.pathname || '';
-        
-        // Check if the request matches our expected path pattern
-        // Support both direct station IDs and paths with prefixes
-        let chargePointId = null;
-        
-        // Check if request path starts with our configured path
-        if (config.ocpp.path !== '/' && pathname.startsWith(config.ocpp.path)) {
-            // Extract ID from path: /ocpp/T001 -> T001
-            chargePointId = pathname.substring(config.ocpp.path.length).split('/').filter(p => p).shift();
-        } else {
-            // Legacy behavior: /T001 -> T001
-            chargePointId = pathname.split('/').pop();
-        }
-        
+        const chargePointId = parsedUrl.pathname.split('/').pop();
+
         if (!chargePointId) {
             logger.error('No charge point ID provided in WebSocket connection');
             socket.destroy();
@@ -134,53 +118,35 @@ function init(server) {
             logger.debug(`Client requested protocols: ${requestedProtocols.join(', ')}`);
             logger.info(`Selected protocol: ${protocol || 'none'}`);
         }
-        
-        // Get connection security information for logging
-        const isSecure = request.connection.encrypted || request.headers['x-forwarded-proto'] === 'https';
-        const protocolType = isSecure ? 'wss' : 'ws';
-        
-        logger.info(`${protocolType} connection from ${chargePointId} with OCPP protocol: ${protocol || 'none'}`);
 
         // Perform WebSocket upgrade with the selected protocol
         serverState.wss.handleUpgrade(request, socket, head, (ws) => {
             // Store chargePointId on the WebSocket connection
             ws.chargePointId = chargePointId;
             ws.protocol = protocol;
-            ws.isSecure = isSecure;
             
             // Set isAlive flag for heartbeat checks
             ws.isAlive = true;
-            ws.connectionStartTime = Date.now(); // Track when connection started
-            ws.missedHeartbeats = 0; // Initialize missed heartbeats counter
             
             // Immediately add to connection map
             serverState.connectedStations.set(chargePointId, ws);
             logger.info(`Added ${chargePointId} to connection map on upgrade, map size: ${serverState.connectedStations.size}`);
-            logger.debug(`Connection started at ${new Date().toISOString()} for ${chargePointId}`);
             
             // Emit the connection event with the protocol information
             serverState.wss.emit('connection', ws, request, protocol);
         });
     });
 
-    // Set up heartbeat mechanism to detect dead connections with increased tolerance
+    // Set up heartbeat mechanism to detect dead connections
     const heartbeatInterval = setInterval(() => {
         if (!serverState.wss || !serverState.wss.clients) {
             logger.warn('WebSocket server not available for heartbeat check');
             return;
         }
         
-        // Log the number of active connections for monitoring
-        logger.debug(`Heartbeat check: ${serverState.wss.clients.size} active connections`);
-        
         serverState.wss.clients.forEach((ws) => {
-            // Only check connections that have been established for more than 1 minute
-            // This prevents new connections from being terminated too quickly
-            const connectionAge = ws.connectionStartTime ? (Date.now() - ws.connectionStartTime) / 1000 : 0;
-            
-            // More tolerant connection checking - only terminate after 3 missed heartbeats
-            if (ws.missedHeartbeats >= 3 && connectionAge > 60) {
-                logger.warn(`Terminating inactive connection for ${ws.chargePointId || 'unknown station'} after missing ${ws.missedHeartbeats} heartbeats`);
+            if (ws.isAlive === false) {
+                logger.warn(`Terminating inactive connection for ${ws.chargePointId || 'unknown station'}`);
                 if (ws.chargePointId) {
                     serverState.connectedStations.delete(ws.chargePointId);
                     logger.info(`Removed ${ws.chargePointId} from connection map due to inactivity`);
@@ -188,18 +154,7 @@ function init(server) {
                 return ws.terminate();
             }
 
-            if (ws.isAlive === false) {
-                // Increment missed heartbeat counter
-                ws.missedHeartbeats = (ws.missedHeartbeats || 0) + 1;
-                logger.debug(`${ws.chargePointId || 'Unknown station'} missed ${ws.missedHeartbeats} heartbeat(s)`);
-            } else {
-                // Reset counter if connection is alive
-                ws.missedHeartbeats = 0;
-            }
-
-            // Mark as not alive until we get a pong response or heartbeat
             ws.isAlive = false;
-            
             try {
                 ws.ping(() => {});
                 logger.debug(`Sent ping to ${ws.chargePointId || 'unknown station'}`);
@@ -207,7 +162,7 @@ function init(server) {
                 logger.error(`Error sending ping to ${ws.chargePointId || 'unknown station'}:`, err);
             }
         });
-    }, 45000); // Increased from 30s to 45s to provide more margin
+    }, 30000); // Check every 30 seconds
 
     // Clear interval when server closes
     serverState.wss.on('close', () => {
@@ -224,14 +179,12 @@ function init(server) {
     // Handle new WebSocket connections
     serverState.wss.on('connection', (ws, request, protocol) => {
         try {
-            // Extract station ID from URL - this should already be stored on ws.chargePointId
-            const chargePointId = ws.chargePointId;
-            
-            // Security protocol used (ws/wss)
-            const protocolType = ws.isSecure ? 'wss' : 'ws';
+            // Extract station ID from URL
+            const parsedUrl = url.parse(request.url, true);
+            let chargePointId = parsedUrl.pathname.split('/').pop();
             
             // Log full URL for diagnostic purposes
-            logger.info(`New ${protocolType} connection: ${request.url}`);
+            logger.info(`New WebSocket connection: ${request.url}`);
             
             // Validate station ID
             if (!chargePointId || chargePointId === '') {
@@ -319,15 +272,6 @@ function init(server) {
             ws.on('pong', () => {
                 logger.debug(`Received pong from ${chargePointId}`);
                 ws.isAlive = true; // Mark as alive when pong received
-                ws.missedHeartbeats = 0; // Reset missed heartbeat counter
-                
-                // Send acknowledgement heartbeat message to help keep connection alive
-                try {
-                    // Send a small ping to acknowledge the pong (helps some clients)
-                    ws.ping(() => {});
-                } catch (err) {
-                    logger.error(`Error sending ping acknowledgment to ${chargePointId}:`, err);
-                }
             });
 
             // Handle pings to keep connection alive
@@ -343,19 +287,12 @@ function init(server) {
 
             // Handle messages from charging station
             ws.on('message', async (message) => {
-                // Any message from the client indicates the connection is alive
-                ws.isAlive = true;
-                ws.missedHeartbeats = 0; // Reset missed heartbeat counter
                 try {
                     // Log the raw message for debugging
                     logger.info(`RAW MESSAGE from ${chargePointId}: ${message.toString()}`);
 
                     // Parse message
                     const data = JSON.parse(message);
-                    
-                    // Keep connection alive (reset the connection check timer) on any OCPP message
-                    ws.isAlive = true;
-                    ws.missedHeartbeats = 0;
 
                     logger.debug(`Received from ${chargePointId}:`);
 
@@ -427,8 +364,7 @@ function init(server) {
             // Publish connection event
             mqttClient.publish(`ocpp/${chargePointId}/status`, JSON.stringify({
                 status: 'Connected',
-                timestamp: new Date().toISOString(),
-                protocol: protocolType
+                timestamp: new Date().toISOString()
             }));
 
         } catch (error) {

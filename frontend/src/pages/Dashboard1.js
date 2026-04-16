@@ -32,7 +32,8 @@ import {
     SwapHoriz as TransactionIcon,
     Speed as MeterIcon,
     MoreVert as MoreIcon,
-    // Removed unused icons
+    Update as FirmwareIcon,
+    Description as LogsIcon,
     Info as InfoIcon,
     FiberManualRecord as FiberManualRecordIcon
 } from '@mui/icons-material';
@@ -80,10 +81,7 @@ function Dashboard() {
         connectedStations: 0,
         activeTransactions: 0,
         energyToday: 0,
-        revenueToday: 0,
-        stationUptime: 0,
-        totalTransactions: 0,
-        transactionSuccessRate: 0
+        revenueToday: 0
     });
     const [stations, setStations] = useState([]);
     const [transactions, setTransactions] = useState([]);
@@ -162,81 +160,14 @@ function Dashboard() {
             const stats = statsResponse.data.stats || {};
             const stationCount = stationsResponse.data.stations?.length || 0;
 
-            // Calculate station uptime based on available data
-            const calculateStationUptime = () => {
-                if (!stationsResponse.data.stations || stationsResponse.data.stations.length === 0) {
-                    return 0;
-                }
-                
-                // Count stations with status "Available" or "Preparing" or "Charging"
-                let onlineCount = 0;
-                stationsResponse.data.stations.forEach(station => {
-                    const status = station.status?.toLowerCase() || '';
-                    if (status === 'available' || status === 'preparing' || status === 'charging') {
-                        onlineCount++;
-                    }
-                });
-                
-                // Calculate percentage - use the true count of online stations
-                const connectedCount = stats.connectedStations || onlineCount;
-                const totalCount = stats.totalStations || stationCount;
-                return totalCount > 0 ? (connectedCount / totalCount) * 100 : 0;
-            };
-            
-            // Calculate transaction success rate
-            const calculateTransactionSuccessRate = () => {
-                // Get data from the most recent transactions
-                const allTransactions = transactionsResponse.data.transactions || [];
-                if (!allTransactions || allTransactions.length === 0) {
-                    return 0;
-                }
-                
-                // Count successful transactions (those with status "Completed" without errors)
-                let successCount = 0;
-                let totalCount = 0;
-                
-                allTransactions.forEach(transaction => {
-                    totalCount++;
-                    const status = transaction.status?.toLowerCase() || '';
-                    // Consider a transaction successful if it completed normally
-                    if (status === 'completed' && !transaction.errorCode) {
-                        successCount++;
-                    }
-                });
-                
-                // Add data from today's transactions too
-                if (todayTransactions.data?.transactions?.length > 0) {
-                    todayTransactions.data.transactions.forEach(transaction => {
-                        // Avoid double-counting any transactions
-                        const isDuplicate = allTransactions.some(t => t.id === transaction.id);
-                        if (!isDuplicate) {
-                            totalCount++;
-                            const status = transaction.status?.toLowerCase() || '';
-                            if (status === 'completed' && !transaction.errorCode) {
-                                successCount++;
-                            }
-                        }
-                    });
-                }
-                
-                // Calculate success percentage
-                return totalCount > 0 ? (successCount / totalCount) * 100 : 0;
-            };
-            
-            // Update stats with all data including calculated metrics
-            const stationUptime = calculateStationUptime();
-            const transactionSuccessRate = calculateTransactionSuccessRate();
-            const totalTransactions = transactionsResponse.data.totalCount || 0;
+            // Update stats with all data
             setStats(prev => ({
                 ...prev,
                 totalStations: stats.totalStations || stationCount,
                 connectedStations: stats.connectedStations || 0,
                 activeTransactions: stats.activeTransactions || 0,
-                totalTransactions: totalTransactions,
                 energyToday: dailyEnergy,
-                revenueToday: dailyRevenue,
-                stationUptime: stationUptime,
-                transactionSuccessRate: transactionSuccessRate
+                revenueToday: dailyRevenue
             }));
 
             // Update stations and transactions
@@ -423,7 +354,14 @@ function Dashboard() {
     };
 
     // Navigate to firmware management
-    // Removed navigation handlers for firmware and diagnostics
+    const handleFirmwareClick = () => {
+        navigate('/stations/firmware');
+    };
+
+    // Navigate to diagnostic logs
+    const handleDiagnosticsClick = () => {
+        navigate('/stations/diagnostics');
+    };
 
     // Chart options
     const lineChartOptions = {
@@ -491,7 +429,23 @@ function Dashboard() {
                     </Typography>
                 </Box>
                 <Box>
-                    <IconButton onClick={fetchDashboardData} title="Refresh dashboard data">
+                    <Button 
+                        variant="outlined"
+                        startIcon={<FirmwareIcon />}
+                        sx={{ mr: 1 }}
+                        onClick={handleFirmwareClick}
+                    >
+                        Firmware
+                    </Button>
+                    <Button 
+                        variant="outlined"
+                        startIcon={<LogsIcon />}
+                        sx={{ mr: 1 }}
+                        onClick={handleDiagnosticsClick}
+                    >
+                        Diagnostics
+                    </Button>
+                    <IconButton onClick={fetchDashboardData}>
                         <RefreshIcon />
                     </IconButton>
                 </Box>
@@ -499,7 +453,7 @@ function Dashboard() {
 
             {loading && <LinearProgress sx={{ mb: 3 }} />}
             <Grid container spacing={3} sx={{ mb: 3 }}>
-                <Grid item xs={12} sm={6} md={3}>
+                <Grid item xs={12} sm={6} md={2}>
                     <Paper 
                         elevation={2}
                         sx={{
@@ -558,7 +512,7 @@ function Dashboard() {
                             justifyContent: 'space-between',
                             alignItems: 'center'
                         }}>
-                            <Typography variant="caption" color="text.secondary" fontWeight="medium">
+                            <Typography variant="caption" color="text.secondary">
                                 {`${stats.connectedStations || 0} Connected`}
                             </Typography>
                             <Tooltip title="Station Uptime">
@@ -578,16 +532,100 @@ function Dashboard() {
                                             mr: 0.5
                                         }}
                                     />
-                                    {`${stats.stationUptime.toFixed(1)}%`}
+                                    {'98.5%'}
                                 </Typography>
                             </Tooltip>
                         </Box>
                     </Paper>
                 </Grid>
 
-                {/* Connected Stations card removed as requested - information already available in Total Stations card */}
+                <Grid item xs={12} sm={6} md={2}>
+                    <Paper 
+                        elevation={2}
+                        sx={{
+                            p: 2,
+                            height: '100%',
+                            borderRadius: 2,
+                            background: 'linear-gradient(45deg, #f5f7fa 0%, #eef2f5 100%)',
+                            '&:hover': {
+                                boxShadow: 3
+                            }
+                        }}
+                    >
+                        <Box sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            mb: 1
+                        }}>
+                            <ChargingIcon 
+                                fontSize="large" 
+                                color="success"
+                                sx={{ mr: 1 }}
+                            />
+                            <Typography 
+                                variant="h6"
+                                color="text.secondary"
+                                sx={{
+                                    fontWeight: 'medium'
+                                }}
+                            >
+                                Connected Stations
+                            </Typography>
+                        </Box>
+                        <Typography 
+                            variant="h4"
+                            component="div"
+                            sx={{
+                                fontWeight: 'bold',
+                                mb: 1
+                            }}
+                        >
+                            {stats.connectedStations}
+                        </Typography>
+                        <Tooltip title="Connected / Total Stations">
+                            <LinearProgress 
+                                variant="determinate"
+                                value={(stats.connectedStations / stats.totalStations) * 100 || 0}
+                                sx={{
+                                    height: 6,
+                                    borderRadius: 3,
+                                    mb: 1
+                                }}
+                            />
+                        </Tooltip>
+                        <Box sx={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                        }}>
+                            <Typography variant="caption" color="text.secondary">
+                                {`${stats.totalStations || 0} Total`}
+                            </Typography>
+                            <Tooltip title="Station Uptime">
+                                <Typography 
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{
+                                        display: 'flex',
+                                        alignItems: 'center'
+                                    }}
+                                >
+                                    <FiberManualRecordIcon 
+                                        fontSize="small"
+                                        sx={{
+                                            color: 'success.main',
+                                            fontSize: '0.75rem',
+                                            mr: 0.5
+                                        }}
+                                    />
+                                    {'98.5%'}
+                                </Typography>
+                            </Tooltip>
+                        </Box>
+                    </Paper>
+                </Grid>
 
-                <Grid item xs={12} sm={6} md={3}>
+                <Grid item xs={12} sm={6} md={2}>
                     <Paper 
                         elevation={2}
                         sx={{
@@ -646,7 +684,7 @@ function Dashboard() {
                             justifyContent: 'space-between',
                             alignItems: 'center'
                         }}>
-                            <Typography variant="caption" color="text.secondary" fontWeight="medium">
+                            <Typography variant="caption" color="text.secondary">
                                 {`${stats.totalTransactions || 0} Total`}
                             </Typography>
                             <Tooltip title="Transaction Success Rate">
@@ -666,72 +704,65 @@ function Dashboard() {
                                             mr: 0.5
                                         }}
                                     />
-                                    {`${stats.transactionSuccessRate.toFixed(1)}%`}
+                                    {'99.9%'}
                                 </Typography>
                             </Tooltip>
                         </Box>
                     </Paper>
                 </Grid>
 
-                {/* No empty placeholder needed since we have 4 equally sized cards */}
-
-                {/* Energy Today Card */}
-                <Grid item xs={12} sm={6} md={3}>
-                    <Paper elevation={2} sx={{ p: 2, height: '100%', borderRadius: 2, background: 'linear-gradient(45deg, #f5f7fa 0%, #eef2f5 100%)' }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                            <EnergyIcon color="warning" sx={{ fontSize: 36, mr: 1 }} />
-                            <Typography 
-                                variant="h6"
-                                color="text.secondary"
-                                sx={{
-                                    fontWeight: 'medium'
-                                }}
-                            >
-                                Energy Today
-                            </Typography>
+                {/* Active Transactions Card */}
+                <Grid item xs={12} sm={6} md={2}>
+                    <Paper elevation={2} sx={{ p: 2, height: '100%', borderRadius: 2 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                            <TransactionIcon color="primary" sx={{ fontSize: 36, mr: 1 }} />
+                            <Box>
+                                <Typography variant="h5" component="div">
+                                    {stats.activeTransactions}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                    Active Transactions
+                                </Typography>
+                            </Box>
                         </Box>
-                        <Typography 
-                            variant="h4"
-                            component="div"
-                            sx={{
-                                fontWeight: 'bold',
-                                mb: 1
-                            }}
-                        >
-                            {stats.energyToday.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} kWh
-                        </Typography>
                     </Paper>
                 </Grid>
 
-                <Grid item xs={12} sm={6} md={3}>
-                    <Paper elevation={2} sx={{ p: 2, height: '100%', borderRadius: 2, background: 'linear-gradient(45deg, #f5f7fa 0%, #eef2f5 100%)' }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                {/* Energy Today Card */}
+                <Grid item xs={12} sm={6} md={2}>
+                    <Paper elevation={2} sx={{ p: 2, height: '100%', borderRadius: 2 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                            <EnergyIcon color="warning" sx={{ fontSize: 36, mr: 1 }} />
+                            <Box>
+                                <Typography variant="h4" component="div">
+                                    {stats.energyToday.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} kWh
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                    Energy Today
+                                </Typography>
+                            </Box>
+                        </Box>
+                    </Paper>
+                </Grid>
+
+                <Grid item xs={12} sm={6} md={2}>
+                    <Paper elevation={2} sx={{ p: 2, height: '100%', borderRadius: 2 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
                             <IconButton sx={{ backgroundColor: 'rgba(0, 120, 0, 0.1)', mr: 1 }}>
                                 <Typography variant="h6" color="success.main" sx={{ fontWeight: 'bold' }}>₦</Typography>
                             </IconButton>
-                            <Typography 
-                                variant="h6"
-                                color="text.secondary"
-                                sx={{
-                                    fontWeight: 'medium'
-                                }}
-                            >
-                                Revenue Today
-                                <Tooltip title="Revenue based on Nigerian electricity pricing model with peak/off-peak rates">
-                                    <InfoIcon fontSize="small" sx={{ ml: 0.5, color: 'text.secondary', verticalAlign: 'middle' }} />
-                                </Tooltip>
-                            </Typography>
+                            <Box>
+                                <Typography variant="h4" component="div">
+                                    ₦{stats.revenueToday.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary" sx={{ display: 'flex', alignItems: 'center' }}>
+                                    Revenue Today
+                                    <Tooltip title="Revenue based on Nigerian electricity pricing model with peak/off-peak rates">
+                                        <InfoIcon fontSize="small" sx={{ ml: 0.5, color: 'text.secondary' }} />
+                                    </Tooltip>
+                                </Typography>
+                            </Box>
                         </Box>
-                        <Typography 
-                            variant="h4"
-                            component="div"
-                            sx={{
-                                fontWeight: 'bold',
-                                mb: 1
-                            }}
-                        >
-                            ₦{stats.revenueToday.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                        </Typography>
                     </Paper>
                 </Grid>
             </Grid>

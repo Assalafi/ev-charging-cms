@@ -65,16 +65,12 @@ export const getPricingSettings = async () => {
             return cachedSettings;
         }
 
-        // Fetch from database using pricingService
+        // Fetch from database
         const response = await pricingService.getPricingSettings();
 
         if (response && response.success && response.settings) {
-            // Store the settings using the correct property names
             cachedSettings = response.settings;
             lastFetchTime = now;
-            
-            // Log successful fetch
-            console.log('Pricing settings fetched from API:', cachedSettings);
             return cachedSettings;
         } else {
             throw new Error('Invalid response format from pricing service');
@@ -82,19 +78,24 @@ export const getPricingSettings = async () => {
     } catch (error) {
         console.error('Error fetching pricing settings from database:', error);
 
-        // Return default fallback settings that match the global pricing validator format
-        return DEFAULT_SETTINGS;
+        // Default Nigerian EV charging rates if DB fetch fails
+        return {
+            baseRate: 120, // ₦120 per kWh base rate
+            peakRate: 145, // ₦145 per kWh during peak hours
+            offPeakRate: 100, // ₦100 per kWh during off-peak hours
+            memberDiscount: 10, // 10% discount for members
+            minimumCharge: 500 // ₦500 minimum charge
+        };
     }
 };
 
 // Fallback settings for when API calls fail
 const DEFAULT_SETTINGS = {
-    baseRatePerKwh: 120, // ₦120 per kWh base rate
-    peakHourRate: 20, // 20% increase during peak hours
-    offPeakRate: 10, // 10% discount during off-peak hours
+    baseRate: 120, // ₦120 per kWh base rate
+    peakRate: 145, // ₦145 per kWh during peak hours
+    offPeakRate: 100, // ₦100 per kWh during off-peak hours
     memberDiscount: 10, // 10% discount for members
-    minimumCharge: 100, // ₦100 minimum charge
-    currencySymbol: '₦' // Nigerian Naira symbol
+    minimumCharge: 500 // ₦500 minimum charge
 };
 
 /**
@@ -155,27 +156,11 @@ const calculatePriceWithSettings = (energy, isMember, settings) => {
     settings = settings || DEFAULT_SETTINGS;
 
     // Get base rate with fallback
-    const baseRate = settings.baseRatePerKwh || DEFAULT_SETTINGS.baseRatePerKwh;
-    
-    // Determine if current time is peak hours
-    const isPeakHour = new Date().getHours() >= (settings.peakHoursStart || 9) && 
-                       new Date().getHours() < (settings.peakHoursEnd || 22);
-    
-    // Apply peak or off-peak adjustment
-    let effectiveRate = baseRate;
-    if (isPeakHour && settings.peakHourRate) {
-        // Apply peak hour increase
-        effectiveRate = baseRate * (1 + settings.peakHourRate / 100);
-        console.log('Peak hours rate applied:', effectiveRate);
-    } else if (!isPeakHour && settings.offPeakRate) {
-        // Apply off-peak discount
-        effectiveRate = baseRate * (1 - settings.offPeakRate / 100);
-        console.log('Off-peak rate applied:', effectiveRate);
-    }
+    const baseRate = settings.baseRate || DEFAULT_SETTINGS.baseRate;
 
-    // Calculate raw price (values are in Naira)
-    let totalPrice = energy * effectiveRate;
-    console.log('Raw price calculation:', energy, 'kWh ×', effectiveRate, '=', totalPrice);
+    // Calculate raw price
+    let totalPrice = energy * baseRate;
+    console.log('Raw price calculation:', energy, 'kWh ×', baseRate, '=', totalPrice);
 
     // Apply minimum charge
     const minimumCharge = settings.minimumCharge || DEFAULT_SETTINGS.minimumCharge;

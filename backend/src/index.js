@@ -1,98 +1,223 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const { sequelize } = require('./models');
 const logger = require('./utils/logger');
 const routes = require('./routes');
 const ocppServer = require('./ocpp/server');
 const mqttClient = require('./mqtt/client');
+const pricingValidationMiddleware = require('./middleware/pricingValidationMiddleware');
+// const metricsMiddleware = require('./middleware/metrics');
 
-// Load configuration
-const config = require('../../config/backend').backend;
-
-// Debug configuration
-logger.info('Configuration loaded:', {
-  http: config.http,
-  websocket: config.websocket,
-  database: config.database
-});
-
-// Create Express app
+// Initialize Express app
 const app = express();
 const server = http.createServer(app);
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// ======================
+// Security Middleware
+// ======================
+app.use(helmet());
+app.use(express.json({ limit: process.env.MAX_FILE_SIZE || '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: process.env.MAX_FILE_SIZE || '50mb' }));
 
-// Serve static files from public directory
-app.use('/public', express.static(config.static.publicDir));
-app.use(express.static(config.static.publicDir));
+// ======================
+// CORS Configuration
+// ======================
+const corsOptions = {
+  origin: process.env.CORS_ORIGIN?.split(',') || [
+    'https://evcharging.eride.ng',
+    'http://localhost:3000'
+  ],
+  methods: process.env.CORS_METHODS?.split(',') || ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: process.env.CORS_ALLOWED_HEADERS?.split(',') || [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With'
+  ],
+  credentials: process.env.CORS_CREDENTIALS === 'true',
+  preflightContinue: process.env.CORS_PREFLIGHT_CONTINUE === 'true'
+};
 
-// API routes
-app.use(config.http.apiPrefix, routes);
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// ======================
+// Rate Limiting
+// ======================
+const limiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
+  message: process.env.RATE_LIMIT_MESSAGE || 'Too many requests, please try again later'
 });
 
-// OCPP WebSocket server will be initialized in startServer()
+app.use(limiter);
 
-// Connect to MQTT broker if enabled
-if (config.mqtt.enabled) {
-  mqttClient.connect(config.mqtt.broker, config.mqtt.options);
-} else {
-  logger.info('MQTT is disabled by configuration');
-}
+// ======================
+// Static Files
+// ======================
+app.use('/public', express.static(process.env.UPLOADS_DIR || './uploads'));
+app.use('/firmware', express.static(process.env.FIRMWARE_DIR || './uploads/firmware'));
 
-// Get port configuration
-const PORT = config.http.port;
-const WS_PORT = config.websocket.port;
+// ======================
+// Monitoring
+// ======================
+// if (process.env.METRICS_ENABLED === 'true') {
+//  app.use(metricsMiddleware);
+// }
 
-async function startServer() {
+// ======================
+// Global Pricing Validation
+// ======================
+app.use(pricingValidationMiddleware);
+
+// ======================
+// API Routes
+// ======================
+app.use(process.env.API_PREFIX || '/api', routes);
+
+// ======================
+// Health Check
+// ======================
+app.get('/health', (req, res) => {
+  const healthcheck = {
+    uptime: process.uptime(),
+    message: 'OK',
+    timestamp: Date.now(),
+    database: {
+      status: sequelize.authenticate() ? 'connected' : 'disconnected'
+    },
+    mqtt: {
+      status: mqttClient.connected ? 'connected' : 'disconnected'
+    },
+    ocpp: {
+      status: ocppServer.initialized ? 'initialized' : 'not initialized'
+    }
+  };
+  res.status(200).json(healthcheck);
+});
+
+// ======================
+// Error Handling
+// ======================
+app.use((err, req, res, next) => {
+  logger.error('Unhandled Error:', {
+    message: err.message,
+    stack: err.stack,
+    url: req.originalUrl,
+    method: req.method,
+    body: req.body,
+    params: req.params,
+    query: req.query
+  });
+
+  res.status(err.status || 500).json({
+    success: false,
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+});
+
+// ======================
+// Database Connection
+// ======================
+async function initializeDatabase() {
   try {
-    // Connect to database and sync models
     await sequelize.authenticate();
     logger.info('Database connection established successfully');
-    
-    // Sync database with configured options
-    await sequelize.sync(config.database.sync);
-    logger.info('Database models synchronized');
-    
-    // Start HTTP server for REST API
-    server.listen(PORT, config.http.host, () => {
-      logger.info(`HTTP server running on ${config.http.baseUrl}`);
+
+    if (process.env.NODE_ENV === 'development') {
+      await sequelize.sync({ alter: true });
+      logger.info('Database models synchronized with alter');
+    } else {
+      await sequelize.sync();
+      logger.info('Database models synchronized');
+    }
+  } catch (error) {
+    logger.error('Database connection failed:', error);
+    process.exit(1);
+  }
+}
+
+// ======================
+// MQTT Connection
+// ======================
+function initializeMQTT() {
+  if (process.env.MQTT_ENABLED === 'true') {
+    mqttClient.connect({
+      host: process.env.MQTT_HOST,
+      port: parseInt(process.env.MQTT_PORT),
+      clientId: process.env.MQTT_CLIENT_ID,
+      username: process.env.MQTT_USERNAME,
+      password: process.env.MQTT_PASSWORD,
+      protocol: process.env.MQTT_PROTOCOL,
+      qos: parseInt(process.env.MQTT_QOS),
+      retain: process.env.MQTT_RETAIN === 'true'
     });
-    
-    // Start dedicated WebSocket server for OCPP
-    // This is the single source of truth for OCPP connections
+  }
+}
+
+// ======================
+// Server Initialization
+// ======================
+async function startServer() {
+  try {
+    // Initialize services
+    await initializeDatabase();
+    initializeMQTT();
+
+    // Start HTTP server
+    server.listen(process.env.PORT, process.env.HOST, () => {
+      logger.info(`HTTP server running on ${process.env.BASE_URL}`);
+    });
+
+    // Start OCPP WebSocket server
     const wsServer = http.createServer();
-    
-    // Initialize the OCPP server with this dedicated WebSocket server
-    ocppServer.init(wsServer, { path: config.websocket.path });
-    
-    // Start listening on the WebSocket port
-    const wsHost = config.websocket.host || 'localhost';
-    wsServer.listen(WS_PORT, wsHost, () => {
-      logger.info(`OCPP WebSocket server running on ws://${wsHost}:${WS_PORT}${config.websocket.path}`);
-      logger.info(`OCPP server initialized successfully: ${ocppServer._isInitialized() ? 'Yes' : 'No'}`);
+    ocppServer.init(wsServer, {
+      path: process.env.OCPP_SERVER_PATH,
+      supportedProtocols: process.env.OCPP_SUPPORTED_VERSIONS?.split(',')
     });
+
+    wsServer.listen(process.env.OCPP_SERVER_PORT, process.env.OCPP_SERVER_HOST, () => {
+      logger.info(`OCPP WebSocket server running on ws://${process.env.OCPP_SERVER_HOST}:${process.env.OCPP_SERVER_PORT}${process.env.OCPP_SERVER_PATH}`);
+    });
+
+    // Start metrics server if enabled
+    // if (process.env.METRICS_ENABLED === 'true') {
+    //  const metricsServer = http.createServer();
+    //  metricsServer.listen(process.env.METRICS_PORT, () => {
+    //    logger.info(`Metrics server running on port ${process.env.METRICS_PORT}`);
+    //  });
+    // }
   } catch (error) {
     logger.error('Failed to start server:', error);
     process.exit(1);
   }
 }
 
-startServer();
-
-// Handle graceful shutdown
+// ======================
+// Graceful Shutdown
+// ======================
 process.on('SIGINT', async () => {
-  logger.info('Shutting down server...');
-  await mqttClient.disconnect();
-  await sequelize.close();
-  process.exit(0);
+  logger.info('Shutting down server gracefully...');
+  
+  try {
+    await Promise.all([
+      mqttClient.disconnect(),
+      sequelize.close(),
+      new Promise(resolve => server.close(resolve))
+    ]);
+    logger.info('Server shutdown complete');
+    process.exit(0);
+  } catch (error) {
+    logger.error('Error during shutdown:', error);
+    process.exit(1);
+  }
 });
 
-// Export app for testing
+// Start the server
+startServer();
+
 module.exports = app;

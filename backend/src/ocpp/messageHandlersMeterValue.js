@@ -83,14 +83,6 @@ async function handleAuthorize(chargePointId, uniqueId, payload) {
     logger.info(
       `Authorization result for ${idTag}: ${JSON.stringify(authResult)}`
     )
-    // Force 24-hour expiry for all accepted tags
-    let expiryDate = null
-    if (authResult.status === "Accepted") {
-      const now = new Date()
-      now.setHours(now.getHours() + 24)
-      expiryDate = now.toISOString()
-      logger.info(`Set 24-hour expiry for ${idTag}: ${expiryDate}`)
-    }
 
     // Return OCPP 1.6 compliant response
     return [
@@ -99,7 +91,7 @@ async function handleAuthorize(chargePointId, uniqueId, payload) {
       {
         idTagInfo: {
           status: authResult.status,
-          expiryDate: expiryDate,
+          expiryDate: authResult.expiryDate,
           parentIdTag: authResult.parentId,
         },
       },
@@ -122,7 +114,7 @@ async function handleAuthorize(chargePointId, uniqueId, payload) {
 /**
  * Handle StartTransaction request - OCPP 1.6 COMPLIANT IMPLEMENTATION
  */
-async function handleStartTransaction1(chargePointId, uniqueId, payload) {
+async function handleStartTransaction(chargePointId, uniqueId, payload) {
   try {
     logger.info(
       `Processing StartTransaction from ${chargePointId}: ${JSON.stringify(
@@ -150,14 +142,6 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
       logger.warn(
         `Rejected transaction start from ${chargePointId}: Tag ${normalizedPayload.idTag} status is ${authResult.status}`
       )
-      // Force 24-hour expiry for all accepted tags
-      let expiryDate = null
-      if (authResult.status === "Accepted") {
-        const now = new Date()
-        now.setHours(now.getHours() + 24)
-        expiryDate = now.toISOString()
-        logger.info(`Set 24-hour expiry for ${idTag}: ${expiryDate}`)
-      }
 
       return [
         3,
@@ -166,7 +150,7 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
           transactionId: 0,
           idTagInfo: {
             status: authResult.status,
-            expiryDate: expiryDate,
+            expiryDate: authResult.expiryDate,
           },
         },
       ]
@@ -400,7 +384,8 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
             JSON.stringify({
               timestamp: new Date().toISOString(),
               energy: 0,
-              power: Math.round(Math.random() * 3000) + 2000, // Initial power between 2-5kW
+              power: Math.round(Math.random() * 3000) + 2000,
+              batteryPercentage: 20,
               chargePointId,
               transactionId: transaction.transactionId,
               connectorId: normalizedPayload.connectorId,
@@ -411,14 +396,6 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
           logger.error(`Error publishing to MQTT: ${mqttError.message}`)
         }
       }
-      // Force 24-hour expiry for all accepted tags
-      let expiryDate = null
-      if (authResult.status === "Accepted") {
-        const now = new Date()
-        now.setHours(now.getHours() + 24)
-        expiryDate = now.toISOString()
-        logger.info(`Set 24-hour expiry for ${idTag}: ${expiryDate}`)
-      }
 
       // Return OCPP 1.6 compliant response
       return [
@@ -428,7 +405,7 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
           transactionId: normalizedPayload.transactionId,
           idTagInfo: {
             status: "Accepted",
-            expiryDate: expiryDate,
+            expiryDate: authResult.expiryDate,
             parentIdTag: authResult.parentId,
           },
         },
@@ -461,167 +438,6 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
         idTagInfo: {
           status: "Invalid",
           info: "Internal server error",
-        },
-      },
-    ]
-  }
-}
-/**
- * Handle StartTransaction request - OCPP 1.6 COMPLIANT IMPLEMENTATION
- */
-async function handleStartTransaction(chargePointId, uniqueId, payload) {
-  let transaction
-  try {
-    logger.info(
-      `Processing StartTransaction from ${chargePointId}: ${JSON.stringify(
-        payload
-      )}`
-    )
-
-    // Normalize the payload to handle different formats
-    const normalizedPayload = {
-      connectorId: payload.connectorId || 1,
-      idTag: payload.idTag,
-      timestamp: payload.timestamp || new Date().toISOString(),
-      meterStart:
-        payload.meterStart !== undefined ? parseFloat(payload.meterStart) : 0,
-      reservationId: payload.reservationId,
-    }
-
-    // First check if the tag is authorized for charging
-    const authResult = await tagAuthService.isAuthorized(
-      normalizedPayload.idTag
-    )
-
-    if (authResult.status !== "Accepted") {
-      logger.warn(
-        `Rejected transaction start from ${chargePointId}: Tag ${normalizedPayload.idTag} status is ${authResult.status}`
-      )
-      return [
-        3,
-        uniqueId,
-        {
-          transactionId: 0,
-          idTagInfo: {
-            status: authResult.status,
-          },
-        },
-      ]
-    }
-
-    // Generate a transaction ID if not provided
-    if (!payload.transactionId) {
-      normalizedPayload.transactionId = Math.floor(Math.random() * 1000000) + 1
-      logger.info(
-        `Generated transaction ID: ${normalizedPayload.transactionId}`
-      )
-    } else {
-      normalizedPayload.transactionId = payload.transactionId
-    }
-
-    // Handle meter start value
-    if (normalizedPayload.meterStart === 0) {
-      logger.info(
-        `Received meterStart=0 for ${chargePointId}, using 0 as start value`
-      )
-      // For now, just accept 0 - we'll update with actual values from MeterValues
-    }
-
-    // Create a new transaction record
-    transaction = await Transaction.create({
-      transactionId: normalizedPayload.transactionId,
-      chargePointId,
-      connectorId: normalizedPayload.connectorId,
-      idTag: normalizedPayload.idTag,
-      startTime: new Date(normalizedPayload.timestamp),
-      startMeterValue: normalizedPayload.meterStart,
-      currentMeterValue: normalizedPayload.meterStart,
-      energyDelivered: 0,
-      status: "InProgress",
-    })
-
-    logger.info(
-      `Created transaction ${transaction.transactionId} for ${chargePointId}`
-    )
-
-    // Update connector status
-    await updateConnectorStatus(
-      chargePointId,
-      normalizedPayload.connectorId,
-      "Charging",
-      transaction.transactionId
-    )
-
-    // Update charging station status
-    await ChargingStation.update(
-      {
-        status: "Charging",
-        currentTransaction: transaction.transactionId,
-      },
-      { where: { chargePointId: chargePointId } }
-    )
-
-    // Start charging session tracking
-    if (chargingSessionTracker) {
-      chargingSessionTracker.startSession(
-        transaction.transactionId,
-        [],
-        normalizedPayload.meterStart
-      )
-    }
-
-    // Publish to MQTT
-    if (mqttClient) {
-      mqttClient.publish(
-        `ocpp/transactions/${transaction.transactionId}/start`,
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          chargePointId,
-          connectorId: normalizedPayload.connectorId,
-          transactionId: transaction.transactionId,
-          idTag: normalizedPayload.idTag,
-          meterStart: normalizedPayload.meterStart,
-        })
-      )
-    }
-
-    // Calculate expiry date for response
-    let expiryDate = null
-    if (authResult.status === "Accepted") {
-      const now = new Date()
-      now.setHours(now.getHours() + 24)
-      expiryDate = now.toISOString()
-    }
-
-    // Return SUCCESS response
-    return [
-      3,
-      uniqueId,
-      {
-        transactionId: normalizedPayload.transactionId,
-        idTagInfo: {
-          status: "Accepted",
-          expiryDate: expiryDate,
-          parentIdTag: authResult.parentId,
-        },
-      },
-    ]
-  } catch (error) {
-    logger.error(
-      `Error handling StartTransaction from ${chargePointId}:`,
-      error
-    )
-
-    // Return a proper error response but don't block the transaction
-    const fallbackTransactionId = Math.floor(Math.random() * 1000000) + 1
-
-    return [
-      3,
-      uniqueId,
-      {
-        transactionId: fallbackTransactionId,
-        idTagInfo: {
-          status: "Accepted", // Still accept the transaction even on error
         },
       },
     ]
@@ -853,10 +669,18 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
             timestamp: normalizedPayload.timestamp,
             energy: energyDelivered,
             power: 0, // Power is 0 when transaction stops
+            batteryPercentage: 100, // Use actual value if available
+            price: transactionAmount, // Include price for consistency
+            amount: transactionAmount, // Include amount for consistency
             chargePointId,
             transactionId: normalizedPayload.transactionId,
             connectorId: transaction.connectorId,
             status: "Completed",
+            duration: Math.floor(
+              (new Date(normalizedPayload.timestamp) -
+                new Date(transaction.startTime)) /
+                1000
+            ), // Add duration
           })
         )
 
@@ -928,14 +752,6 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         // Use default Accepted status
       }
     }
-    // Force 24-hour expiry for all accepted tags
-    let expiryDate = null
-    if (authResult.status === "Accepted") {
-      const now = new Date()
-      now.setHours(now.getHours() + 24)
-      expiryDate = now.toISOString()
-      logger.info(`Set 24-hour expiry for ${idTag}: ${expiryDate}`)
-    }
 
     // Return OCPP 1.6 compliant response
     return [
@@ -944,7 +760,7 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
       {
         idTagInfo: {
           status: authResult.status,
-          expiryDate: expiryDate,
+          expiryDate: authResult.expiryDate,
           parentIdTag: authResult.parentId,
         },
       },
@@ -1148,9 +964,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                       await transaction.update({
                         stopMeterValue: energyValue,
                         energyDelivered: energyDelivered,
-                        amount: amount, // Store the final amount (with minimum charge and discounts)
-                        batteryPercentage:
-                          batteryPercentage || transaction.batteryPercentage, // Only update if we have a new value
+                        amount: amount,
                       })
 
                       // Publish energy update to MQTT

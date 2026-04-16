@@ -28,14 +28,16 @@ module.exports = {
         
         // MQTT Configuration
         mqtt: {
-            enabled: process.env.MQTT_ENABLED !== 'false',
-            broker: process.env.MQTT_BROKER || 'mqtt://localhost',
-            options: {
-                username: process.env.MQTT_USERNAME,
-                password: process.env.MQTT_PASSWORD,
-                clientId: 'ev-cms-backend',
-            },
-        },
+    enabled: process.env.MQTT_ENABLED !== 'false',
+    broker: process.env.MQTT_BROKER || 'mqtt://localhost:1883',
+    options: {
+        username: process.env.MQTT_USERNAME || 'ev_cms_admin',
+        password: process.env.MQTT_PASSWORD || 'Assalafi@139',
+        clientId: 'ev-cms-backend_prod',
+        reconnectPeriod: 5000,
+        keepalive: 60
+    },
+},
         
         // Static Files
         static: {

@@ -484,147 +484,66 @@ router.get('/:id/connection', authenticate, async (req, res) => {
  */
 router.get('/:id/status', authenticate, async (req, res) => {
     try {
-        logger.info(`Fetching station status for: ${req.params.id}`);
-        
-        // Step 1: Find the station in the database
         const station = await ChargingStation.findOne({
             where: {
                 chargePointId: req.params.id
             },
-            attributes: ['id', 'chargePointId', 'name', 'status', 'lastHeartbeat', 'firmwareVersion', 'lastConnection', 'currentTransaction']
+            attributes: ['id', 'chargePointId', 'name', 'status', 'lastHeartbeat', 'firmwareVersion', 'ocppVersion', 'registeredDate']
         });
 
         if (!station) {
-            logger.warn(`Station not found with ID: ${req.params.id}`);
             return res.status(404).json({
                 success: false,
                 message: 'Charging station not found'
             });
         }
-        
-        // Step 2: Try to get connection status with proper error handling
-        let isConnected = false;
-        try {
-            isConnected = ocppServer && ocppServer.isConnected ? ocppServer.isConnected(station.chargePointId) : false;
-            logger.debug(`Connection status for ${station.chargePointId}: ${isConnected}`);
-        } catch (connError) {
-            logger.warn(`Failed to get connection status for ${station.chargePointId}`, connError);
-            // Continue with isConnected = false instead of crashing
-        }
 
-        // Step 3: Get current active transaction if any
-        let activeTransaction = null;
-        try {
-            activeTransaction = await Transaction.findOne({
-                where: {
-                    chargePointId: req.params.id,
-                    status: 'InProgress'
-                },
-                order: [['startTime', 'DESC']]
-            });
-            
-            if (activeTransaction) {
-                logger.debug(`Active transaction found: ${activeTransaction.transactionId}`);
-            }
-        } catch (txError) {
-            logger.warn(`Error fetching transactions for station ${req.params.id}:`, txError);
-            // Continue without transaction data
-        }
+        // Add connection status
+        const isConnected = ocppServer.isConnected(station.chargePointId);
 
-        // Step 4: Get connector status from OCPP server with proper error handling
+        // Get current active transaction if any
+        const activeTransaction = await Transaction.findOne({
+            where: {
+                chargePointId: req.params.id,
+                status: 'InProgress'
+            },
+            order: [
+                ['startTime', 'DESC']
+            ]
+        });
+
+        // Get connector status from OCPP server
         let connectorStatus = [];
         try {
-            if (ocppServer && ocppServer.getConnectorStatus) {
-                connectorStatus = ocppServer.getConnectorStatus(station.chargePointId) || [];
-            }
-        } catch (connStatusError) {
-            logger.warn(`Failed to get connector status for ${station.chargePointId}`, connStatusError);
-            // Continue with empty connector status
+            connectorStatus = ocppServer.getConnectorStatus(station.chargePointId) || [];
+        } catch (err) {
+            logger.warn(`Failed to get connector status for ${station.chargePointId}`, err);
         }
 
-        // Step 5: Update station status based on active transaction or connector status
+        // Update station status based on active transaction or connector status
         let updatedStatus = station.status;
         if (activeTransaction) {
             updatedStatus = 'Charging';
-            logger.debug(`Setting station status to Charging due to active transaction`);
         } else if (connectorStatus.length > 0) {
             // Find available connector
             const availableConnector = connectorStatus.find(c => c.status === 'Available');
             if (availableConnector) {
                 updatedStatus = 'Available';
-                logger.debug(`Setting station status to Available due to connector availability`);
             }
         }
 
-        // Step 6: Try to update the station status in the database if needed
-        try {
-            if (updatedStatus !== station.status) {
-                logger.debug(`Updating station status from ${station.status} to ${updatedStatus}`);
-                await station.update({
-                    status: updatedStatus
-                });
-            }
-        } catch (updateError) {
-            logger.warn(`Failed to update station status for ${station.chargePointId}:`, updateError);
-            // Continue with current status
-        }
-        
-        // Step 7: Include energy consumption data and charging duration if station is charging
-        let energyConsumption = null;
-        let chargingDuration = 0;
-        let batteryPercentage = 0;
-        let chargingPower = 0;
-        
-        if (updatedStatus === 'Charging' && activeTransaction) {
-            try {
-                // Try to get energy consumption from the active transaction
-                energyConsumption = activeTransaction.energyDelivered || '0.00';
-                
-                // Calculate charging duration in seconds
-                if (activeTransaction.startTime) {
-                    const startTime = new Date(activeTransaction.startTime);
-                    const now = new Date();
-                    chargingDuration = Math.floor((now - startTime) / 1000); // in seconds
-                    logger.debug(`Calculated charging duration: ${chargingDuration} seconds`);
-                    
-                    // Estimate charging power (kW) - if we have energy and duration
-                    if (parseFloat(energyConsumption) > 0 && chargingDuration > 0) {
-                        // energyDelivered is usually in kWh, convert duration to hours
-                        const durationHours = chargingDuration / 3600;
-                        if (durationHours > 0) {
-                            chargingPower = parseFloat(energyConsumption) / durationHours;
-                            logger.debug(`Estimated charging power: ${chargingPower} kW`);
-                        }
-                    }
-                }
-                
-                // Estimate battery percentage based on typical EV battery (60kWh)
-                // Starting from 20% and charging to 80% (common charging range)
-                const typicalEVBattery = 60; // kWh
-                const startingPercentage = 20;
-                const chargingRange = 60; // from 20% to 80% = 60% range
-                
-                // Calculate estimated percentage gain from energy delivered
-                const percentageGain = (parseFloat(energyConsumption) / typicalEVBattery) * 100;
-                batteryPercentage = Math.min(80, Math.max(20, Math.round(startingPercentage + percentageGain)));
-                logger.debug(`Estimated battery percentage: ${batteryPercentage}%`);
-                
-            } catch (energyError) {
-                logger.warn('Error calculating charging metrics:', energyError);
-            }
+        // Update the station status in the database if it has changed
+        if (updatedStatus !== station.status) {
+            await station.update({
+                status: updatedStatus
+            });
         }
 
-        // Step 8: Return the full station data with all the information we could gather
         res.json({
             success: true,
             station: {
                 ...station.toJSON(),
-                status: updatedStatus, // Use the latest status even if DB update failed
                 isConnected,
-                energyConsumption,
-                chargingDuration,
-                batteryPercentage,
-                chargingPower,
                 currentTransaction: activeTransaction?.transactionId || null,
                 connectors: connectorStatus
             }

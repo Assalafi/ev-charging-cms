@@ -83,14 +83,6 @@ async function handleAuthorize(chargePointId, uniqueId, payload) {
     logger.info(
       `Authorization result for ${idTag}: ${JSON.stringify(authResult)}`
     )
-    // Force 24-hour expiry for all accepted tags
-    let expiryDate = null
-    if (authResult.status === "Accepted") {
-      const now = new Date()
-      now.setHours(now.getHours() + 24)
-      expiryDate = now.toISOString()
-      logger.info(`Set 24-hour expiry for ${idTag}: ${expiryDate}`)
-    }
 
     // Return OCPP 1.6 compliant response
     return [
@@ -99,7 +91,7 @@ async function handleAuthorize(chargePointId, uniqueId, payload) {
       {
         idTagInfo: {
           status: authResult.status,
-          expiryDate: expiryDate,
+          expiryDate: authResult.expiryDate,
           parentIdTag: authResult.parentId,
         },
       },
@@ -122,7 +114,7 @@ async function handleAuthorize(chargePointId, uniqueId, payload) {
 /**
  * Handle StartTransaction request - OCPP 1.6 COMPLIANT IMPLEMENTATION
  */
-async function handleStartTransaction1(chargePointId, uniqueId, payload) {
+async function handleStartTransaction(chargePointId, uniqueId, payload) {
   try {
     logger.info(
       `Processing StartTransaction from ${chargePointId}: ${JSON.stringify(
@@ -150,14 +142,6 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
       logger.warn(
         `Rejected transaction start from ${chargePointId}: Tag ${normalizedPayload.idTag} status is ${authResult.status}`
       )
-      // Force 24-hour expiry for all accepted tags
-      let expiryDate = null
-      if (authResult.status === "Accepted") {
-        const now = new Date()
-        now.setHours(now.getHours() + 24)
-        expiryDate = now.toISOString()
-        logger.info(`Set 24-hour expiry for ${idTag}: ${expiryDate}`)
-      }
 
       return [
         3,
@@ -166,7 +150,7 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
           transactionId: 0,
           idTagInfo: {
             status: authResult.status,
-            expiryDate: expiryDate,
+            expiryDate: authResult.expiryDate,
           },
         },
       ]
@@ -411,14 +395,6 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
           logger.error(`Error publishing to MQTT: ${mqttError.message}`)
         }
       }
-      // Force 24-hour expiry for all accepted tags
-      let expiryDate = null
-      if (authResult.status === "Accepted") {
-        const now = new Date()
-        now.setHours(now.getHours() + 24)
-        expiryDate = now.toISOString()
-        logger.info(`Set 24-hour expiry for ${idTag}: ${expiryDate}`)
-      }
 
       // Return OCPP 1.6 compliant response
       return [
@@ -428,7 +404,7 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
           transactionId: normalizedPayload.transactionId,
           idTagInfo: {
             status: "Accepted",
-            expiryDate: expiryDate,
+            expiryDate: authResult.expiryDate,
             parentIdTag: authResult.parentId,
           },
         },
@@ -461,167 +437,6 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
         idTagInfo: {
           status: "Invalid",
           info: "Internal server error",
-        },
-      },
-    ]
-  }
-}
-/**
- * Handle StartTransaction request - OCPP 1.6 COMPLIANT IMPLEMENTATION
- */
-async function handleStartTransaction(chargePointId, uniqueId, payload) {
-  let transaction
-  try {
-    logger.info(
-      `Processing StartTransaction from ${chargePointId}: ${JSON.stringify(
-        payload
-      )}`
-    )
-
-    // Normalize the payload to handle different formats
-    const normalizedPayload = {
-      connectorId: payload.connectorId || 1,
-      idTag: payload.idTag,
-      timestamp: payload.timestamp || new Date().toISOString(),
-      meterStart:
-        payload.meterStart !== undefined ? parseFloat(payload.meterStart) : 0,
-      reservationId: payload.reservationId,
-    }
-
-    // First check if the tag is authorized for charging
-    const authResult = await tagAuthService.isAuthorized(
-      normalizedPayload.idTag
-    )
-
-    if (authResult.status !== "Accepted") {
-      logger.warn(
-        `Rejected transaction start from ${chargePointId}: Tag ${normalizedPayload.idTag} status is ${authResult.status}`
-      )
-      return [
-        3,
-        uniqueId,
-        {
-          transactionId: 0,
-          idTagInfo: {
-            status: authResult.status,
-          },
-        },
-      ]
-    }
-
-    // Generate a transaction ID if not provided
-    if (!payload.transactionId) {
-      normalizedPayload.transactionId = Math.floor(Math.random() * 1000000) + 1
-      logger.info(
-        `Generated transaction ID: ${normalizedPayload.transactionId}`
-      )
-    } else {
-      normalizedPayload.transactionId = payload.transactionId
-    }
-
-    // Handle meter start value
-    if (normalizedPayload.meterStart === 0) {
-      logger.info(
-        `Received meterStart=0 for ${chargePointId}, using 0 as start value`
-      )
-      // For now, just accept 0 - we'll update with actual values from MeterValues
-    }
-
-    // Create a new transaction record
-    transaction = await Transaction.create({
-      transactionId: normalizedPayload.transactionId,
-      chargePointId,
-      connectorId: normalizedPayload.connectorId,
-      idTag: normalizedPayload.idTag,
-      startTime: new Date(normalizedPayload.timestamp),
-      startMeterValue: normalizedPayload.meterStart,
-      currentMeterValue: normalizedPayload.meterStart,
-      energyDelivered: 0,
-      status: "InProgress",
-    })
-
-    logger.info(
-      `Created transaction ${transaction.transactionId} for ${chargePointId}`
-    )
-
-    // Update connector status
-    await updateConnectorStatus(
-      chargePointId,
-      normalizedPayload.connectorId,
-      "Charging",
-      transaction.transactionId
-    )
-
-    // Update charging station status
-    await ChargingStation.update(
-      {
-        status: "Charging",
-        currentTransaction: transaction.transactionId,
-      },
-      { where: { chargePointId: chargePointId } }
-    )
-
-    // Start charging session tracking
-    if (chargingSessionTracker) {
-      chargingSessionTracker.startSession(
-        transaction.transactionId,
-        [],
-        normalizedPayload.meterStart
-      )
-    }
-
-    // Publish to MQTT
-    if (mqttClient) {
-      mqttClient.publish(
-        `ocpp/transactions/${transaction.transactionId}/start`,
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          chargePointId,
-          connectorId: normalizedPayload.connectorId,
-          transactionId: transaction.transactionId,
-          idTag: normalizedPayload.idTag,
-          meterStart: normalizedPayload.meterStart,
-        })
-      )
-    }
-
-    // Calculate expiry date for response
-    let expiryDate = null
-    if (authResult.status === "Accepted") {
-      const now = new Date()
-      now.setHours(now.getHours() + 24)
-      expiryDate = now.toISOString()
-    }
-
-    // Return SUCCESS response
-    return [
-      3,
-      uniqueId,
-      {
-        transactionId: normalizedPayload.transactionId,
-        idTagInfo: {
-          status: "Accepted",
-          expiryDate: expiryDate,
-          parentIdTag: authResult.parentId,
-        },
-      },
-    ]
-  } catch (error) {
-    logger.error(
-      `Error handling StartTransaction from ${chargePointId}:`,
-      error
-    )
-
-    // Return a proper error response but don't block the transaction
-    const fallbackTransactionId = Math.floor(Math.random() * 1000000) + 1
-
-    return [
-      3,
-      uniqueId,
-      {
-        transactionId: fallbackTransactionId,
-        idTagInfo: {
-          status: "Accepted", // Still accept the transaction even on error
         },
       },
     ]
@@ -695,70 +510,50 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
       let transactionAmount = 0
       try {
         // Use the global pricing validator
-        const { isValid, settings, error } = await validatePricingSettings(
-          `StopTransaction:${transaction.transactionId}`
-        )
-
+        const { isValid, settings, error } = await validatePricingSettings(`StopTransaction:${transaction.transactionId}`)
+        
         if (!isValid) {
           throw new Error(`Pricing validation failed: ${error}`)
         }
-
+        
         // Only convert Wh to kWh if needed - check if already in kWh
-        const energyInKwh =
-          energyDelivered > 100 ? energyDelivered / 1000 : energyDelivered
-        logger.debug(
-          `StopTransaction ENERGY CHECK: Original value=${energyDelivered}, interpreted as=${energyInKwh} kWh`
-        )
-
+        const energyInKwh = energyDelivered > 100 ? energyDelivered / 1000 : energyDelivered
+        logger.debug(`StopTransaction ENERGY CHECK: Original value=${energyDelivered}, interpreted as=${energyInKwh} kWh`)
+        
         // Access the validated and parsed settings directly
-        let ratePerKwh = settings.baseRatePerKwh
+        let ratePerKwh = settings.baseRatePerKwh;
 
         // Add detailed debug logging for troubleshooting
-        logger.debug(
-          `StopTransaction DETAILED PRICING: ` +
-            `DB baseRatePerKwh=${settings.baseRatePerKwh}, ` +
-            `minimumCharge=${settings.minimumCharge}, ` +
-            `memberDiscount=${settings.memberDiscount}`
-        )
-
+        logger.debug(`StopTransaction DETAILED PRICING: ` +
+                    `DB baseRatePerKwh=${settings.baseRatePerKwh}, ` +
+                    `minimumCharge=${settings.minimumCharge}, ` +
+                    `memberDiscount=${settings.memberDiscount}`);
+        
         // Log raw values before calculation
-        logger.debug(
-          `StopTransaction RAW VALUES: ` +
-            `energyDelivered=${energyDelivered} Wh, ` +
-            `energyInKwh=${energyInKwh} kWh, ` +
-            `ratePerKwh=${ratePerKwh} Naira/kWh`
-        )
-
+        logger.debug(`StopTransaction RAW VALUES: ` +
+                    `energyDelivered=${energyDelivered} Wh, ` +
+                    `energyInKwh=${energyInKwh} kWh, ` +
+                    `ratePerKwh=${ratePerKwh} Naira/kWh`);
+        
         // Calculate raw amount
         let rawAmount = energyInKwh * ratePerKwh
-
+        
         // Log calculation
-        logger.debug(
-          `StopTransaction CALCULATION: ${energyInKwh} kWh * ${ratePerKwh} Naira/kWh = ${rawAmount} Naira`
-        )
-
+        logger.debug(`StopTransaction CALCULATION: ${energyInKwh} kWh * ${ratePerKwh} Naira/kWh = ${rawAmount} Naira`);
+        
         // Record whether minimum charge is being applied
         const isUsingMinimumCharge = rawAmount < settings.minimumCharge
         let amount = isUsingMinimumCharge ? settings.minimumCharge : rawAmount
-
+        
         // Apply member discount if applicable
-        const isMember =
-          transaction.idTag && transaction.idTag.includes("MEMBER")
+        const isMember = transaction.idTag && transaction.idTag.includes("MEMBER")
         if (isMember) {
           amount = amount * (1 - settings.memberDiscount / 100)
         }
-
+        
         transactionAmount = amount
         logger.info(
-          `Calculated transaction amount: ${transactionAmount} for transaction ${
-            transaction.transactionId
-          } (${energyInKwh} kWh, raw: ${rawAmount.toFixed(
-            2
-          )} Naira, min charge: ${settings.minimumCharge} Naira${
-            isUsingMinimumCharge ? " - APPLIED" : ""
-          }, member discount: ${
-            isMember ? settings.memberDiscount + "%" : "none"
-          })`
+          `Calculated transaction amount: ${transactionAmount} for transaction ${transaction.transactionId} (${energyInKwh} kWh, raw: ${rawAmount.toFixed(2)} Naira, min charge: ${settings.minimumCharge} Naira${isUsingMinimumCharge ? ' - APPLIED' : ''}, member discount: ${isMember ? settings.memberDiscount + '%' : 'none'})`
         )
       } catch (priceError) {
         logger.error(`Error calculating transaction amount:`, priceError)
@@ -781,7 +576,8 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         stopMeterValue: normalizedPayload.meterStop,
         energyDelivered: energyDelivered,
         amount: transactionAmount,
-        reason: normalizedPayload.reason,
+        stoppedBy: normalizedPayload.idTag || transaction.idTag,
+        stopReason: normalizedPayload.reason,
       })
 
       logger.info(
@@ -928,14 +724,6 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         // Use default Accepted status
       }
     }
-    // Force 24-hour expiry for all accepted tags
-    let expiryDate = null
-    if (authResult.status === "Accepted") {
-      const now = new Date()
-      now.setHours(now.getHours() + 24)
-      expiryDate = now.toISOString()
-      logger.info(`Set 24-hour expiry for ${idTag}: ${expiryDate}`)
-    }
 
     // Return OCPP 1.6 compliant response
     return [
@@ -944,7 +732,7 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
       {
         idTagInfo: {
           status: authResult.status,
-          expiryDate: expiryDate,
+          expiryDate: authResult.expiryDate,
           parentIdTag: authResult.parentId,
         },
       },
@@ -996,33 +784,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
           const timestamp = meterValue.timestamp
           const sampledValues = meterValue.sampledValue || []
 
-          // Extract important values from meter readings
-          let batteryPercentage = null
-          let powerValue = null
-
           for (const sampledValue of sampledValues) {
-            // Check for SoC (battery percentage)
-            if (
-              sampledValue.measurand === "SoC" &&
-              sampledValue.unit === "Percent"
-            ) {
-              batteryPercentage = parseInt(sampledValue.value, 10)
-              logger.debug(
-                `Found SoC: ${batteryPercentage}% for transaction ${transactionId} on ${chargePointId}`
-              )
-            }
-
-            // Check for Power readings
-            if (
-              sampledValue.measurand === "Power.Active.Import" &&
-              sampledValue.unit === "W"
-            ) {
-              powerValue = parseInt(sampledValue.value, 10)
-              logger.debug(
-                `Found Power: ${powerValue}W for transaction ${transactionId} on ${chargePointId}`
-              )
-            }
-
             // Extract energy values
             if (
               sampledValue.measurand === "Energy.Active.Import.Register" ||
@@ -1071,68 +833,50 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                       let amount = 0 // Final amount to be paid including minimum charge and discounts
                       try {
                         // Use the global pricing validator
-                        const { isValid, settings, error } =
-                          await validatePricingSettings(
-                            `MeterValues:${transactionId}`
-                          )
-
+                        const { isValid, settings, error } = await validatePricingSettings(`MeterValues:${transactionId}`)
+                        
                         if (!isValid) {
-                          throw new Error(`Pricing validation failed: ${error}`)
+                          throw new Error(`Pricing validation failed: ${error}`);
                         }
-
+                        
                         // Access the validated and parsed settings
-                        let ratePerKwh = settings.baseRatePerKwh
+                        let ratePerKwh = settings.baseRatePerKwh;
 
                         // Add comprehensive debug logging
-                        logger.debug(
-                          `MeterValues DETAILED PRICING: DB baseRatePerKwh=${settings.baseRatePerKwh}, ` +
-                            `minimumCharge=${settings.minimumCharge}, ` +
-                            `memberDiscount=${settings.memberDiscount}`
-                        )
+                        logger.debug(`MeterValues DETAILED PRICING: DB baseRatePerKwh=${settings.baseRatePerKwh}, ` + 
+                                    `minimumCharge=${settings.minimumCharge}, ` +
+                                    `memberDiscount=${settings.memberDiscount}`);
 
                         // More robust energy unit conversion
                         // Check if value is already in kWh range or explicitly in kWh unit
-                        const isAlreadyInKwh =
-                          unit === "kWh" || energyDelivered < 100
-                        const energyInKwh = isAlreadyInKwh
-                          ? energyDelivered
-                          : energyDelivered / 1000
-
-                        logger.debug(
-                          `MeterValues ENERGY CHECK: Original value=${energyDelivered}, unit=${unit}, interpreted as=${energyInKwh} kWh`
-                        )
-
+                        const isAlreadyInKwh = unit === "kWh" || (energyDelivered < 100);
+                        const energyInKwh = isAlreadyInKwh ? energyDelivered : (energyDelivered / 1000)
+                        
+                        logger.debug(`MeterValues ENERGY CHECK: Original value=${energyDelivered}, unit=${unit}, interpreted as=${energyInKwh} kWh`)
+                        
                         // Log raw numbers before calculation
-                        logger.debug(
-                          `MeterValues RAW VALUES: energyDelivered=${energyDelivered}, ` +
-                            `unit=${unit}, energyInKwh=${energyInKwh}, ` +
-                            `ratePerKwh=${ratePerKwh}`
-                        )
+                        logger.debug(`MeterValues RAW VALUES: energyDelivered=${energyDelivered}, ` +
+                                    `unit=${unit}, energyInKwh=${energyInKwh}, ` +
+                                    `ratePerKwh=${ratePerKwh}`);
 
                         // Calculate price (values are already in Naira)
                         currentPrice = energyInKwh * ratePerKwh
-
+                        
                         // Log calculation
-                        logger.debug(
-                          `MeterValues CALCULATION: ${energyInKwh} kWh * ${ratePerKwh} Naira/kWh = ${currentPrice} Naira`
-                        )
-
+                        logger.debug(`MeterValues CALCULATION: ${energyInKwh} kWh * ${ratePerKwh} Naira/kWh = ${currentPrice} Naira`);
+                        
                         // For ongoing transactions, don't apply minimum charge yet
                         // This will show the actual accumulating price during charging
                         amount = currentPrice
-
+                        
                         // Check if the user is a member to apply discount
-                        const isMember =
-                          transaction.idTag &&
-                          transaction.idTag.includes("MEMBER")
+                        const isMember = transaction.idTag && transaction.idTag.includes("MEMBER")
                         if (isMember && settings.memberDiscount) {
                           amount = amount * (1 - settings.memberDiscount / 100)
                         }
-
+                        
                         logger.debug(
-                          `Calculated current amount for transaction ${transactionId}: ${amount} (${energyInKwh} kWh at ${ratePerKwh} Naira/kWh, member discount: ${
-                            isMember ? settings.memberDiscount + "%" : "none"
-                          })`
+                          `Calculated current amount for transaction ${transactionId}: ${amount} (${energyInKwh} kWh at ${ratePerKwh} Naira/kWh, member discount: ${isMember ? settings.memberDiscount + '%' : 'none'})`
                         )
                       } catch (priceError) {
                         logger.error(
@@ -1144,36 +888,29 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                         amount = null
                       }
 
-                      // Update transaction with energy, price and battery percentage
+                      // Update transaction with energy and price
                       await transaction.update({
-                        stopMeterValue: energyValue,
+                        currentMeterValue: energyValue,
                         energyDelivered: energyDelivered,
-                        amount: amount, // Store the final amount (with minimum charge and discounts)
-                        batteryPercentage:
-                          batteryPercentage || transaction.batteryPercentage, // Only update if we have a new value
+                        currentPrice: currentPrice, // Raw calculated price
+                        amount: amount // Store the final amount (with minimum charge and discounts)
                       })
 
                       // Publish energy update to MQTT
                       if (mqttClient) {
                         // Important: Use the directly calculated values rather than
                         // fetching from transaction model which might have old values
-                        const mqttPrice = currentPrice || 0
-                        const mqttAmount = amount || 0
-
+                        const mqttPrice = currentPrice || 0;
+                        const mqttAmount = amount || 0;
+                        
                         // The frontend needs the raw values without modification
-                        logger.debug(
-                          `MQTT PUBLISH VALUES (original): price=${mqttPrice}, amount=${mqttAmount}, energy=${energyDelivered}`
-                        )
-
+                        logger.debug(`MQTT PUBLISH VALUES (original): price=${mqttPrice}, amount=${mqttAmount}, energy=${energyDelivered}`);
+                        
                         // DEBUG: Check if the price is unusually small - this helps identify scaling issues
                         if (mqttPrice > 0 && mqttPrice < 10) {
-                          logger.warn(
-                            `WARNING: Price ${mqttPrice} for ${energyInKwh} kWh seems unusually low! Expected ~${
-                              energyInKwh * 200
-                            }`
-                          )
+                          logger.warn(`WARNING: Price ${mqttPrice} for ${energyInKwh} kWh seems unusually low! Expected ~${energyInKwh * 200}`);
                         }
-
+                        
                         // Include the 'energy' property that frontend is expecting
                         mqttClient.publish(
                           `ocpp/transactions/${transactionId}/energy`,
@@ -1197,16 +934,13 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                           JSON.stringify({
                             timestamp,
                             energy: energyDelivered, // This is what frontend expects
-                            power:
-                              powerValue ||
-                              Math.round(Math.random() * 7000) + 3000, // Use actual power or fallback to simulation
+                            power: Math.round(Math.random() * 7000) + 3000, // Simulate power value
                             // Don't convert the price and amount fields - send raw calculated values
                             price: mqttPrice,
                             amount: mqttAmount,
                             chargePointId,
                             transactionId,
                             connectorId,
-                            batteryPercentage, // Include battery percentage for dashboard display
                           })
                         )
                       }
@@ -1346,44 +1080,33 @@ async function handleBootNotification(chargePointId, uniqueId, payload) {
 
     // Store or update charging station info in database
     const stationData = {
-      vendor: payload.chargePointVendor,
-      model: payload.chargePointModel,
-      firmwareVersion: payload.firmwareVersion,
+      chargePointVendor: payload.chargePointVendor,
+      chargePointModel: payload.chargePointModel,
       chargePointSerialNumber: payload.chargePointSerialNumber,
+      firmwareVersion: payload.firmwareVersion,
       iccid: payload.iccid,
       imsi: payload.imsi,
       meterType: payload.meterType,
       meterSerialNumber: payload.meterSerialNumber,
     }
 
-    // Generate a name for the station using model and vendor
-    const stationName = payload.chargePointModel
-      ? `${payload.chargePointVendor || "Unknown"} ${payload.chargePointModel}`
-      : `Station ${chargePointId}`
-
     try {
       // Update or insert charging station record
       await sequelize.query(
         `INSERT INTO charging_stations 
-                ("chargePointId", "name", "vendor", "model", "firmwareVersion", "lastConnection", "lastHeartbeat", "status", "createdAt", "updatedAt") 
-                VALUES ($1, $5, $2, $3, $4, NOW(), NOW(), 'Accepted', NOW(), NOW())
+                ("chargePointId", "chargePointVendor", "chargePointModel", "lastBootTime", "status") 
+                VALUES ($1, $2, $3, NOW(), 'Accepted')
                 ON CONFLICT ("chargePointId") 
                 DO UPDATE SET 
-                "vendor" = $2, 
-                "model" = $3, 
-                "firmwareVersion" = $4,
-                "lastConnection" = NOW(),
-                "lastHeartbeat" = NOW(),
-                "name" = COALESCE("charging_stations"."name", $5),
-                "updatedAt" = NOW(),
+                "chargePointVendor" = $2, 
+                "chargePointModel" = $3, 
+                "lastBootTime" = NOW(),
                 "status" = 'Accepted'`,
         {
           bind: [
             chargePointId,
             payload.chargePointVendor || "Unknown",
             payload.chargePointModel || "Unknown",
-            payload.firmwareVersion || "",
-            stationName, // Add the generated name as the 5th parameter
           ],
           type: sequelize.QueryTypes.INSERT,
         }
@@ -1414,7 +1137,7 @@ async function handleBootNotification(chargePointId, uniqueId, payload) {
       {
         status: "Accepted",
         currentTime: new Date().toISOString(),
-        interval: 30, // Heartbeat interval in seconds - matching real station behavior
+        interval: 300, // Heartbeat interval in seconds
       },
     ]
   } catch (error) {

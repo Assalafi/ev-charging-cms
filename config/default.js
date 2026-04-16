@@ -9,37 +9,35 @@ module.exports = {
     },
 
     // Server Configuration
-    server: {
-        port: process.env.PORT || 3000,
-        host: process.env.HOST || 'localhost',
-        baseUrl: process.env.BACKEND_URL || 'http://localhost:3000',
-        backend: {
-            apiPrefix: '/api',
-            baseUrl: process.env.BACKEND_URL || 'http://localhost:3000'
-        },
-        frontend: {
-            port: 3001,
-            host: 'localhost',
-            baseUrl: process.env.FRONTEND_URL || 'http://localhost:3001',
-        },
-        websocket: {
-            port: process.env.OCPP_SERVER_PORT || 8080,
-            path: process.env.OCPP_SERVER_PATH || '/ocpp',
-            host: process.env.OCPP_SERVER_HOST || 'localhost',
-        },
+server: {
+    port: process.env.PORT || 5000,
+    host: process.env.HOST || '0.0.0.0',  // Changed to accept connections from any IP
+    baseUrl: process.env.BACKEND_URL || 'https://evcharging.eride.ng',  // Changed to production URL
+    backend: {
+        apiPrefix: '/api',
+        baseUrl: process.env.BACKEND_URL || 'https://evcharging.eride.ng'  // Changed to production URL
     },
-
+    frontend: {
+        port: 3001,
+        host: process.env.FRONTEND_HOST || '0.0.0.0',  // Made configurable
+        baseUrl: process.env.FRONTEND_URL || 'https://evcharging.eride.ng',  // Changed to production URL
+    },
+    websocket: {
+        port: process.env.OCPP_SERVER_PORT || 8081,
+        path: process.env.OCPP_SERVER_PATH || '/ocpp',
+        host: process.env.OCPP_SERVER_HOST || '0.0.0.0',  // Changed to accept connections from any IP
+    },
+},
     // Database Configuration
-    database: {
-        host: process.env.DB_HOST || 'localhost',
-        port: process.env.DB_PORT || 5432,
-        name: process.env.DB_NAME || 'ev_charging_cms',
-        user: process.env.DB_USER || 'abubakar',
-        password: process.env.DB_PASSWORD || '',
-        dialect: 'postgres',
-        logging: false,
-    },
-
+database: {
+    host: process.env.DB_HOST || 'localhost',
+    port: process.env.DB_PORT || 5432,
+    name: process.env.DB_NAME || 'ev_charging_prod',  // Updated to your production DB name
+    user: process.env.DB_USER || 'assalafi',  // Updated to your DB user
+    password: process.env.DB_PASSWORD || '',  // Keep empty default but ensure env var is set
+    dialect: 'postgres',
+    logging: process.env.NODE_ENV === 'development',  // Only log in development
+},
     // Security Configuration
     security: {
         jwtSecret: process.env.JWT_SECRET || 'your-secret-key',
@@ -70,7 +68,7 @@ module.exports = {
         },
         // CORS settings
         cors: {
-            allowedOrigins: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
+allowedOrigins: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002', 'https://evcharging.eride.ng','http://localhost:5000'],
             allowedMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
             allowedHeaders: ['Content-Type', 'Authorization'],
             exposedHeaders: ['Content-Range', 'X-Content-Range'],
@@ -90,11 +88,11 @@ module.exports = {
         messageTimeout: 30000, // 30 seconds
         reconnectInterval: 5000, // 5 seconds
         maxRetries: 3,
-        server: {
-            host: process.env.OCPP_HOST || 'localhost',
-            port: process.env.OCPP_PORT || 8080,
-            path: '/ocpp',
-        },
+       server: {
+    host: process.env.OCPP_HOST || 'localhost',  // This needs to change
+    port: process.env.OCPP_PORT || 8081,
+    path: '/ocpp',
+},
         protocols: {
             v16: {
                 version: '1.6',

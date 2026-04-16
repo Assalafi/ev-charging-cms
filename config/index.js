@@ -2,7 +2,7 @@ const development = require('./development');
 const production = require('./production');
 const defaultConfig = require('./default');
 
-const env = process.env.NODE_ENV || 'development';
+const env = process.env.NODE_ENV || 'production';
 
 const configs = {
   development,

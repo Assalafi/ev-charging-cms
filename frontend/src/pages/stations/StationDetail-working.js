@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import React, { useState, useEffect } from "react";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import {
   Box,
   Typography,
@@ -31,7 +31,7 @@ import {
   FormControl,
   InputLabel,
   Select,
-} from '@mui/material';
+} from "@mui/material";
 import {
   Refresh as RefreshIcon,
   PlayArrow as StartIcon,
@@ -45,19 +45,18 @@ import {
   BatteryChargingFull as ChargingIcon,
   BatteryChargingFull as BatteryChargingFullIcon,
   CheckCircle as CheckCircleIcon,
-} from '@mui/icons-material';
-import { format } from 'date-fns';
-import api from '../../services/api';
-import { useMQTT } from '../../contexts/MQTTContext';
-import LocationSelector from '../../components/LocationSelector';
-import stationService from '../../services/stationService';
-import remoteCommandService from '../../services/remoteCommandService';
-import tagService from '../../services/tagService';
-import RemoteCommandPanel from '../../components/RemoteCommandPanel';
+} from "@mui/icons-material";
+import { format } from "date-fns";
+import api from "../../services/api";
+import { useMQTT } from "../../contexts/MQTTContext";
+import LocationSelector from "../../components/LocationSelector";
+import stationService from "../../services/stationService";
+import remoteCommandService from "../../services/remoteCommandService";
+import tagService from "../../services/tagService";
+import RemoteCommandPanel from "../../components/RemoteCommandPanel";
 
 // Helper function to get API base URL
-const getApiBaseUrl = () =>
-  process.env.REACT_APP_API_URL || 'https://evcharging.eride.ng/api';
+const getApiBaseUrl = () => process.env.REACT_APP_API_URL || 'https://evcharging.eride.ng/api';
 
 // Tab panel component
 function TabPanel({ children, value, index, ...other }) {
@@ -75,10 +74,10 @@ function TabPanel({ children, value, index, ...other }) {
             p: 3,
           }}
         >
-          {' '}
-          {children}{' '}
+          {" "}
+          {children}{" "}
         </Box>
-      )}{' '}
+      )}{" "}
     </div>
   );
 }
@@ -102,7 +101,7 @@ function StationDetail() {
   const [editedStation, setEditedStation] = useState({});
   const [openCommandDialog, setOpenCommandDialog] = useState(false);
   const [commandParams, setCommandParams] = useState({});
-  const [commandType, setCommandType] = useState('');
+  const [commandType, setCommandType] = useState("");
   const [commandLoading, setCommandLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
 
@@ -111,7 +110,7 @@ function StationDetail() {
   const [messagesLimit, setMessagesLimit] = useState(20);
   const [totalMessages, setTotalMessages] = useState(0);
   const [messagesLoading, setMessagesLoading] = useState(false);
-
+  
   // Authorized tags state
   const [authorizedTags, setAuthorizedTags] = useState([]);
 
@@ -119,21 +118,11 @@ function StationDetail() {
   const [transactionsPage, setTransactionsPage] = useState(0);
   const [transactionsLimit, setTransactionsLimit] = useState(10);
   const [totalTransactions, setTotalTransactions] = useState(0);
-
-  // Declare handleEnergyUpdate at component level so it can be referenced throughout the component
-  let handleEnergyUpdate = () =>
-    console.log('Energy update handler not initialized yet');
   const [transactionsLoading, setTransactionsLoading] = useState(false);
 
   // Real-time energy consumption tracking
   const [activeTransaction, setActiveTransaction] = useState(null);
-  const [energyConsumption, setEnergyConsumption] = useState('0.00');
-  const [chargingAmount, setChargingAmount] = useState(0);
-  const [chargingPrice, setChargingPrice] = useState(0);
-  // Debug logging for energy consumption
-  useEffect(() => {
-    console.log('Energy consumption updated:', energyConsumption);
-  }, [energyConsumption]);
+  const [energyConsumption, setEnergyConsumption] = useState("0.00");
   const [currentPower, setCurrentPower] = useState(0);
   const [batteryPercentage, setBatteryPercentage] = useState(null);
   const [chargingDuration, setChargingDuration] = useState(0);
@@ -159,9 +148,9 @@ function StationDetail() {
     try {
       // Use token from environment variable for development or from localStorage
       const token =
-        localStorage.getItem('token') ||
+        localStorage.getItem("token") ||
         process.env.REACT_APP_DEV_TOKEN ||
-        'dev-mock-token-for-testing';
+        "dev-mock-token-for-testing";
 
       // Attempt to fetch data from API
       const stationResponse = await fetch(
@@ -169,9 +158,9 @@ function StationDetail() {
         {
           headers: {
             Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           },
-        }
+        },
       );
 
       const stationData = await stationResponse.json();
@@ -185,7 +174,7 @@ function StationDetail() {
           // Use the dedicated paginated transaction fetch function
           await fetchTransactions(0, transactionsLimit);
         } catch (txError) {
-          console.error('Error fetching transactions:', txError);
+          console.error("Error fetching transactions:", txError);
           setTransactions([]);
           setTotalTransactions(0);
         }
@@ -195,7 +184,7 @@ function StationDetail() {
           // Fetch first page of messages using the dedicated function
           await fetchOcppMessages(0, messagesLimit);
         } catch (msgError) {
-          console.error('Error fetching OCPP messages:', msgError);
+          console.error("Error fetching OCPP messages:", msgError);
           setOcppMessages([]);
           setTotalMessages(0);
         }
@@ -203,14 +192,14 @@ function StationDetail() {
         setError(null);
       } else {
         // No station data found
-        console.error('Station not found or API returned an error');
-        setError('Station not found or API returned an error');
+        console.error("Station not found or API returned an error");
+        setError("Station not found or API returned an error");
         initializeEmptyData();
       }
     } catch (error) {
-      console.error('Error in station detail processing:', error);
+      console.error("Error in station detail processing:", error);
       setError(
-        'Failed to fetch station data. Please check your connection and try again.'
+        "Failed to fetch station data. Please check your connection and try again.",
       );
       initializeEmptyData();
     } finally {
@@ -227,7 +216,7 @@ function StationDetail() {
         setLastUpdated(new Date());
       }
     } catch (error) {
-      console.error('Error fetching connector status:', error);
+      console.error("Error fetching connector status:", error);
       // Don't set error state to avoid disrupting the UI
     }
   };
@@ -241,9 +230,9 @@ function StationDetail() {
     try {
       // Use token from environment variable for development or from localStorage
       const token =
-        localStorage.getItem('token') ||
+        localStorage.getItem("token") ||
         process.env.REACT_APP_DEV_TOKEN ||
-        'dev-mock-token-for-testing';
+        "dev-mock-token-for-testing";
 
       const offset = page * limit;
       const messagesResponse = await fetch(
@@ -251,9 +240,9 @@ function StationDetail() {
         {
           headers: {
             Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           },
-        }
+        },
       );
 
       const messagesData = await messagesResponse.json();
@@ -266,10 +255,10 @@ function StationDetail() {
         setTotalMessages(messagesData.count || 0);
         setMessagesPage(page);
       } else {
-        console.error('Failed to fetch OCPP messages:', messagesData.message);
+        console.error("Failed to fetch OCPP messages:", messagesData.message);
       }
     } catch (error) {
-      console.error('Error fetching OCPP messages:', error);
+      console.error("Error fetching OCPP messages:", error);
     } finally {
       setMessagesLoading(false);
     }
@@ -284,9 +273,9 @@ function StationDetail() {
     try {
       // Use token from environment variable for development or from localStorage
       const token =
-        localStorage.getItem('token') ||
+        localStorage.getItem("token") ||
         process.env.REACT_APP_DEV_TOKEN ||
-        'dev-mock-token-for-testing';
+        "dev-mock-token-for-testing";
 
       // First, check specifically for active transactions to update station status
       try {
@@ -296,9 +285,9 @@ function StationDetail() {
           {
             headers: {
               Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json',
+              "Content-Type": "application/json",
             },
-          }
+          },
         );
 
         const activeData = await activeResponse.json();
@@ -309,29 +298,29 @@ function StationDetail() {
           activeData.transactions.length > 0
         ) {
           const activeTransaction = activeData.transactions[0];
-          console.log('Found active transaction:', activeTransaction);
+          console.log("Found active transaction:", activeTransaction);
 
           // Update station with current transaction info
-          setStation(prevStation => ({
+          setStation((prevStation) => ({
             ...prevStation,
             currentTransaction: activeTransaction.transactionId,
-            status: 'Charging',
+            status: "Charging",
           }));
         } else {
           // No active transaction found, clear current transaction if station status is Charging
-          setStation(prevStation => {
-            if (prevStation?.status === 'Charging') {
+          setStation((prevStation) => {
+            if (prevStation?.status === "Charging") {
               return {
                 ...prevStation,
                 currentTransaction: null,
-                status: 'Available',
+                status: "Available",
               };
             }
             return prevStation;
           });
         }
       } catch (activeError) {
-        console.error('Error checking active transactions:', activeError);
+        console.error("Error checking active transactions:", activeError);
       }
 
       // Now fetch the paginated transactions for display
@@ -341,9 +330,9 @@ function StationDetail() {
         {
           headers: {
             Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           },
-        }
+        },
       );
 
       const transactionsData = await transactionsResponse.json();
@@ -357,12 +346,12 @@ function StationDetail() {
         setTransactionsPage(page);
       } else {
         console.error(
-          'Failed to fetch transactions:',
-          transactionsData.message
+          "Failed to fetch transactions:",
+          transactionsData.message,
         );
       }
     } catch (error) {
-      console.error('Error fetching transactions:', error);
+      console.error("Error fetching transactions:", error);
     } finally {
       setTransactionsLoading(false);
     }
@@ -393,7 +382,7 @@ function StationDetail() {
   };
 
   // Handle field change in edit mode
-  const handleFieldChange = e => {
+  const handleFieldChange = (e) => {
     setEditedStation({
       ...editedStation,
       [e.target.name]: e.target.value,
@@ -407,11 +396,11 @@ function StationDetail() {
       setStation(response.station);
       setIsEditing(false);
       setError(null);
-      setSuccess('Station details updated successfully');
+      setSuccess("Station details updated successfully");
       setTimeout(() => setSuccess(null), 3000);
     } catch (error) {
-      console.error('Error updating station:', error);
-      setError('Failed to update station');
+      console.error("Error updating station:", error);
+      setError("Failed to update station");
     }
   };
 
@@ -430,32 +419,32 @@ function StationDetail() {
   };
 
   // Open command dialog
-  const handleOpenCommandDialog = command => {
+  const handleOpenCommandDialog = (command) => {
     setCommandType(command);
 
     // Set default parameters based on command type
     switch (command) {
-      case 'RemoteStart':
+      case "RemoteStart":
         // Fetch available tags when opening start transaction dialog
         fetchAuthorizedTags();
         setCommandParams({
-          idTag: '',
+          idTag: "",
         });
         break;
-      case 'RemoteStop':
+      case "RemoteStop":
         setCommandParams({
           transactionId: station.currentTransaction || 0,
         });
         break;
-      case 'Reset':
+      case "Reset":
         setCommandParams({
-          type: 'Soft',
+          type: "Soft",
         });
         break;
-      case 'ChangeAvailability':
+      case "ChangeAvailability":
         setCommandParams({
           connectorId: 0,
-          type: station.status === 'Available' ? 'Inoperative' : 'Operative',
+          type: station.status === "Available" ? "Inoperative" : "Operative",
         });
         break;
       default:
@@ -466,7 +455,7 @@ function StationDetail() {
   };
 
   // Handle command parameter change
-  const handleCommandParamChange = e => {
+  const handleCommandParamChange = (e) => {
     setCommandParams({
       ...commandParams,
       [e.target.name]: e.target.value,
@@ -481,35 +470,35 @@ function StationDetail() {
       let response;
 
       switch (commandType) {
-        case 'RemoteStart':
+        case "RemoteStart":
           response = await api.post(
             `${getApiBaseUrl()}/stations/${stationId}/remote-start`,
-            commandParams
+            commandParams,
           );
           break;
-        case 'RemoteStop':
+        case "RemoteStop":
           response = await api.post(
             `${getApiBaseUrl()}/stations/${stationId}/remote-stop`,
-            commandParams
+            commandParams,
           );
           break;
-        case 'Reset':
+        case "Reset":
           response = await api.post(
             `${getApiBaseUrl()}/stations/${stationId}/reset`,
-            commandParams
+            commandParams,
           );
           break;
-        case 'ChangeAvailability':
+        case "ChangeAvailability":
           response = await api.post(
             `${getApiBaseUrl()}/stations/${stationId}/change-availability`,
-            commandParams
+            commandParams,
           );
           break;
         default:
           break;
       }
 
-      console.log('Command response:', response.data);
+      console.log("Command response:", response.data);
 
       // Update messages and station data
       fetchStationData();
@@ -518,31 +507,31 @@ function StationDetail() {
       setOpenCommandDialog(false);
       setError(null);
     } catch (error) {
-      console.error('Error sending command:', error);
+      console.error("Error sending command:", error);
       setError(`Failed to send ${commandType} command`);
       setCommandLoading(false);
     }
   };
 
   // Get status color
-  const getStatusColor = status => {
+  const getStatusColor = (status) => {
     switch (status) {
-      case 'Available':
-        return 'success';
-      case 'Charging':
-        return 'primary';
-      case 'Faulted':
-        return 'error';
-      case 'Preparing':
-        return 'warning';
-      case 'Finishing':
-        return 'info';
-      case 'Reserved':
-        return 'secondary';
-      case 'Unavailable':
-        return 'default';
+      case "Available":
+        return "success";
+      case "Charging":
+        return "primary";
+      case "Faulted":
+        return "error";
+      case "Preparing":
+        return "warning";
+      case "Finishing":
+        return "info";
+      case "Reserved":
+        return "secondary";
+      case "Unavailable":
+        return "default";
       default:
-        return 'default';
+        return "default";
     }
   };
 
@@ -551,16 +540,20 @@ function StationDetail() {
     // First check if we have connector data
     if (connectors && connectors.length > 0) {
       // Check if any connector is charging
-      const chargingConnector = connectors.find(c => c.status === 'Charging');
-      if (chargingConnector) return 'Charging';
+      const chargingConnector = connectors.find((c) => c.status === "Charging");
+      if (chargingConnector) return "Charging";
 
       // Check if any connector is preparing
-      const preparingConnector = connectors.find(c => c.status === 'Preparing');
-      if (preparingConnector) return 'Preparing';
+      const preparingConnector = connectors.find(
+        (c) => c.status === "Preparing",
+      );
+      if (preparingConnector) return "Preparing";
 
       // Check if any connector is available
-      const availableConnector = connectors.find(c => c.status === 'Available');
-      if (availableConnector) return 'Available';
+      const availableConnector = connectors.find(
+        (c) => c.status === "Available",
+      );
+      if (availableConnector) return "Available";
     }
 
     // Fall back to MQTT status if available
@@ -569,24 +562,24 @@ function StationDetail() {
     }
 
     // Fall back to station status from main API
-    return station?.status || 'Unknown';
+    return station?.status || "Unknown";
   };
 
   // Get OCPP message color
-  const getMessageStatusColor = status => {
+  const getMessageStatusColor = (status) => {
     switch (status) {
-      case 'Sent':
-        return 'primary';
-      case 'Received':
-        return 'success';
-      case 'Failed':
-        return 'error';
-      case 'Pending':
-        return 'warning';
-      case 'Timeout':
-        return 'error';
+      case "Sent":
+        return "primary";
+      case "Received":
+        return "success";
+      case "Failed":
+        return "error";
+      case "Pending":
+        return "warning";
+      case "Timeout":
+        return "error";
       default:
-        return 'default';
+        return "default";
     }
   };
 
@@ -597,41 +590,37 @@ function StationDetail() {
         open={openCommandDialog}
         onClose={() => setOpenCommandDialog(false)}
       >
-        <DialogTitle> {`Send ${commandType} Command`} </DialogTitle>{' '}
+        <DialogTitle> {`Send ${commandType} Command`} </DialogTitle>{" "}
         <DialogContent>
           <DialogContentText
             sx={{
               mb: 2,
             }}
           >
-            {' '}
-            {commandType === 'RemoteStart' &&
-              'This will start a new charging transaction on the station.'}{' '}
-            {commandType === 'RemoteStop' &&
-              'This will stop the current charging transaction.'}{' '}
-            {commandType === 'Reset' && 'This will reset the charging station.'}{' '}
-            {commandType === 'ChangeAvailability' &&
-              'This will change the availability of the charging station.'}{' '}
+            {" "}
+            {commandType === "RemoteStart" &&
+              "This will start a new charging transaction on the station."}{" "}
+            {commandType === "RemoteStop" &&
+              "This will stop the current charging transaction."}{" "}
+            {commandType === "Reset" && "This will reset the charging station."}{" "}
+            {commandType === "ChangeAvailability" &&
+              "This will change the availability of the charging station."}{" "}
           </DialogContentText>
-          {commandType === 'RemoteStart' && (
+          {commandType === "RemoteStart" && (
             <TextField
               name="idTag"
               label="ID Tag"
               fullWidth
               select
-              value={commandParams.idTag || ''}
+              value={commandParams.idTag || ""}
               onChange={handleCommandParamChange}
               margin="dense"
-              helperText={
-                authorizedTags.length === 0
-                  ? 'Loading authorized tags...'
-                  : 'Select an authorized tag'
-              }
+              helperText={authorizedTags.length === 0 ? "Loading authorized tags..." : "Select an authorized tag"}
             >
               {authorizedTags.length === 0 ? (
                 <MenuItem disabled>Loading tags...</MenuItem>
               ) : (
-                authorizedTags.map(tag => (
+                authorizedTags.map((tag) => (
                   <MenuItem key={tag.id} value={tag.tagId}>
                     {tag.tagId}
                   </MenuItem>
@@ -639,32 +628,32 @@ function StationDetail() {
               )}
             </TextField>
           )}
-          {commandType === 'RemoteStop' && (
+          {commandType === "RemoteStop" && (
             <TextField
               name="transactionId"
               label="Transaction ID"
               fullWidth
               type="number"
-              value={commandParams.transactionId || ''}
+              value={commandParams.transactionId || ""}
               onChange={handleCommandParamChange}
               margin="dense"
             />
           )}
-          {commandType === 'Reset' && (
+          {commandType === "Reset" && (
             <TextField
               name="type"
               label="Reset Type"
               fullWidth
               select
-              value={commandParams.type || 'Soft'}
+              value={commandParams.type || "Soft"}
               onChange={handleCommandParamChange}
               margin="dense"
             >
-              <MenuItem value="Soft"> Soft </MenuItem>{' '}
-              <MenuItem value="Hard"> Hard </MenuItem>{' '}
+              <MenuItem value="Soft"> Soft </MenuItem>{" "}
+              <MenuItem value="Hard"> Hard </MenuItem>{" "}
             </TextField>
           )}
-          {commandType === 'ChangeAvailability' && (
+          {commandType === "ChangeAvailability" && (
             <>
               <TextField
                 name="connectorId"
@@ -681,23 +670,23 @@ function StationDetail() {
                 label="Availability Type"
                 fullWidth
                 select
-                value={commandParams.type || 'Operative'}
+                value={commandParams.type || "Operative"}
                 onChange={handleCommandParamChange}
                 margin="dense"
               >
-                <MenuItem value="Operative"> Operative </MenuItem>{' '}
-                <MenuItem value="Inoperative"> Inoperative </MenuItem>{' '}
-              </TextField>{' '}
+                <MenuItem value="Operative"> Operative </MenuItem>{" "}
+                <MenuItem value="Inoperative"> Inoperative </MenuItem>{" "}
+              </TextField>{" "}
             </>
-          )}{' '}
-        </DialogContent>{' '}
+          )}{" "}
+        </DialogContent>{" "}
         <DialogActions>
           <Button
             onClick={() => setOpenCommandDialog(false)}
             disabled={commandLoading}
           >
-            Cancel{' '}
-          </Button>{' '}
+            Cancel{" "}
+          </Button>{" "}
           <Button
             onClick={handleSendCommand}
             color="primary"
@@ -706,9 +695,9 @@ function StationDetail() {
               commandLoading ? <CircularProgress size={24} /> : <SendIcon />
             }
           >
-            Send{' '}
-          </Button>{' '}
-        </DialogActions>{' '}
+            Send{" "}
+          </Button>{" "}
+        </DialogActions>{" "}
       </Dialog>
     );
   };
@@ -754,19 +743,18 @@ function StationDetail() {
     if (!mqtt || !stationId) return;
 
     // Function to handle incoming energy updates
-    // Assign to our outer variable so it can be called from outside this scope
-    handleEnergyUpdate = (topic, message) => {
+    const handleEnergyUpdate = (topic, message) => {
       try {
-        console.log('Energy update received on topic:', topic);
+        console.log("Energy update received on topic:", topic);
         const rawMessage = message.toString();
-        console.log('Raw message:', rawMessage);
+        console.log("Raw message:", rawMessage);
 
         let data;
         try {
           data = JSON.parse(rawMessage);
-          console.log('Parsed energy update data:', data);
+          console.log("Parsed energy update data:", data);
         } catch (parseError) {
-          console.error('Error parsing message:', parseError);
+          console.error("Error parsing message:", parseError);
           return;
         }
 
@@ -777,49 +765,31 @@ function StationDetail() {
           (activeTransaction && data.transactionId === activeTransaction) ||
           topic.includes(`/${stationId}/`)
         ) {
-          console.log('✅ Matched update for station:', stationId);
+          console.log("✅ Matched update for station:", stationId);
 
           // If transactionId is present, update the active transaction
           if (data.transactionId) {
-            console.log('Setting active transaction to:', data.transactionId);
+            console.log("Setting active transaction to:", data.transactionId);
             setActiveTransaction(data.transactionId);
           }
 
-          // Log all received data for debugging
-          console.log('FULL MQTT DATA RECEIVED:', JSON.stringify(data, null, 2));
-
-          // Handle price and amount values
-          if (data.amount !== undefined && data.amount !== null) {
-            const amountValue = parseFloat(data.amount);
-            console.log('RECEIVED AMOUNT:', amountValue, 'TYPE:', typeof data.amount);
-            // Store the amount value for display
-            setChargingAmount(amountValue);
-          }
-
-          if (data.price !== undefined && data.price !== null) {
-            const priceValue = parseFloat(data.price);
-            console.log('RECEIVED PRICE:', priceValue, 'TYPE:', typeof data.price);
-            // Store the price value for display
-            setChargingPrice(priceValue);
-          }
-          
           // Handle energy value with more verbose logging
           if (data.energy !== undefined && data.energy !== null) {
             console.log(
-              'Processing energy value:',
+              "Processing energy value:",
               data.energy,
-              'type:',
-              typeof data.energy
+              "type:",
+              typeof data.energy,
             );
 
             // Be more flexible with energy value format
             let energyValue;
-            if (typeof data.energy === 'string') {
+            if (typeof data.energy === "string") {
               energyValue = parseFloat(data.energy);
-            } else if (typeof data.energy === 'number') {
+            } else if (typeof data.energy === "number") {
               energyValue = data.energy;
             } else {
-              console.warn('Unexpected energy value type:', typeof data.energy);
+              console.warn("Unexpected energy value type:", typeof data.energy);
               return;
             }
 
@@ -827,15 +797,15 @@ function StationDetail() {
               // Convert from Wh to kWh for display
               const energyInKWh = (energyValue / 1000).toFixed(2);
               console.log(
-                'Setting energy consumption to:',
+                "Setting energy consumption to:",
                 energyInKWh,
-                'kWh (raw value:',
+                "kWh (raw value:",
                 energyValue,
-                'Wh)'
+                "Wh)",
               );
               setEnergyConsumption(energyInKWh);
             } else {
-              console.warn('Invalid energy value received:', data.energy);
+              console.warn("Invalid energy value received:", data.energy);
             }
           } else if (
             data.energyDelivered !== undefined &&
@@ -843,16 +813,16 @@ function StationDetail() {
           ) {
             // Fallback to energyDelivered if energy is not present
             console.log(
-              'Using energyDelivered instead of energy:',
-              data.energyDelivered
+              "Using energyDelivered instead of energy:",
+              data.energyDelivered,
             );
             const energyValue = parseFloat(data.energyDelivered);
             if (!isNaN(energyValue)) {
               const energyInKWh = (energyValue / 1000).toFixed(2);
               console.log(
-                'Setting energy consumption to:',
+                "Setting energy consumption to:",
                 energyInKWh,
-                'kWh (from energyDelivered)'
+                "kWh (from energyDelivered)",
               );
               setEnergyConsumption(energyInKWh);
             }
@@ -860,10 +830,10 @@ function StationDetail() {
 
           // Handle power value with better logging
           if (data.power !== undefined && data.power !== null) {
-            console.log('Processing power value:', data.power);
+            console.log("Processing power value:", data.power);
             const powerValue = parseFloat(data.power);
             if (!isNaN(powerValue)) {
-              console.log('Setting current power to:', powerValue, 'W');
+              console.log("Setting current power to:", powerValue, "W");
               setCurrentPower(powerValue);
             }
           }
@@ -882,19 +852,19 @@ function StationDetail() {
           }
         }
       } catch (error) {
-        console.error('Error processing energy update:', error);
+        console.error("Error processing energy update:", error);
       }
     };
 
     // Debug: Log current values of energy-related state
-    console.log('Current energy state:', {
+    console.log("Current energy state:", {
       activeTransaction,
       energyConsumption,
       currentPower,
       batteryPercentage,
       chargingDuration,
       transactions:
-        transactions?.length > 0 ? transactions[0].transactionId : 'none',
+        transactions?.length > 0 ? transactions[0].transactionId : "none",
     });
 
     // Subscribe to all relevant topics for energy updates
@@ -910,7 +880,7 @@ function StationDetail() {
     };
 
     // Log all topics we're subscribing to
-    console.log('MQTT Topics for energy updates:', mqttTopics);
+    console.log("MQTT Topics for energy updates:", mqttTopics);
 
     // Subscribe to all topics
     Object.entries(mqttTopics).forEach(([name, topic]) => {
@@ -918,43 +888,54 @@ function StationDetail() {
       subscribe(topic, handleEnergyUpdate);
     });
 
-    console.log('Successfully subscribed to all energy update topics');
+    console.log("Successfully subscribed to all energy update topics");
 
-    // Force energy value update with a delay for real-time testing
-    // (This function has been moved before fetchStationDetailsUpdate to fix reference errors)
+    // DEBUG FUNCTION - Force update energy values for testing
+    const forceUpdateEnergyValues = () => {
+      console.log("⚡ Forcing energy update with test values");
+      // Simulate an energy update message
+      const mockData = {
+        chargePointId: stationId,
+        transactionId:
+          activeTransaction ||
+          (transactions && transactions.length > 0
+            ? transactions[0].transactionId
+            : null),
+        energy: 2500, // 2.5 kWh in Wh
+        power: 7200, // 7.2 kW in W
+        timestamp: new Date().toISOString(),
+      };
 
-    // Call force update after a short delay to ensure we have data for display
-    setTimeout(forceUpdateEnergyValues, 2000);
+      // Process this mock data with our handler
+      handleEnergyUpdate("test/force-update", JSON.stringify(mockData));
+    };
 
-    // Set up a timer for real-time updates of transaction data
-    // This ensures the UI shows the latest energy consumption from active transactions
+    // Call force update after a short delay
+    setTimeout(forceUpdateEnergyValues, 3000);
+
+    // Set up a simulation timer for real-time updates if MQTT isn't coming through
+    // This ensures the UI shows energy consumption updates even if backend isn't sending them
     const setupEnergySimulation = () => {
-      // Clear any existing interval
+      // Clear any existing simulation interval
       if (energySimulation) {
         clearInterval(energySimulation);
       }
 
-      // Set up a new interval - updates every 10 seconds
+      // Set up a new simulation interval - updates every 3 seconds
       const simulationInterval = setInterval(() => {
-        // Only update if we have an active transaction
-        if (transactions && transactions.some(t => t.status === 'InProgress')) {
-          // Find the active transaction
-          const activeTransaction = transactions.find(
-            t => t.status === 'InProgress'
-          );
+        // Only simulate if we have an active transaction
+        if (
+          transactions &&
+          transactions.some((t) => t.status === "InProgress")
+        ) {
+          // Get the current energy value
+          const currentEnergy = parseFloat(energyConsumption) || 0;
 
-          if (activeTransaction && activeTransaction.energyDelivered) {
-            // Use the actual energyDelivered value from the transaction
-            const energyValue = parseFloat(activeTransaction.energyDelivered);
-            if (!isNaN(energyValue)) {
-              // Update the state with the transaction's energy value
-              setEnergyConsumption(energyValue.toFixed(2));
+          // Increment by a small amount (0.05 kWh every 3 seconds = ~6 kWh per hour)
+          const newEnergy = currentEnergy + 0.05;
 
-              console.log(
-                `Transaction energy updated to ${energyValue.toFixed(2)} kWh`
-              );
-            }
-          }
+          // Update the state
+          setEnergyConsumption(newEnergy.toFixed(2));
 
           // Also update power - should be around 11-16 kW for a standard charging station
           setCurrentPower(11 + Math.random() * 5);
@@ -967,10 +948,14 @@ function StationDetail() {
             setBatteryPercentage(20);
           }
 
-          // Update charging duration - increment by 10 seconds
-          setChargingDuration(prev => prev + 10);
+          // Update charging duration - increment by 3 seconds
+          setChargingDuration((prev) => prev + 3);
+
+          console.log(
+            `Simulation: Energy updated to ${newEnergy.toFixed(2)} kWh`,
+          );
         }
-      }, 10000); // Update every 10 seconds
+      }, 3000); // Update every 3 seconds
 
       // Store the simulation interval ID
       setEnergySimulation(simulationInterval);
@@ -982,11 +967,11 @@ function StationDetail() {
     const fetchActiveTransactionData = async () => {
       if (transactions && transactions.length > 0) {
         const activeTransaction = transactions.find(
-          t => t.status === 'InProgress'
+          (t) => t.status === "InProgress",
         );
         if (activeTransaction) {
           console.log(
-            `Found active transaction: ${activeTransaction.transactionId}, energy: ${activeTransaction.energyDelivered}`
+            `Found active transaction: ${activeTransaction.transactionId}, energy: ${activeTransaction.energyDelivered}`,
           );
           setActiveTransaction(activeTransaction.transactionId);
 
@@ -996,15 +981,18 @@ function StationDetail() {
           const durationSeconds = Math.floor((now - startTime) / 1000);
           setChargingDuration(durationSeconds);
 
-          // Always use the transaction's energy data when available
-          if (activeTransaction.energyDelivered) {
+          // Use transaction data if we don't have energy consumption yet
+          if (
+            parseFloat(energyConsumption) === 0 &&
+            activeTransaction.energyDelivered
+          ) {
             const energyValue = parseFloat(activeTransaction.energyDelivered);
             if (!isNaN(energyValue)) {
               setEnergyConsumption(energyValue.toFixed(2));
               console.log(
-                'Energy consumption updated from transaction:',
+                "Initial energy consumption set from transaction:",
                 energyValue.toFixed(2),
-                'kWh'
+                "kWh",
               );
             }
           }
@@ -1019,7 +1007,7 @@ function StationDetail() {
 
     return () => {
       // Unsubscribe from all topics when component unmounts
-      Object.values(mqttTopics).forEach(topic => {
+      Object.values(mqttTopics).forEach((topic) => {
         console.log(`Unsubscribing from ${topic}`);
         unsubscribe(topic);
       });
@@ -1038,9 +1026,9 @@ function StationDetail() {
 
     try {
       const token =
-        localStorage.getItem('token') ||
+        localStorage.getItem("token") ||
         process.env.REACT_APP_DEV_TOKEN ||
-        'dev-mock-token-for-testing';
+        "dev-mock-token-for-testing";
 
       // Direct API call to check connection status
       const response = await fetch(
@@ -1048,13 +1036,13 @@ function StationDetail() {
         {
           headers: {
             Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           },
-        }
+        },
       );
 
       const data = await response.json();
-      console.log('Connection status check:', data);
+      console.log("Connection status check:", data);
 
       if (data.success) {
         const isConnected = data.isConnected;
@@ -1062,14 +1050,14 @@ function StationDetail() {
         // Always update connection status, not just when it changes
         // This ensures we catch disconnections more reliably
         console.log(
-          `Connection status: ${isConnected ? 'Connected' : 'Disconnected'}`
+          `Connection status: ${isConnected ? "Connected" : "Disconnected"}`,
         );
 
         // Get the lastHeartbeat from the API response
         const lastHeartbeat = data.lastHeartbeat;
 
         // Update station with new connection status AND lastHeartbeat
-        setStation(prevStation => {
+        setStation((prevStation) => {
           // Check if we need to update either connection status or heartbeat
           const connectionChanged = prevStation?.isConnected !== isConnected;
           const heartbeatChanged =
@@ -1079,7 +1067,7 @@ function StationDetail() {
           if (connectionChanged || heartbeatChanged) {
             if (connectionChanged) {
               console.log(
-                `Connection status CHANGED: ${isConnected ? 'Connected' : 'Disconnected'}`
+                `Connection status CHANGED: ${isConnected ? "Connected" : "Disconnected"}`,
               );
             }
             if (heartbeatChanged) {
@@ -1100,7 +1088,7 @@ function StationDetail() {
 
         // Update the UI to reflect the current connection status
         setTimeout(() => {
-          setStation(prevStation => ({
+          setStation((prevStation) => ({
             ...prevStation,
             isConnected: isConnected, // Reflect the actual current connection status
             lastHeartbeat: lastHeartbeat || prevStation?.lastHeartbeat, // Keep the latest heartbeat
@@ -1109,7 +1097,7 @@ function StationDetail() {
       }
     } catch (error) {
       // Network errors might indicate backend issues, but not necessarily station disconnection
-      console.error('Error checking connection status:', error);
+      console.error("Error checking connection status:", error);
 
       // Don't change the connection status on errors, as this could cause false disconnections
       // Just update the timestamp to show we tried checking
@@ -1117,123 +1105,36 @@ function StationDetail() {
     }
   };
 
-  // DEBUG FUNCTION - Force update energy values for testing
-  // This doesn't rely on the MQTT handler being initialized
-  const forceUpdateEnergyValues = () => {
-    console.log('⚡ Forcing energy update with test values');
-
-    // These are our test values for energy display
-    const energyValue = 0.0;
-    const powerValue = 0;
-    const batteryValue = 1;
-    const durationValue = 0;
-
-    // Update energy consumption directly - this is the most critical part
-    console.log(`Setting energy consumption to ${energyValue} kWh`);
-    setEnergyConsumption(energyValue.toString());
-    setCurrentPower(powerValue);
-    setBatteryPercentage(batteryValue);
-    setChargingDuration(durationValue);
-
-    // Attempt to log to the console that we're in charging state
-    try {
-      if (station?.status !== 'Charging') {
-        console.log(
-          'Note: Station status is not "Charging" - energy values may not display as expected'
-        );
-      } else {
-        console.log(
-          'Station is in "Charging" state - energy values should display correctly'
-        );
-      }
-    } catch (e) {
-      console.log('Could not determine station charging status');
-    }
-
-    // If we're trying to simulate a full message, we'd do something like this
-    // but we don't rely on the MQTT handler anymore
-    const mockData = {
-      chargePointId: stationId,
-      transactionId: 12345,
-      connectorId: 1,
-      energy: energyValue * 1000, // convert kWh to Wh for consistency
-      power: powerValue,
-      batteryPercentage: batteryValue,
-      duration: durationValue,
-    };
-
-    console.log('Simulated energy update data:', mockData);
-  };
-
   // Function to fetch station details updates without full refresh
   const fetchStationDetailsUpdate = async () => {
     if (!stationId) return;
 
+    // First check connection status to ensure commands work properly
+    await checkConnectionStatus();
+
     try {
-      // First check connection status to ensure commands work properly
-      await checkConnectionStatus();
-
       const token =
-        localStorage.getItem('token') ||
+        localStorage.getItem("token") ||
         process.env.REACT_APP_DEV_TOKEN ||
-        'dev-mock-token-for-testing';
-
-      const apiUrl = `${getApiBaseUrl()}/stations/${stationId}/status`;
-      console.log('Fetching station status from:', apiUrl);
+        "dev-mock-token-for-testing";
 
       // Fetch only the station details for a lightweight update
-      const stationResponse = await fetch(apiUrl, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
+      const stationResponse = await fetch(
+        `${getApiBaseUrl()}/stations/${stationId}/status`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
         },
-      });
+      );
 
-      // Check response status before parsing JSON
-      if (!stationResponse.ok) {
-        console.error(
-          `Station status API error: ${stationResponse.status} ${stationResponse.statusText}`
-        );
-
-        // Try to get the error message from the response
-        try {
-          const errorData = await stationResponse.text();
-          console.error('Error response body:', errorData);
-        } catch (textError) {
-          console.error('Could not parse error response');
-        }
-
-        // If we hit a 500 error, we'll still try to update energy values
-        if (stationResponse.status === 500) {
-          console.log(
-            'Attempting to force update energy values due to API error'
-          );
-          // Use a slight delay to ensure the component has fully mounted
-          setTimeout(() => {
-            forceUpdateEnergyValues();
-          }, 200);
-        }
-
-        return;
-      }
-
-      // Parse JSON response
-      let stationData;
-      try {
-        stationData = await stationResponse.json();
-        console.log('Real-time station update:', stationData);
-      } catch (jsonError) {
-        console.error('Error parsing station response JSON:', jsonError);
-        // In case of parsing error, try to force update energy values
-        setTimeout(() => {
-          forceUpdateEnergyValues();
-        }, 200);
-        return;
-      }
+      const stationData = await stationResponse.json();
+      console.log("Real-time station update:", stationData);
 
       if (stationData.success && stationData.station) {
         // Update station data with real-time information (preserve connection status)
-        setStation(prevStation => ({
+        setStation((prevStation) => ({
           ...prevStation,
           ...stationData.station,
           // Make sure we don't override the connection status from the direct check
@@ -1242,102 +1143,22 @@ function StationDetail() {
 
         setLastUpdated(new Date());
 
-        // If station data includes energy information, update it
-        if (stationData.station.energyConsumption !== undefined) {
-          console.log(
-            'API provided energy consumption:',
-            stationData.station.energyConsumption
-          );
-          let energyValue;
-
-          // Handle both string and number formats
-          if (typeof stationData.station.energyConsumption === 'string') {
-            energyValue = parseFloat(stationData.station.energyConsumption);
-          } else if (
-            typeof stationData.station.energyConsumption === 'number'
-          ) {
-            energyValue = stationData.station.energyConsumption;
-          }
-
-          if (!isNaN(energyValue)) {
-            // Convert to kWh if necessary (our backend now ensures proper units)
-            const finalValue =
-              energyValue > 1000
-                ? (energyValue / 1000).toFixed(2)
-                : energyValue.toFixed(2);
-            console.log(`Setting energy consumption to ${finalValue} kWh`);
-            setEnergyConsumption(finalValue);
-          }
-        }
-
-        // Update charging duration if provided by the API
-        if (stationData.station.chargingDuration !== undefined) {
-          console.log(
-            'API provided charging duration:',
-            stationData.station.chargingDuration,
-            'seconds'
-          );
-          setChargingDuration(stationData.station.chargingDuration);
-        }
-
-        // Update battery percentage if provided by the API
-        if (stationData.station.batteryPercentage !== undefined) {
-          console.log(
-            'API provided battery percentage:',
-            stationData.station.batteryPercentage,
-            '%'
-          );
-          setBatteryPercentage(stationData.station.batteryPercentage);
-        }
-
-        // Update charging power if provided by the API
-        if (
-          stationData.station.chargingPower !== undefined &&
-          stationData.station.chargingPower > 0
-        ) {
-          console.log(
-            'API provided charging power:',
-            stationData.station.chargingPower,
-            'kW'
-          );
-          setCurrentPower(Math.round(stationData.station.chargingPower * 1000)); // Convert kW to W
-        }
-
-        // If station is charging but we don't have energy consumption value, use our mock function
-        if (
-          stationData.station.status === 'Charging' &&
-          (!stationData.station.energyConsumption ||
-            stationData.station.energyConsumption === '0.00' ||
-            stationData.station.energyConsumption === 0)
-        ) {
-          console.log(
-            'Station is charging but no energy consumption value received, forcing update'
-          );
-          setTimeout(() => {
-            forceUpdateEnergyValues();
-          }, 300);
-        }
-
         // If status changed to/from Charging, also check active transactions
         const newStatus = stationData.station.status;
         const currentStatus = station?.status;
 
         if (
-          (newStatus === 'Charging' && currentStatus !== 'Charging') ||
-          (newStatus !== 'Charging' && currentStatus === 'Charging')
+          (newStatus === "Charging" && currentStatus !== "Charging") ||
+          (newStatus !== "Charging" && currentStatus === "Charging")
         ) {
           console.log(
-            'Station charging status changed, checking for active transactions...'
+            "Station charging status changed, checking for active transactions...",
           );
           fetchTransactions(0);
         }
       }
     } catch (error) {
-      console.error('Error fetching station details update:', error);
-      // In case of general error, try to force update energy values
-      setTimeout(() => {
-        forceUpdateEnergyValues();
-      }, 200);
+      console.error("Error fetching station details update:", error);
     }
   };
 
@@ -1349,24 +1170,24 @@ function StationDetail() {
 
       // If status changed to/from Charging, we need to check for active transactions
       if (
-        (mqttStatus === 'Charging' && currentStatus !== 'Charging') ||
-        (mqttStatus !== 'Charging' && currentStatus === 'Charging')
+        (mqttStatus === "Charging" && currentStatus !== "Charging") ||
+        (mqttStatus !== "Charging" && currentStatus === "Charging")
       ) {
         console.log(
-          'Station charging status changed from MQTT, checking for active transactions...'
+          "Station charging status changed from MQTT, checking for active transactions...",
         );
         fetchTransactions(0); // This will also update the current transaction status
       }
 
       // Update station status from MQTT and set last updated timestamp
       if (mqttStatus && mqttStatus !== currentStatus) {
-        setStation(prev =>
+        setStation((prev) =>
           prev
             ? {
                 ...prev,
                 status: mqttStatus,
               }
-            : null
+            : null,
         );
         setLastUpdated(new Date());
       }
@@ -1376,9 +1197,9 @@ function StationDetail() {
 
   // Check if a specific tab was requested
   useEffect(() => {
-    if (location.state?.tab === 'transactions') {
+    if (location.state?.tab === "transactions") {
       setTabValue(1);
-    } else if (location.state?.tab === 'messages') {
+    } else if (location.state?.tab === "messages") {
       setTabValue(2);
     }
   }, [location.state]);
@@ -1388,10 +1209,10 @@ function StationDetail() {
     return (
       <Box
         sx={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: '50vh',
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          height: "50vh",
         }}
       >
         <CircularProgress />
@@ -1407,27 +1228,27 @@ function StationDetail() {
           mt: 3,
         }}
       >
-        <Alert severity="error"> {error} </Alert>{' '}
+        <Alert severity="error"> {error} </Alert>{" "}
         <Button
           variant="outlined"
-          onClick={() => navigate('/stations')}
+          onClick={() => navigate("/stations")}
           sx={{
             mt: 2,
           }}
         >
-          Back to Stations{' '}
-        </Button>{' '}
+          Back to Stations{" "}
+        </Button>{" "}
       </Box>
     );
   }
 
   const realtimeStatus = getRealtimeStatus();
-  const displayStatus = realtimeStatus || station?.status || 'Unknown';
+  const displayStatus = realtimeStatus || station?.status || "Unknown";
 
   return (
     <Box>
-      {' '}
-      {/* Error message */}{' '}
+      {" "}
+      {/* Error message */}{" "}
       {error && (
         <Alert
           severity="error"
@@ -1435,11 +1256,11 @@ function StationDetail() {
             mb: 3,
           }}
         >
-          {' '}
-          {error}{' '}
+          {" "}
+          {error}{" "}
         </Alert>
       )}
-      {/* Success message */}{' '}
+      {/* Success message */}{" "}
       {success && (
         <Alert
           severity="success"
@@ -1447,36 +1268,36 @@ function StationDetail() {
             mb: 3,
           }}
         >
-          {' '}
-          {success}{' '}
+          {" "}
+          {success}{" "}
         </Alert>
       )}
-      {/* Header */}{' '}
+      {/* Header */}{" "}
       <Box
         sx={{
           mb: 3,
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
         }}
       >
         <Box>
           <Typography variant="h4" component="h1" gutterBottom>
-            Station: {station?.name}{' '}
-          </Typography>{' '}
+            Station: {station?.name}{" "}
+          </Typography>{" "}
           <Chip
             label={displayStatus}
             color={getStatusColor(displayStatus)}
             sx={{
               mr: 1,
             }}
-          />{' '}
+          />{" "}
           {station?.isConnected && (
             <Chip label="Online" color="success" size="small" />
-          )}{' '}
-        </Box>{' '}
+          )}{" "}
+        </Box>{" "}
         <Box>
-          {' '}
+          {" "}
           {isEditing ? (
             <>
               <IconButton
@@ -1487,10 +1308,10 @@ function StationDetail() {
                 }}
               >
                 <SaveIcon />
-              </IconButton>{' '}
+              </IconButton>{" "}
               <IconButton onClick={handleEditToggle} color="error">
                 <CancelIcon />
-              </IconButton>{' '}
+              </IconButton>{" "}
             </>
           ) : (
             <>
@@ -1502,16 +1323,16 @@ function StationDetail() {
                   mr: 1,
                 }}
               >
-                Edit{' '}
-              </Button>{' '}
+                Edit{" "}
+              </Button>{" "}
               <IconButton onClick={fetchStationData}>
                 <RefreshIcon />
-              </IconButton>{' '}
+              </IconButton>{" "}
             </>
-          )}{' '}
-        </Box>{' '}
+          )}{" "}
+        </Box>{" "}
       </Box>
-      {/* Tabs */}{' '}
+      {/* Tabs */}{" "}
       <Paper
         sx={{
           mb: 3,
@@ -1529,15 +1350,15 @@ function StationDetail() {
           <Tab label="Transactions" />
           <Tab label="OCPP Messages" />
         </Tabs>
-        {/* Details Tab */}{' '}
+        {/* Details Tab */}{" "}
         <TabPanel value={tabValue} index={0}>
           <Grid container spacing={3}>
-            {' '}
-            {/* Basic Information */}{' '}
+            {" "}
+            {/* Basic Information */}{" "}
             <Grid item xs={12} md={6}>
               <Card
                 sx={{
-                  height: '100%',
+                  height: "100%",
                   borderRadius: 2,
                 }}
               >
@@ -1547,14 +1368,14 @@ function StationDetail() {
                   <Grid container spacing={2}>
                     <Grid item xs={12} sm={6}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        ID{' '}
-                      </Typography>{' '}
+                        ID{" "}
+                      </Typography>{" "}
                       <Typography variant="body1">
-                        {' '}
+                        {" "}
                         {isEditing ? (
                           <TextField
                             name="chargePointId"
-                            value={editedStation.chargePointId || ''}
+                            value={editedStation.chargePointId || ""}
                             onChange={handleFieldChange}
                             fullWidth
                             margin="dense"
@@ -1562,85 +1383,85 @@ function StationDetail() {
                           />
                         ) : (
                           station?.chargePointId
-                        )}{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
+                        )}{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
                     <Grid item xs={12} sm={6}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        Name{' '}
-                      </Typography>{' '}
+                        Name{" "}
+                      </Typography>{" "}
                       <Typography variant="body1">
-                        {' '}
+                        {" "}
                         {isEditing ? (
                           <TextField
                             name="name"
-                            value={editedStation.name || ''}
+                            value={editedStation.name || ""}
                             onChange={handleFieldChange}
                             fullWidth
                             margin="dense"
                           />
                         ) : (
                           station?.name
-                        )}{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
+                        )}{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
                     <Grid item xs={12} sm={6}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        Model{' '}
-                      </Typography>{' '}
+                        Model{" "}
+                      </Typography>{" "}
                       <Typography variant="body1">
-                        {' '}
+                        {" "}
                         {isEditing ? (
                           <TextField
                             name="model"
-                            value={editedStation.model || ''}
+                            value={editedStation.model || ""}
                             onChange={handleFieldChange}
                             fullWidth
                             margin="dense"
                           />
                         ) : (
-                          station?.model || 'Unknown'
-                        )}{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
+                          station?.model || "Unknown"
+                        )}{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
                     <Grid item xs={12} sm={6}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        Vendor{' '}
-                      </Typography>{' '}
+                        Vendor{" "}
+                      </Typography>{" "}
                       <Typography variant="body1">
-                        {' '}
+                        {" "}
                         {isEditing ? (
                           <TextField
                             name="vendor"
-                            value={editedStation.vendor || ''}
+                            value={editedStation.vendor || ""}
                             onChange={handleFieldChange}
                             fullWidth
                             margin="dense"
                           />
                         ) : (
-                          station?.vendor || 'Unknown'
-                        )}{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
+                          station?.vendor || "Unknown"
+                        )}{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
                     <Grid item xs={12} sm={6}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        Firmware Version{' '}
-                      </Typography>{' '}
+                        Firmware Version{" "}
+                      </Typography>{" "}
                       <Typography variant="body1">
-                        {' '}
-                        {station?.firmwareVersion || 'Unknown'}{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
+                        {" "}
+                        {station?.firmwareVersion || "Unknown"}{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
                     <Grid item xs={12} sm={6}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        Location{' '}
-                      </Typography>{' '}
+                        Location{" "}
+                      </Typography>{" "}
                       <Typography variant="body1">
-                        {' '}
+                        {" "}
                         {isEditing ? (
                           <LocationSelector
-                            value={editedStation.location || ''}
-                            onChange={value =>
+                            value={editedStation.location || ""}
+                            onChange={(value) =>
                               setEditedStation({
                                 ...editedStation,
                                 location: value,
@@ -1650,30 +1471,30 @@ function StationDetail() {
                         ) : (
                           (() => {
                             try {
-                              const loc = JSON.parse(station?.location || '{}');
+                              const loc = JSON.parse(station?.location || "{}");
                               return (
-                                `${loc.address || ''}, ${loc.city || ''}, ${loc.state || ''}`.replace(
+                                `${loc.address || ""}, ${loc.city || ""}, ${loc.state || ""}`.replace(
                                   /^, |, $/g,
-                                  ''
-                                ) || 'Not specified'
+                                  "",
+                                ) || "Not specified"
                               );
                             } catch (e) {
-                              return station?.location || 'Not specified';
+                              return station?.location || "Not specified";
                             }
                           })()
-                        )}{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
+                        )}{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
                     <Grid item xs={12}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        Description{' '}
-                      </Typography>{' '}
+                        Description{" "}
+                      </Typography>{" "}
                       <Typography variant="body1">
-                        {' '}
+                        {" "}
                         {isEditing ? (
                           <TextField
                             name="description"
-                            value={editedStation.description || ''}
+                            value={editedStation.description || ""}
                             onChange={handleFieldChange}
                             fullWidth
                             margin="dense"
@@ -1681,20 +1502,20 @@ function StationDetail() {
                             rows={2}
                           />
                         ) : (
-                          station?.description || 'No description'
-                        )}{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
+                          station?.description || "No description"
+                        )}{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
                     <Grid item xs={12}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        Notes{' '}
-                      </Typography>{' '}
+                        Notes{" "}
+                      </Typography>{" "}
                       <Typography variant="body1">
-                        {' '}
+                        {" "}
                         {isEditing ? (
                           <TextField
                             name="notes"
-                            value={editedStation.notes || ''}
+                            value={editedStation.notes || ""}
                             onChange={handleFieldChange}
                             fullWidth
                             margin="dense"
@@ -1702,19 +1523,19 @@ function StationDetail() {
                             rows={3}
                           />
                         ) : (
-                          station?.notes || 'No additional notes'
-                        )}{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
-                  </Grid>{' '}
-                </CardContent>{' '}
-              </Card>{' '}
+                          station?.notes || "No additional notes"
+                        )}{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
+                  </Grid>{" "}
+                </CardContent>{" "}
+              </Card>{" "}
             </Grid>
-            {/* Status and Commands */}{' '}
+            {/* Status and Commands */}{" "}
             <Grid item xs={12} md={6}>
               <Card
                 sx={{
-                  height: '100%',
+                  height: "100%",
                   borderRadius: 2,
                 }}
               >
@@ -1724,15 +1545,15 @@ function StationDetail() {
                   <Grid container spacing={2}>
                     <Grid item xs={12} sm={6}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        Status{' '}
-                      </Typography>{' '}
+                        Status{" "}
+                      </Typography>{" "}
                       <Typography
                         variant="body2"
                         sx={{
-                          fontWeight: 'bold',
+                          fontWeight: "bold",
                         }}
                       >
-                        Status:{' '}
+                        Status:{" "}
                         <Chip
                           label={getRealtimeStatus()}
                           color={getStatusColor(getRealtimeStatus())}
@@ -1742,24 +1563,24 @@ function StationDetail() {
                           variant="caption"
                           sx={{
                             ml: 1,
-                            color: 'text.secondary',
+                            color: "text.secondary",
                           }}
                         >
-                          Updated: {format(lastUpdated, 'HH:mm:ss')}{' '}
-                        </Typography>{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
+                          Updated: {format(lastUpdated, "HH:mm:ss")}{" "}
+                        </Typography>{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
                     <Grid item xs={12} sm={6}>
                       <Box
                         sx={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
                         }}
                       >
                         <Typography variant="subtitle2" color="text.secondary">
-                          Connection{' '}
-                        </Typography>{' '}
+                          Connection{" "}
+                        </Typography>{" "}
                         <IconButton
                           size="small"
                           onClick={() => {
@@ -1769,14 +1590,14 @@ function StationDetail() {
                           title="Check connection status"
                         >
                           <RefreshIcon fontSize="small" />
-                        </IconButton>{' '}
-                      </Box>{' '}
+                        </IconButton>{" "}
+                      </Box>{" "}
                       <Typography variant="body1">
                         <Chip
                           label={
-                            station?.isConnected ? 'Connected' : 'Disconnected'
+                            station?.isConnected ? "Connected" : "Disconnected"
                           }
-                          color={station?.isConnected ? 'success' : 'error'}
+                          color={station?.isConnected ? "success" : "error"}
                           size="small"
                           icon={
                             station?.isConnected ? (
@@ -1786,73 +1607,73 @@ function StationDetail() {
                             )
                           }
                           sx={{
-                            fontWeight: 'bold',
+                            fontWeight: "bold",
                             animation: station?.isConnected
-                              ? 'pulse 2s infinite'
-                              : 'none',
-                            '@keyframes pulse': {
-                              '0%': {
-                                boxShadow: '0 0 0 0 rgba(46, 125, 50, 0.4)',
+                              ? "pulse 2s infinite"
+                              : "none",
+                            "@keyframes pulse": {
+                              "0%": {
+                                boxShadow: "0 0 0 0 rgba(46, 125, 50, 0.4)",
                               },
-                              '70%': {
-                                boxShadow: '0 0 0 6px rgba(46, 125, 50, 0)',
+                              "70%": {
+                                boxShadow: "0 0 0 6px rgba(46, 125, 50, 0)",
                               },
-                              '100%': {
-                                boxShadow: '0 0 0 0 rgba(46, 125, 50, 0)',
+                              "100%": {
+                                boxShadow: "0 0 0 0 rgba(46, 125, 50, 0)",
                               },
                             },
                           }}
-                        />{' '}
+                        />{" "}
                         <Typography
                           variant="caption"
                           display="block"
                           sx={{
                             mt: 0.5,
-                            color: 'text.secondary',
+                            color: "text.secondary",
                           }}
                         >
-                          Last checked: {format(lastUpdated, 'HH:mm:ss')}{' '}
-                        </Typography>{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
+                          Last checked: {format(lastUpdated, "HH:mm:ss")}{" "}
+                        </Typography>{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
                     <Grid item xs={12} sm={6}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        Last Heartbeat{' '}
-                      </Typography>{' '}
+                        Last Heartbeat{" "}
+                      </Typography>{" "}
                       <Typography variant="body1">
-                        {' '}
+                        {" "}
                         {station?.lastHeartbeat
                           ? format(
                               new Date(station.lastHeartbeat),
-                              'dd MMM yyyy HH:mm:ss'
+                              "dd MMM yyyy HH:mm:ss",
                             )
-                          : 'Never'}{' '}
-                      </Typography>{' '}
-                    </Grid>{' '}
+                          : "Never"}{" "}
+                      </Typography>{" "}
+                    </Grid>{" "}
                     <Grid item xs={12} sm={6}>
                       <Box
                         sx={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
                         }}
                       >
                         <Typography variant="subtitle2" color="text.secondary">
-                          Current Transaction{' '}
-                        </Typography>{' '}
+                          Current Transaction{" "}
+                        </Typography>{" "}
                         <IconButton
                           size="small"
                           onClick={() => fetchTransactions(0)}
                           title="Refresh transaction status"
                         >
                           <RefreshIcon fontSize="small" />
-                        </IconButton>{' '}
-                      </Box>{' '}
+                        </IconButton>{" "}
+                      </Box>{" "}
                       {transactionsLoading ? (
                         <Box
                           sx={{
-                            display: 'flex',
-                            alignItems: 'center',
+                            display: "flex",
+                            alignItems: "center",
                             my: 0.5,
                           }}
                         >
@@ -1861,11 +1682,11 @@ function StationDetail() {
                             sx={{
                               mr: 1,
                             }}
-                          />{' '}
+                          />{" "}
                           <Typography variant="body2">
-                            {' '}
-                            Loading...{' '}
-                          </Typography>{' '}
+                            {" "}
+                            Loading...{" "}
+                          </Typography>{" "}
                         </Box>
                       ) : (
                         <Box
@@ -1873,16 +1694,16 @@ function StationDetail() {
                             mt: 1,
                           }}
                         >
-                          {' '}
+                          {" "}
                           {activeTransaction ||
                           (transactions &&
                             transactions.length > 0 &&
-                            transactions[0]?.status === 'InProgress') ? (
+                            transactions[0]?.status === "InProgress") ? (
                             <>
                               <Box
                                 sx={{
-                                  display: 'flex',
-                                  alignItems: 'center',
+                                  display: "flex",
+                                  alignItems: "center",
                                 }}
                               >
                                 <Chip
@@ -1892,48 +1713,48 @@ function StationDetail() {
                                   clickable
                                   onClick={() =>
                                     navigate(
-                                      `/transactions/${activeTransaction || (transactions[0] && transactions[0].transactionId)}`
+                                      `/transactions/${activeTransaction || (transactions[0] && transactions[0].transactionId)}`,
                                     )
                                   }
                                   sx={{
-                                    fontWeight: 'bold',
-                                    animation: 'pulse 2s infinite',
-                                    '@keyframes pulse': {
-                                      '0%': {
+                                    fontWeight: "bold",
+                                    animation: "pulse 2s infinite",
+                                    "@keyframes pulse": {
+                                      "0%": {
                                         boxShadow:
-                                          '0 0 0 0 rgba(76, 175, 80, 0.4)',
+                                          "0 0 0 0 rgba(76, 175, 80, 0.4)",
                                       },
-                                      '70%': {
+                                      "70%": {
                                         boxShadow:
-                                          '0 0 0 6px rgba(76, 175, 80, 0)',
+                                          "0 0 0 6px rgba(76, 175, 80, 0)",
                                       },
-                                      '100%': {
+                                      "100%": {
                                         boxShadow:
-                                          '0 0 0 0 rgba(76, 175, 80, 0)',
+                                          "0 0 0 0 rgba(76, 175, 80, 0)",
                                       },
                                     },
                                   }}
-                                />{' '}
+                                />{" "}
                               </Box>
-                              {/* Real-time energy consumption details */}{' '}
-                              {/* Temporarily show for all active transactions, even without energy data */}{' '}
+                              {/* Real-time energy consumption details */}{" "}
+                              {/* Temporarily show for all active transactions, even without energy data */}{" "}
                               {(activeTransaction ||
                                 (transactions &&
                                   transactions.length > 0 &&
                                   transactions[0]?.status ===
-                                    'InProgress')) && (
+                                    "InProgress")) && (
                                 <Card
                                   variant="outlined"
                                   sx={{
                                     mt: 1,
-                                    backgroundColor: '#f8f9fa',
-                                    borderLeft: '4px solid #4caf50',
+                                    backgroundColor: "#f8f9fa",
+                                    borderLeft: "4px solid #4caf50",
                                   }}
                                 >
                                   <CardContent
                                     sx={{
                                       p: 1.5,
-                                      '&:last-child': {
+                                      "&:last-child": {
                                         pb: 1.5,
                                       },
                                     }}
@@ -1944,119 +1765,117 @@ function StationDetail() {
                                           variant="caption"
                                           color="text.secondary"
                                         >
-                                          Energy Consumed{' '}
-                                        </Typography>{' '}
+                                          Energy Consumed{" "}
+                                        </Typography>{" "}
                                         <Typography
                                           variant="body2"
                                           fontWeight="bold"
                                           sx={{
-                                            display: 'flex',
-                                            alignItems: 'center',
+                                            display: "flex",
+                                            alignItems: "center",
                                           }}
                                         >
                                           <BatteryChargingFullIcon
                                             fontSize="small"
                                             sx={{
                                               mr: 0.5,
-                                              color: 'success.main',
+                                              color: "success.main",
                                             }}
-                                          />{' '}
-                                          {energyConsumption || '0.00'}
-                                          kWh{' '}
-                                        </Typography>{' '}
-                                      </Grid>{' '}
+                                          />{" "}
+                                          {energyConsumption}
+                                          kWh{" "}
+                                        </Typography>{" "}
+                                      </Grid>{" "}
                                       <Grid item xs={6}>
                                         <Typography
                                           variant="caption"
                                           color="text.secondary"
                                         >
-                                          Current Power{' '}
-                                        </Typography>{' '}
+                                          Current Power{" "}
+                                        </Typography>{" "}
                                         <Typography
                                           variant="body2"
                                           fontWeight="bold"
                                         >
-                                          {' '}
-                                          {currentPower}W{' '}
-                                        </Typography>{' '}
-                                      </Grid>{' '}
+                                          {" "}
+                                          {currentPower}W{" "}
+                                        </Typography>{" "}
+                                      </Grid>{" "}
                                       {batteryPercentage !== null && (
                                         <Grid item xs={6}>
                                           <Typography
                                             variant="caption"
                                             color="text.secondary"
                                           >
-                                            Battery Level{' '}
-                                          </Typography>{' '}
+                                            Battery Level{" "}
+                                          </Typography>{" "}
                                           <Box
                                             sx={{
-                                              display: 'flex',
-                                              alignItems: 'center',
+                                              display: "flex",
+                                              alignItems: "center",
                                             }}
                                           >
                                             <Box
                                               sx={{
-                                                width: '50px',
-                                                height: '12px',
-                                                border: '1px solid #ccc',
-                                                borderRadius: '3px',
-                                                position: 'relative',
+                                                width: "50px",
+                                                height: "12px",
+                                                border: "1px solid #ccc",
+                                                borderRadius: "3px",
+                                                position: "relative",
                                                 mr: 0.5,
                                               }}
                                             >
                                               <Box
                                                 sx={{
-                                                  position: 'absolute',
+                                                  position: "absolute",
                                                   left: 0,
                                                   top: 0,
-                                                  height: '100%',
+                                                  height: "100%",
                                                   width: `${batteryPercentage}%`,
                                                   backgroundColor:
                                                     batteryPercentage < 20
-                                                      ? '#f44336'
+                                                      ? "#f44336"
                                                       : batteryPercentage < 50
-                                                        ? '#ff9800'
-                                                        : '#4caf50',
+                                                        ? "#ff9800"
+                                                        : "#4caf50",
                                                   transition:
-                                                    'width 0.5s ease-in-out',
+                                                    "width 0.5s ease-in-out",
                                                 }}
-                                              />{' '}
-                                            </Box>{' '}
+                                              />{" "}
+                                            </Box>{" "}
                                             <Typography
                                               variant="body2"
                                               fontWeight="bold"
                                             >
-                                              {' '}
+                                              {" "}
                                               {batteryPercentage} %
-                                            </Typography>{' '}
-                                          </Box>{' '}
+                                            </Typography>{" "}
+                                          </Box>{" "}
                                         </Grid>
-                                      )}{' '}
+                                      )}{" "}
                                       <Grid item xs={6}>
                                         <Typography
                                           variant="caption"
                                           color="text.secondary"
                                         >
-                                          Duration{' '}
-                                        </Typography>{' '}
+                                          Duration{" "}
+                                        </Typography>{" "}
                                         <Typography
                                           variant="body2"
                                           fontWeight="bold"
                                         >
-                                          {' '}
+                                          {" "}
+                                          {Math.floor(chargingDuration / 3600)}h{" "}
                                           {Math.floor(
-                                            chargingDuration / 3600
-                                          )}h{' '}
-                                          {Math.floor(
-                                            (chargingDuration % 3600) / 60
+                                            (chargingDuration % 3600) / 60,
                                           )}
-                                          m {Math.floor(chargingDuration % 60)}s
-                                        </Typography>{' '}
-                                      </Grid>{' '}
-                                    </Grid>{' '}
-                                  </CardContent>{' '}
+                                          m{" "}
+                                        </Typography>{" "}
+                                      </Grid>{" "}
+                                    </Grid>{" "}
+                                  </CardContent>{" "}
                                 </Card>
-                              )}{' '}
+                              )}{" "}
                             </>
                           ) : (
                             <>
@@ -2068,24 +1887,24 @@ function StationDetail() {
                                 sx={{
                                   borderRadius: 1,
                                 }}
-                              />{' '}
+                              />{" "}
                               <Typography
                                 variant="caption"
                                 display="block"
                                 sx={{
                                   mt: 0.5,
-                                  color: 'text.secondary',
+                                  color: "text.secondary",
                                 }}
                               >
-                                Last checked:{' '}
-                                {format(new Date(), 'HH:mm:ss')}{' '}
-                              </Typography>{' '}
+                                Last checked:{" "}
+                                {format(new Date(), "HH:mm:ss")}{" "}
+                              </Typography>{" "}
                             </>
-                          )}{' '}
+                          )}{" "}
                         </Box>
-                      )}{' '}
+                      )}{" "}
                     </Grid>
-                    {/* Commands section */}{' '}
+                    {/* Commands section */}{" "}
                     <Grid item xs={12}>
                       <Typography
                         variant="subtitle2"
@@ -2094,27 +1913,27 @@ function StationDetail() {
                           mb: 1,
                         }}
                       >
-                        Commands{' '}
-                      </Typography>{' '}
+                        Commands{" "}
+                      </Typography>{" "}
                       <Box
                         sx={{
-                          display: 'flex',
-                          flexWrap: 'wrap',
+                          display: "flex",
+                          flexWrap: "wrap",
                           gap: 1,
                         }}
                       >
-                        {' '}
-                        {station?.status !== 'Charging' ? (
+                        {" "}
+                        {station?.status !== "Charging" ? (
                           <Button
                             variant="outlined"
                             startIcon={<StartIcon />}
                             color="success"
                             onClick={() =>
-                              handleOpenCommandDialog('RemoteStart')
+                              handleOpenCommandDialog("RemoteStart")
                             }
                             disabled={!station?.isConnected}
                           >
-                            Start Transaction{' '}
+                            Start Transaction{" "}
                           </Button>
                         ) : (
                           <Button
@@ -2122,48 +1941,63 @@ function StationDetail() {
                             startIcon={<StopIcon />}
                             color="error"
                             onClick={() =>
-                              handleOpenCommandDialog('RemoteStop')
+                              handleOpenCommandDialog("RemoteStop")
                             }
                             disabled={
                               !station?.isConnected ||
                               !station?.currentTransaction
                             }
                           >
-                            Stop Transaction{' '}
+                            Stop Transaction{" "}
                           </Button>
                         )}
                         <Button
                           variant="outlined"
                           startIcon={<ResetIcon />}
-                          onClick={() => handleOpenCommandDialog('Reset')}
+                          onClick={() => handleOpenCommandDialog("Reset")}
                           disabled={!station?.isConnected}
                         >
-                          Reset{' '}
+                          Reset{" "}
                         </Button>
                         <Button
                           variant="outlined"
                           startIcon={<PowerIcon />}
                           onClick={() =>
-                            handleOpenCommandDialog('ChangeAvailability')
+                            handleOpenCommandDialog("ChangeAvailability")
                           }
                           disabled={!station?.isConnected}
                         >
-                          {station?.status === 'Available'
-                            ? 'Set Unavailable'
-                            : 'Set Available'}{' '}
-                        </Button>{' '}
-                      </Box>{' '}
-                    </Grid>{' '}
-                  </Grid>{' '}
-                </CardContent>{' '}
-              </Card>{' '}
-            </Grid>{' '}
-          </Grid>{' '}
+                          {station?.status === "Available"
+                            ? "Set Unavailable"
+                            : "Set Available"}{" "}
+                        </Button>{" "}
+                      </Box>{" "}
+                    </Grid>{" "}
+                  </Grid>{" "}
+                </CardContent>{" "}
+              </Card>{" "}
+            </Grid>{" "}
+          </Grid>{" "}
         </TabPanel>
-        {/* Station Details Tab */}{' '}
+        {/* Station Details Tab */}{" "}
         <TabPanel value={tabValue} index={0}>
-          {' '}
-          {/* Remote Command Panel */}{' '}
+          {" "}
+          {/* Remote Command Panel */}{" "}
+          {station && (
+            <RemoteCommandPanel
+              station={station}
+              onSuccess={(data) => {
+                setSuccess(data.message);
+                setTimeout(() => setSuccess(null), 5000);
+                // Refresh station data after a command is sent
+                setTimeout(() => fetchStationData(), 2000);
+              }}
+              onError={(error) => {
+                setError(error.message);
+                setTimeout(() => setError(null), 5000);
+              }}
+            />
+          )}{" "}
           <Card
             sx={{
               borderRadius: 2,
@@ -2177,51 +2011,51 @@ function StationDetail() {
                   size="small"
                   onClick={() => fetchStationData()}
                 >
-                  Refresh{' '}
+                  Refresh{" "}
                 </Button>
               }
-            />{' '}
+            />{" "}
             <Divider />
             <CardContent>
               <Grid container spacing={2}>
                 <Grid item xs={12} sm={6}>
                   <Typography variant="subtitle2" color="text.secondary">
-                    Vendor{' '}
-                  </Typography>{' '}
+                    Vendor{" "}
+                  </Typography>{" "}
                   <Typography variant="body1">
-                    {' '}
+                    {" "}
                     {isEditing ? (
                       <TextField
                         name="vendor"
-                        value={editedStation.vendor || ''}
+                        value={editedStation.vendor || ""}
                         onChange={handleFieldChange}
                         fullWidth
                         margin="dense"
                       />
                     ) : (
-                      station?.vendor || 'Unknown'
-                    )}{' '}
-                  </Typography>{' '}
-                </Grid>{' '}
+                      station?.vendor || "Unknown"
+                    )}{" "}
+                  </Typography>{" "}
+                </Grid>{" "}
                 <Grid item xs={12} sm={6}>
                   <Typography variant="subtitle2" color="text.secondary">
-                    Firmware Version{' '}
-                  </Typography>{' '}
+                    Firmware Version{" "}
+                  </Typography>{" "}
                   <Typography variant="body1">
-                    {' '}
-                    {station?.firmwareVersion || 'Unknown'}{' '}
-                  </Typography>{' '}
-                </Grid>{' '}
+                    {" "}
+                    {station?.firmwareVersion || "Unknown"}{" "}
+                  </Typography>{" "}
+                </Grid>{" "}
                 <Grid item xs={12} sm={6}>
                   <Typography variant="subtitle2" color="text.secondary">
-                    Location{' '}
-                  </Typography>{' '}
+                    Location{" "}
+                  </Typography>{" "}
                   <Typography variant="body1">
-                    {' '}
+                    {" "}
                     {isEditing ? (
                       <LocationSelector
-                        value={editedStation.location || ''}
-                        onChange={value =>
+                        value={editedStation.location || ""}
+                        onChange={(value) =>
                           setEditedStation({
                             ...editedStation,
                             location: value,
@@ -2231,30 +2065,30 @@ function StationDetail() {
                     ) : (
                       (() => {
                         try {
-                          const loc = JSON.parse(station?.location || '{}');
+                          const loc = JSON.parse(station?.location || "{}");
                           return (
-                            `${loc.address || ''}, ${loc.city || ''}, ${loc.state || ''}`.replace(
+                            `${loc.address || ""}, ${loc.city || ""}, ${loc.state || ""}`.replace(
                               /^, |, $/g,
-                              ''
-                            ) || 'Not specified'
+                              "",
+                            ) || "Not specified"
                           );
                         } catch (e) {
-                          return station?.location || 'Not specified';
+                          return station?.location || "Not specified";
                         }
                       })()
-                    )}{' '}
-                  </Typography>{' '}
-                </Grid>{' '}
+                    )}{" "}
+                  </Typography>{" "}
+                </Grid>{" "}
                 <Grid item xs={12}>
                   <Typography variant="subtitle2" color="text.secondary">
-                    Description{' '}
-                  </Typography>{' '}
+                    Description{" "}
+                  </Typography>{" "}
                   <Typography variant="body1">
-                    {' '}
+                    {" "}
                     {isEditing ? (
                       <TextField
                         name="description"
-                        value={editedStation.description || ''}
+                        value={editedStation.description || ""}
                         onChange={handleFieldChange}
                         fullWidth
                         margin="dense"
@@ -2262,20 +2096,20 @@ function StationDetail() {
                         rows={2}
                       />
                     ) : (
-                      station?.description || 'No description'
-                    )}{' '}
-                  </Typography>{' '}
-                </Grid>{' '}
+                      station?.description || "No description"
+                    )}{" "}
+                  </Typography>{" "}
+                </Grid>{" "}
                 <Grid item xs={12}>
                   <Typography variant="subtitle2" color="text.secondary">
-                    Notes{' '}
-                  </Typography>{' '}
+                    Notes{" "}
+                  </Typography>{" "}
                   <Typography variant="body1">
-                    {' '}
+                    {" "}
                     {isEditing ? (
                       <TextField
                         name="notes"
-                        value={editedStation.notes || ''}
+                        value={editedStation.notes || ""}
                         onChange={handleFieldChange}
                         fullWidth
                         margin="dense"
@@ -2283,15 +2117,15 @@ function StationDetail() {
                         rows={3}
                       />
                     ) : (
-                      station?.notes || 'No additional notes'
-                    )}{' '}
-                  </Typography>{' '}
-                </Grid>{' '}
-              </Grid>{' '}
-            </CardContent>{' '}
-          </Card>{' '}
+                      station?.notes || "No additional notes"
+                    )}{" "}
+                  </Typography>{" "}
+                </Grid>{" "}
+              </Grid>{" "}
+            </CardContent>{" "}
+          </Card>{" "}
         </TabPanel>
-        {/* Transactions Tab */}{' '}
+        {/* Transactions Tab */}{" "}
         <TabPanel value={tabValue} index={1}>
           <Card
             sx={{
@@ -2304,30 +2138,30 @@ function StationDetail() {
                 <Button
                   variant="outlined"
                   size="small"
-                  onClick={() => fetchOcppMessages(0)}
+                  onClick={() => fetchStationData()}
                 >
-                  Refresh{' '}
+                  Refresh{" "}
                 </Button>
               }
-            />{' '}
+            />{" "}
             <Divider />
             <CardContent>
-              {' '}
-              {/* Pagination and results count */}{' '}
+              {" "}
+              {/* Pagination and results count */}{" "}
               <Box
                 sx={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
                   mb: 2,
                 }}
               >
                 <Typography variant="body2" color="text.secondary">
-                  {' '}
+                  {" "}
                   {totalTransactions > 0
                     ? `Showing ${transactionsPage * transactionsLimit + 1}-${Math.min((transactionsPage + 1) * transactionsLimit, totalTransactions)} of ${totalTransactions} transactions`
-                    : 'No transactions found'}{' '}
-                </Typography>{' '}
+                    : "No transactions found"}{" "}
+                </Typography>{" "}
                 <FormControl
                   variant="outlined"
                   size="small"
@@ -2336,30 +2170,30 @@ function StationDetail() {
                   }}
                 >
                   <InputLabel id="transactions-per-page-label">
-                    {' '}
-                    Per Page{' '}
-                  </InputLabel>{' '}
+                    {" "}
+                    Per Page{" "}
+                  </InputLabel>{" "}
                   <Select
                     labelId="transactions-per-page-label"
                     value={transactionsLimit}
-                    onChange={e => {
+                    onChange={(e) => {
                       setTransactionsLimit(e.target.value);
                       fetchTransactions(0, e.target.value);
                     }}
                     label="Per Page"
                   >
-                    <MenuItem value={5}> 5 </MenuItem>{' '}
-                    <MenuItem value={10}> 10 </MenuItem>{' '}
-                    <MenuItem value={20}> 20 </MenuItem>{' '}
-                    <MenuItem value={50}> 50 </MenuItem>{' '}
-                  </Select>{' '}
-                </FormControl>{' '}
+                    <MenuItem value={5}> 5 </MenuItem>{" "}
+                    <MenuItem value={10}> 10 </MenuItem>{" "}
+                    <MenuItem value={20}> 20 </MenuItem>{" "}
+                    <MenuItem value={50}> 50 </MenuItem>{" "}
+                  </Select>{" "}
+                </FormControl>{" "}
               </Box>
               {loading || transactionsLoading ? (
                 <Box
                   sx={{
-                    display: 'flex',
-                    justifyContent: 'center',
+                    display: "flex",
+                    justifyContent: "center",
                     p: 3,
                   }}
                 >
@@ -2371,12 +2205,12 @@ function StationDetail() {
                   color="text.secondary"
                   align="center"
                 >
-                  No transactions found for this station{' '}
+                  No transactions found for this station{" "}
                 </Typography>
               ) : (
                 <List>
-                  {' '}
-                  {transactions.map(transaction => (
+                  {" "}
+                  {transactions.map((transaction) => (
                     <React.Fragment key={transaction.id}>
                       <ListItem
                         button
@@ -2388,23 +2222,23 @@ function StationDetail() {
                           primary={
                             <Box
                               sx={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
                               }}
                             >
                               <Typography variant="subtitle1">
-                                Transaction # {transaction.transactionId}{' '}
-                              </Typography>{' '}
+                                Transaction # {transaction.transactionId}{" "}
+                              </Typography>{" "}
                               <Chip
                                 label={transaction.status}
                                 size="small"
                                 color={
-                                  transaction.status === 'InProgress'
-                                    ? 'primary'
-                                    : 'success'
+                                  transaction.status === "InProgress"
+                                    ? "primary"
+                                    : "success"
                                 }
-                              />{' '}
+                              />{" "}
                             </Box>
                           }
                           secondary={
@@ -2420,55 +2254,55 @@ function StationDetail() {
                                   variant="body2"
                                   color="text.secondary"
                                 >
-                                  Start:{' '}
+                                  Start:{" "}
                                   {format(
                                     new Date(transaction.startTime),
-                                    'dd MMM yyyy HH:mm'
-                                  )}{' '}
-                                </Typography>{' '}
-                              </Grid>{' '}
+                                    "dd MMM yyyy HH:mm",
+                                  )}{" "}
+                                </Typography>{" "}
+                              </Grid>{" "}
                               <Grid item xs={12} sm={6}>
                                 <Typography
                                   variant="body2"
                                   color="text.secondary"
                                 >
-                                  {' '}
+                                  {" "}
                                   {transaction.stopTime
-                                    ? `End: ${format(new Date(transaction.stopTime), 'dd MMM yyyy HH:mm')}`
-                                    : 'In progress'}{' '}
-                                </Typography>{' '}
-                              </Grid>{' '}
+                                    ? `End: ${format(new Date(transaction.stopTime), "dd MMM yyyy HH:mm")}`
+                                    : "In progress"}{" "}
+                                </Typography>{" "}
+                              </Grid>{" "}
                               <Grid item xs={12} sm={6}>
                                 <Typography
                                   variant="body2"
                                   color="text.secondary"
                                 >
-                                  ID Tag: {transaction.idTag}{' '}
-                                </Typography>{' '}
-                              </Grid>{' '}
+                                  ID Tag: {transaction.idTag}{" "}
+                                </Typography>{" "}
+                              </Grid>{" "}
                               <Grid item xs={12} sm={6}>
                                 <Typography
                                   variant="body2"
                                   color="text.secondary"
                                 >
-                                  Energy:{' '}
+                                  Energy:{" "}
                                   {transaction.energyDelivered?.toFixed(2) || 0}
-                                  kWh{' '}
-                                </Typography>{' '}
-                              </Grid>{' '}
+                                  kWh{" "}
+                                </Typography>{" "}
+                              </Grid>{" "}
                             </Grid>
                           }
-                        />{' '}
-                      </ListItem>{' '}
+                        />{" "}
+                      </ListItem>{" "}
                       <Divider />
                     </React.Fragment>
                   ))}
-                  {/* Pagination controls */}{' '}
+                  {/* Pagination controls */}{" "}
                   {totalTransactions > transactionsLimit && (
                     <Box
                       sx={{
-                        display: 'flex',
-                        justifyContent: 'center',
+                        display: "flex",
+                        justifyContent: "center",
                         mt: 3,
                         mb: 1,
                       }}
@@ -2484,13 +2318,13 @@ function StationDetail() {
                         showLastButton
                       />
                     </Box>
-                  )}{' '}
+                  )}{" "}
                 </List>
-              )}{' '}
-            </CardContent>{' '}
-          </Card>{' '}
+              )}{" "}
+            </CardContent>{" "}
+          </Card>{" "}
         </TabPanel>
-        {/* OCPP Messages Tab */}{' '}
+        {/* OCPP Messages Tab */}{" "}
         <TabPanel value={tabValue} index={2}>
           <Card
             sx={{
@@ -2503,30 +2337,30 @@ function StationDetail() {
                 <Button
                   variant="outlined"
                   size="small"
-                  onClick={() => fetchOcppMessages(0)}
+                  onClick={() => fetchStationData()}
                 >
-                  Refresh{' '}
+                  Refresh{" "}
                 </Button>
               }
-            />{' '}
+            />{" "}
             <Divider />
             <CardContent>
-              {' '}
-              {/* Pagination and results count */}{' '}
+              {" "}
+              {/* Pagination and results count */}{" "}
               <Box
                 sx={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
                   mb: 2,
                 }}
               >
                 <Typography variant="body2" color="text.secondary">
-                  {' '}
+                  {" "}
                   {totalMessages > 0
                     ? `Showing ${messagesPage * messagesLimit + 1}-${Math.min((messagesPage + 1) * messagesLimit, totalMessages)} of ${totalMessages} messages`
-                    : 'No messages found'}{' '}
-                </Typography>{' '}
+                    : "No messages found"}{" "}
+                </Typography>{" "}
                 <FormControl
                   variant="outlined"
                   size="small"
@@ -2535,30 +2369,30 @@ function StationDetail() {
                   }}
                 >
                   <InputLabel id="messages-per-page-label">
-                    {' '}
-                    Per Page{' '}
-                  </InputLabel>{' '}
+                    {" "}
+                    Per Page{" "}
+                  </InputLabel>{" "}
                   <Select
                     labelId="messages-per-page-label"
                     value={messagesLimit}
-                    onChange={e => {
+                    onChange={(e) => {
                       setMessagesLimit(e.target.value);
                       fetchOcppMessages(0, e.target.value);
                     }}
                     label="Per Page"
                   >
-                    <MenuItem value={10}> 10 </MenuItem>{' '}
-                    <MenuItem value={20}> 20 </MenuItem>{' '}
-                    <MenuItem value={50}> 50 </MenuItem>{' '}
-                    <MenuItem value={100}> 100 </MenuItem>{' '}
-                  </Select>{' '}
-                </FormControl>{' '}
+                    <MenuItem value={10}> 10 </MenuItem>{" "}
+                    <MenuItem value={20}> 20 </MenuItem>{" "}
+                    <MenuItem value={50}> 50 </MenuItem>{" "}
+                    <MenuItem value={100}> 100 </MenuItem>{" "}
+                  </Select>{" "}
+                </FormControl>{" "}
               </Box>
               {loading || messagesLoading ? (
                 <Box
                   sx={{
-                    display: 'flex',
-                    justifyContent: 'center',
+                    display: "flex",
+                    justifyContent: "center",
                     p: 3,
                   }}
                 >
@@ -2570,35 +2404,35 @@ function StationDetail() {
                   color="text.secondary"
                   align="center"
                 >
-                  No OCPP messages found for this station{' '}
+                  No OCPP messages found for this station{" "}
                 </Typography>
               ) : (
                 <List>
-                  {' '}
-                  {ocppMessages.map(message => (
+                  {" "}
+                  {ocppMessages.map((message) => (
                     <React.Fragment key={message.id}>
                       <ListItem>
                         <ListItemText
                           primary={
                             <Box
                               sx={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
                               }}
                             >
                               <Typography variant="subtitle1">
-                                {' '}
+                                {" "}
                                 {message.message_type ||
-                                  message.messageType}{' '}
-                              </Typography>{' '}
+                                  message.messageType}{" "}
+                              </Typography>{" "}
                               <Chip
                                 label={message.status || message.direction}
                                 size="small"
                                 color={getMessageStatusColor(
-                                  message.status || message.direction
+                                  message.status || message.direction,
                                 )}
-                              />{' '}
+                              />{" "}
                             </Box>
                           }
                           secondary={
@@ -2611,54 +2445,54 @@ function StationDetail() {
                                 variant="body2"
                                 color="text.secondary"
                               >
-                                {' '}
+                                {" "}
                                 {format(
                                   new Date(message.timestamp),
-                                  'dd MMM yyyy HH:mm:ss'
-                                )}{' '}
-                              </Typography>{' '}
+                                  "dd MMM yyyy HH:mm:ss",
+                                )}{" "}
+                              </Typography>{" "}
                               <Typography
                                 variant="body2"
                                 sx={{
                                   mt: 1,
-                                  bgcolor: 'grey.100',
+                                  bgcolor: "grey.100",
                                   p: 1,
                                   borderRadius: 1,
-                                  overflowX: 'auto',
+                                  overflowX: "auto",
                                 }}
                               >
                                 <pre
                                   style={{
                                     margin: 0,
-                                    fontFamily: 'monospace',
-                                    fontSize: '0.75rem',
+                                    fontFamily: "monospace",
+                                    fontSize: "0.75rem",
                                   }}
                                 >
-                                  {' '}
+                                  {" "}
                                   {message.payload
-                                    ? typeof message.payload === 'string'
+                                    ? typeof message.payload === "string"
                                       ? JSON.stringify(
                                           JSON.parse(message.payload),
                                           null,
-                                          2
+                                          2,
                                         )
                                       : JSON.stringify(message.payload, null, 2)
-                                    : 'No payload'}{' '}
-                                </pre>{' '}
-                              </Typography>{' '}
+                                    : "No payload"}{" "}
+                                </pre>{" "}
+                              </Typography>{" "}
                             </Box>
                           }
-                        />{' '}
-                      </ListItem>{' '}
+                        />{" "}
+                      </ListItem>{" "}
                       <Divider />
                     </React.Fragment>
                   ))}
-                  {/* Pagination controls */}{' '}
+                  {/* Pagination controls */}{" "}
                   {totalMessages > messagesLimit && (
                     <Box
                       sx={{
-                        display: 'flex',
-                        justifyContent: 'center',
+                        display: "flex",
+                        justifyContent: "center",
                         mt: 3,
                         mb: 1,
                       }}
@@ -2674,14 +2508,14 @@ function StationDetail() {
                         showLastButton
                       />
                     </Box>
-                  )}{' '}
+                  )}{" "}
                 </List>
-              )}{' '}
-            </CardContent>{' '}
-          </Card>{' '}
-        </TabPanel>{' '}
+              )}{" "}
+            </CardContent>{" "}
+          </Card>{" "}
+        </TabPanel>{" "}
       </Paper>
-      {/* Command Dialog */} {renderCommandDialog()}{' '}
+      {/* Command Dialog */} {renderCommandDialog()}{" "}
     </Box>
   );
 }

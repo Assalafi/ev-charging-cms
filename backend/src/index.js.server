@@ -1,0 +1,108 @@
+require('dotenv').config();
+const express = require('express');
+const http = require('http');
+const cors = require('cors');
+const { sequelize } = require('./models');
+const logger = require('./utils/logger');
+const routes = require('./routes');
+const ocppServer = require('./ocpp/server');
+const mqttClient = require('./mqtt/client');
+
+// Create Express app
+const app = express();
+const server = http.createServer(app);
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Health check endpoint - Moved before static files
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    node_env: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Serve static files from public directory
+app.use('/public', express.static('public'));
+app.use(express.static('public'));
+
+// API routes
+app.use('/api', routes);
+
+// OCPP WebSocket server will be initialized in startServer()
+
+// Connect to MQTT broker if enabled
+if (process.env.MQTT_ENABLED !== 'false') {
+  mqttClient.connect();
+} else {
+  logger.info('MQTT is disabled by configuration');
+}
+
+// Database connection and server start
+const PORT = process.env.PORT || 3000;
+const WS_PORT = process.env.WS_PORT || 8080;
+
+async function startServer() {
+  try {
+    // Connect to database and sync models
+    await sequelize.authenticate();
+    logger.info('Database connection established successfully');
+    
+    // Temporarily disable schema alteration to avoid enum casting issues
+    await sequelize.sync({ alter: false });
+    logger.info('Database models synchronized (without schema alterations)');
+    
+    // Start HTTP server for REST API - Bind to all interfaces
+    server.listen(PORT, '0.0.0.0', () => {
+      logger.info(`HTTP server running on http://0.0.0.0:${PORT}`);
+      
+      // Log available endpoints
+      logger.info('Available endpoints:');
+      logger.info(`- Health check: http://localhost:${PORT}/health`);
+      logger.info(`- API Base URL: http://localhost:${PORT}/api`);
+    });
+    
+    // Start dedicated WebSocket server for OCPP
+    const wsServer = http.createServer();
+    
+    // Initialize the OCPP server with this dedicated WebSocket server
+    ocppServer.init(wsServer);
+    
+    // Start listening on the WebSocket port
+    wsServer.listen(WS_PORT, '0.0.0.0', () => {
+      logger.info(`OCPP WebSocket server running on ws://0.0.0.0:${WS_PORT}`);
+      logger.info(`OCPP server initialized successfully: ${ocppServer._isInitialized() ? 'Yes' : 'No'}`);
+    });
+  } catch (error) {
+    logger.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// Start the server
+startServer();
+
+// Handle graceful shutdown
+process.on('SIGINT', async () => {
+  logger.info('Shutting down server...');
+  try {
+    await mqttClient.disconnect();
+    await sequelize.close();
+    logger.info('Server shutdown complete');
+    process.exit(0);
+  } catch (error) {
+    logger.error('Error during shutdown:', error);
+    process.exit(1);
+  }
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Export app for testing
+module.exports = app;
