@@ -85,7 +85,7 @@ async function handleStartTransaction(chargePointId, uniqueId, payload) {
             // Continue even if connector operations fail
         }
         
-        // Check for existing active transaction on this connector
+        // Check for existing active transaction on this connector (e.g. pre-created by RemoteStartTransaction)
         const existingTransaction = await Transaction.findOne({
             where: {
                 chargePointId,
@@ -94,30 +94,37 @@ async function handleStartTransaction(chargePointId, uniqueId, payload) {
             }
         });
 
+        let transaction;
         if (existingTransaction) {
-            logger.warn(`Active transaction ${existingTransaction.transactionId} already exists on connector ${normalizedPayload.connectorId}`);
+            // Reuse the existing transaction from RemoteStartTransaction instead of creating a new one
+            // This ensures the transactionId stays consistent between database and station
+            logger.info(`Found existing InProgress transaction ${existingTransaction.transactionId} on connector ${normalizedPayload.connectorId}, reusing it`);
             
-            // Auto-stop existing transaction for robustness
             await existingTransaction.update({
-                status: 'Completed',
-                stopTime: new Date()
+                startTime: new Date(normalizedPayload.timestamp),
+                startMeterValue: normalizedPayload.meterStart,
+                idTag: normalizedPayload.idTag
             });
             
-            logger.info(`Auto-completed existing transaction ${existingTransaction.transactionId}`);
+            // Use the existing transaction's ID so the station and database are in sync
+            normalizedPayload.transactionId = existingTransaction.transactionId;
+            transaction = existingTransaction;
+            
+            logger.info(`Reused transaction ${transaction.transactionId} for ${chargePointId} - station and database IDs now match`);
+        } else {
+            // No existing transaction, create a new one
+            transaction = await Transaction.create({
+                transactionId: normalizedPayload.transactionId,
+                chargePointId,
+                connectorId: normalizedPayload.connectorId,
+                idTag: normalizedPayload.idTag,
+                startTime: new Date(normalizedPayload.timestamp),
+                startMeterValue: normalizedPayload.meterStart,
+                status: 'InProgress'
+            });
+            
+            logger.info(`Created new transaction ${transaction.transactionId} for ${chargePointId}`);
         }
-
-        // Create a new transaction record
-        const transaction = await Transaction.create({
-            transactionId: normalizedPayload.transactionId,
-            chargePointId,
-            connectorId: normalizedPayload.connectorId,
-            idTag: normalizedPayload.idTag,
-            startTime: new Date(normalizedPayload.timestamp),
-            startMeterValue: normalizedPayload.meterStart,
-            status: 'InProgress'
-        });
-        
-        logger.info(`Created transaction ${transaction.transactionId} for ${chargePointId}`);
 
         // Publish transaction start to MQTT
         mqttClient.publish(`ocpp/${chargePointId}/transaction/start`, JSON.stringify({

@@ -224,16 +224,11 @@ function init(server) {
     // Handle new WebSocket connections
     serverState.wss.on('connection', (ws, request, protocol) => {
         try {
-            // Extract station ID from URL - this should already be stored on ws.chargePointId
             const chargePointId = ws.chargePointId;
-            
-            // Security protocol used (ws/wss)
             const protocolType = ws.isSecure ? 'wss' : 'ws';
             
-            // Log full URL for diagnostic purposes
             logger.info(`New ${protocolType} connection: ${request.url}`);
             
-            // Validate station ID
             if (!chargePointId || chargePointId === '') {
                 logger.error('Invalid charge point ID in WebSocket connection');
                 ws.close(4000, 'Invalid charge point ID');
@@ -246,142 +241,79 @@ function init(server) {
             ws.isAlive = true;
             ws.chargePointId = chargePointId;
             ws.protocol = protocol;
-            
-            // Store connection ID for logging
             ws.connectionId = ++serverState.connectionCount;
 
             // Store the connection - CRITICAL for remote commands to work
-            logger.info(`Storing connection for ${chargePointId} with connection ID: ${ws.connectionId}`);
             serverState.connectedStations.set(chargePointId, ws);
-            
-            // Debug log the current connections
-            logger.info(`Current connections: ${Array.from(serverState.connectedStations.keys()).join(', ')}`);
+            logger.info(`Stored connection for ${chargePointId} (ID: ${ws.connectionId}). Active: ${Array.from(serverState.connectedStations.keys()).join(', ')}`);
 
-            // Set up WebSocket event handlers
-            // Ping handler for WebSocket
+            // ===== SINGLE pong handler =====
             ws.on('pong', () => {
                 ws.isAlive = true;
-                logger.debug(`Received pong from ${ws.chargePointId}`);
-            });
-            
-            // Handle close event
-            ws.on('close', (code, reason) => {
-                logger.info(`WebSocket connection closed for ${ws.chargePointId}: ${code} - ${reason}`);
-                // Remove from connected stations map
-                if (ws.chargePointId && serverState.connectedStations.get(ws.chargePointId) === ws) {
-                    serverState.connectedStations.delete(ws.chargePointId);
-                    logger.info(`Removed ${ws.chargePointId} from connected stations map`);
-                    logger.info(`Remaining connections: ${Array.from(serverState.connectedStations.keys()).join(', ')}`);
-                }
-            });
-            
-            // Handle error event
-            ws.on('error', (error) => {
-                logger.error(`WebSocket error for ${ws.chargePointId}:`, error);
-            });
-
-            // Update station connection status in database
-            updateStationConnectionStatus(chargePointId, true, request.headers['x-forwarded-for'] ||
-                request.connection.remoteAddress ||
-                request.socket.remoteAddress);
-
-            // Subscribe to MQTT commands for this station if MQTT is enabled
-            if (process.env.MQTT_ENABLED !== 'false') {
-                mqttClient.subscribe(`cms/commands/${chargePointId}/#`, async (topic, message) => {
-                    try {
-                        const command = topic.split('/')[2]; // Extract command type
-                        const payload = JSON.parse(message);
-
-                        await sendOcppRequest(chargePointId, command, payload);
-                    } catch (error) {
-                        logger.error(`Error handling MQTT command for ${chargePointId}:`, error);
-                    }
-                });
-            }
-
-            // Add extra event handlers for connection issues
-            ws.on('error', (error) => {
-                logger.error(`WebSocket error for ${chargePointId}:`, error);
-                // Don't immediately close on error - let the heartbeat mechanism do its job
-            });
-
-            ws.on('close', (code, reason) => {
-                logger.info(`WebSocket connection closed for ${chargePointId}: code ${code}, reason: ${reason || 'No reason provided'}`);
-                // Clean up resources
-                serverState.connectedStations.delete(chargePointId);
-                // Update database
-                updateStationConnectionStatus(chargePointId, false).catch(err => {
-                    logger.error(`Error updating connection status for ${chargePointId}:`, err);
-                });
-            });
-
-            // Respond to pongs (part of heartbeat mechanism)
-            ws.on('pong', () => {
+                ws.missedHeartbeats = 0;
                 logger.debug(`Received pong from ${chargePointId}`);
-                ws.isAlive = true; // Mark as alive when pong received
-                ws.missedHeartbeats = 0; // Reset missed heartbeat counter
-                
-                // Send acknowledgement heartbeat message to help keep connection alive
-                try {
-                    // Send a small ping to acknowledge the pong (helps some clients)
-                    ws.ping(() => {});
-                } catch (err) {
-                    logger.error(`Error sending ping acknowledgment to ${chargePointId}:`, err);
-                }
             });
 
-            // Handle pings to keep connection alive
+            // ===== SINGLE ping handler =====
             ws.on('ping', () => {
+                ws.isAlive = true;
                 logger.debug(`Received ping from ${chargePointId}`);
-                ws.isAlive = true; // Mark as alive when ping received
-                try {
-                    ws.pong();
-                } catch (err) {
+                try { ws.pong(); } catch (err) {
                     logger.error(`Error sending pong to ${chargePointId}:`, err);
                 }
             });
 
-            // Handle messages from charging station
-            ws.on('message', async (message) => {
-                // Any message from the client indicates the connection is alive
-                ws.isAlive = true;
-                ws.missedHeartbeats = 0; // Reset missed heartbeat counter
-                try {
-                    // Log the raw message for debugging
-                    logger.info(`RAW MESSAGE from ${chargePointId}: ${message.toString()}`);
-
-                    // Parse message
-                    const data = JSON.parse(message);
+            // ===== SINGLE close handler =====
+            ws.on('close', async (code, reason) => {
+                logger.info(`WebSocket closed for ${chargePointId}: code ${code}, reason: ${reason || 'none'}`);
+                
+                // Only remove from map if this ws is still the current connection
+                // (prevents a reconnecting station from losing its new connection)
+                if (serverState.connectedStations.get(chargePointId) === ws) {
+                    serverState.connectedStations.delete(chargePointId);
+                    logger.info(`Removed ${chargePointId} from connection map. Remaining: ${Array.from(serverState.connectedStations.keys()).join(', ') || 'none'}`);
                     
-                    // Keep connection alive (reset the connection check timer) on any OCPP message
-                    ws.isAlive = true;
-                    ws.missedHeartbeats = 0;
+                    try {
+                        await updateStationConnectionStatus(chargePointId, false);
+                    } catch (err) {
+                        logger.error(`Error updating disconnect status for ${chargePointId}:`, err);
+                    }
+                    
+                    if (process.env.MQTT_ENABLED !== 'false') {
+                        mqttClient.publish(`ocpp/${chargePointId}/status`, JSON.stringify({
+                            status: 'Disconnected',
+                            timestamp: new Date().toISOString()
+                        }));
+                    }
+                } else {
+                    logger.info(`Stale close event for ${chargePointId} (already reconnected), ignoring`);
+                }
+            });
 
-                    logger.debug(`Received from ${chargePointId}:`);
+            // ===== SINGLE error handler =====
+            ws.on('error', (error) => {
+                logger.error(`WebSocket error for ${chargePointId}:`, error.message || error);
+            });
 
-                    // Enhanced special logging for important messages
+            // ===== SINGLE message handler =====
+            ws.on('message', async (message) => {
+                ws.isAlive = true;
+                ws.missedHeartbeats = 0;
+                try {
+                    const msgStr = message.toString();
+                    logger.info(`RAW MESSAGE from ${chargePointId}: ${msgStr}`);
+
+                    const data = JSON.parse(msgStr);
+
                     if (data[2] === 'StartTransaction') {
                         logger.info(`!!! START TRANSACTION DETECTED from ${chargePointId} !!!`);
                         logger.info(`TRANSACTION DETAILS: ${JSON.stringify(data, null, 2)}`);
-                        
-                        // Log the idTag specifically for debugging authorization issues
                         const payload = data[3] || {};
-                        logger.info(`TRANSACTION ID TAG: ${payload.idTag || 'NOT PROVIDED'}`);
-                        logger.info(`TRANSACTION METER START: ${payload.meterStart || '0'}`);
-                        
-                        // Try to trace the full message processing flow
-                        logger.info('Beginning transaction processing flow... will log each step');
+                        logger.info(`TRANSACTION ID TAG: ${payload.idTag || 'NOT PROVIDED'}, METER START: ${payload.meterStart || '0'}`);
                     }
 
-                    // For T001 specifically, log even more details
-                    if (chargePointId === 'T001') {
-                        logger.info(`T001 MESSAGE DETAILS: ${JSON.stringify(data, null, 2)}`);
-                    }
-
-                    // Process the message and store in database
                     await handleOcppMessage(chargePointId, data, ws);
 
-                    // Publish to MQTT for real-time updates if MQTT is enabled
                     if (process.env.MQTT_ENABLED !== 'false') {
                         mqttClient.publish(`ocpp/${chargePointId}/message`, JSON.stringify({
                             ...data,
@@ -390,39 +322,29 @@ function init(server) {
                     }
                 } catch (error) {
                     logger.error(`Error processing message from ${chargePointId}:`, error);
-
-                    // Send error response if possible
                     if (error.messageId) {
                         ws.send(JSON.stringify([4, error.messageId, "FormationViolation", "Invalid message format", {}]));
                     }
                 }
             });
 
-            // Handle disconnection
-            ws.on('close', async () => {
-                logger.info(`Charging station disconnected: ${chargePointId}`);
-                serverState.connectedStations.delete(chargePointId);
+            // Update station connection status in database
+            updateStationConnectionStatus(chargePointId, true, request.headers['x-forwarded-for'] ||
+                request.connection.remoteAddress ||
+                request.socket.remoteAddress);
 
-                // Update station connection status
-                await updateStationConnectionStatus(chargePointId, false);
-
-                // Publish disconnection event if MQTT is enabled
-                if (process.env.MQTT_ENABLED !== 'false') {
-                    mqttClient.publish(`ocpp/${chargePointId}/status`, JSON.stringify({
-                        status: 'Disconnected',
-                        timestamp: new Date().toISOString()
-                    }));
-                }
-            });
-
-            // Handle WebSocket errors
-            ws.on('error', async (error) => {
-                logger.error(`WebSocket error for ${chargePointId}:`, error);
-
-                // Clean up on error
-                serverState.connectedStations.delete(chargePointId);
-                await updateStationConnectionStatus(chargePointId, false);
-            });
+            // Subscribe to MQTT commands for this station
+            if (process.env.MQTT_ENABLED !== 'false') {
+                mqttClient.subscribe(`cms/commands/${chargePointId}/#`, async (topic, message) => {
+                    try {
+                        const command = topic.split('/')[2];
+                        const payload = JSON.parse(message);
+                        await sendOcppRequest(chargePointId, command, payload);
+                    } catch (error) {
+                        logger.error(`Error handling MQTT command for ${chargePointId}:`, error);
+                    }
+                });
+            }
 
             // Publish connection event
             mqttClient.publish(`ocpp/${chargePointId}/status`, JSON.stringify({
@@ -445,32 +367,45 @@ function init(server) {
  */
 async function updateStationConnectionStatus(chargePointId, isConnected, ipAddress = null) {
     try {
-        const updateData = {
-            lastConnection: new Date(),
-            status: isConnected ? 'Available' : 'Unavailable'
-        };
-
-        if (ipAddress) {
-            updateData.ipAddress = ipAddress;
-        }
-
-        // Check if station exists in database
         const station = await ChargingStation.findOne({
-            where: {
-                chargePointId
-            }
+            where: { chargePointId }
         });
 
         if (station) {
-            // Update existing station
+            const updateData = {
+                lastConnection: new Date(),
+                lastHeartbeat: new Date()
+            };
+
+            if (ipAddress) {
+                updateData.ipAddress = ipAddress;
+            }
+
+            if (isConnected) {
+                if (!station.status || station.status === 'Unavailable' || station.status === 'Disconnected') {
+                    updateData.status = 'Available';
+                }
+            } else {
+                const activeStatuses = ['Charging', 'Preparing', 'Finishing', 'Reserved', 'SuspendedEV', 'SuspendedEVSE'];
+                if (!activeStatuses.includes(station.status)) {
+                    updateData.status = 'Unavailable';
+                }
+                logger.info(`Station ${chargePointId} disconnected. Current status: ${station.status}. ${activeStatuses.includes(station.status) ? 'Preserving active status.' : 'Setting Unavailable.'}`);
+            }
+
             await station.update(updateData);
         } else if (isConnected) {
-            // Create new station record if connected
-            await ChargingStation.create({
+            const createData = {
                 chargePointId,
                 name: `Station ${chargePointId}`,
-                ...updateData
-            });
+                lastConnection: new Date(),
+                lastHeartbeat: new Date(),
+                status: 'Available'
+            };
+            if (ipAddress) {
+                createData.ipAddress = ipAddress;
+            }
+            await ChargingStation.create(createData);
         }
     } catch (error) {
         logger.error(`Error updating connection status for ${chargePointId}:`, error);
@@ -483,14 +418,10 @@ async function updateStationConnectionStatus(chargePointId, isConnected, ipAddre
  */
 async function handleOcppMessage(chargePointId, data, ws) {
     try {
-        // Case 1: Handle standard OCPP message format [MessageTypeId, UniqueId, Action, Payload]
         if (Array.isArray(data) && data.length >= 3) {
             try {
-                // Look up the charging station to get its ID
                 const station = await ChargingStation.findOne({
-                    where: {
-                        chargePointId
-                    }
+                    where: { chargePointId }
                 });
                 if (!station) {
                     logger.error(`Cannot log message: Station ${chargePointId} not found in database`);
@@ -502,13 +433,12 @@ async function handleOcppMessage(chargePointId, data, ws) {
                 const action = data[2];
                 const payload = data[3] || {};
 
-                // Process based on message type
                 switch (messageTypeId) {
-                    case 2: // Request from charging station
-                        // Log the incoming request
+                    case 2:
                         await OcppMessage.create({
                             messageId: uniqueId,
                             chargePointId: chargePointId,
+                            chargingStationId: station.id,
                             message_type: action,
                             status: 'Received',
                             payload: JSON.stringify(payload),
@@ -516,17 +446,14 @@ async function handleOcppMessage(chargePointId, data, ws) {
                             timestamp: new Date()
                         });
 
-                        // Process the request
                         const response = await messageHandlers.handleRequest(chargePointId, action, uniqueId, payload);
 
-                        // Send response back to charging station
                         if (response) {
                             ws.send(JSON.stringify(response));
-
-                            // Log the response
                             await OcppMessage.create({
                                 messageId: uniqueId,
                                 chargePointId: chargePointId,
+                                chargingStationId: station.id,
                                 message_type: action,
                                 status: 'Sent',
                                 payload: JSON.stringify(response[2] || {}),
@@ -536,42 +463,33 @@ async function handleOcppMessage(chargePointId, data, ws) {
                         }
                         break;
 
-                    case 3: // Response to our request
-                        // Log the response
+                    case 3:
                         await OcppMessage.create({
                             messageId: uniqueId,
                             chargePointId: chargePointId,
+                            chargingStationId: station.id,
                             message_type: 'Response',
                             status: 'Received',
                             payload: JSON.stringify(data[2] || {}),
                             direction: 'Inbound',
                             timestamp: new Date()
                         });
-
-                        // Publish response to MQTT
                         mqttClient.publish(`ocpp/${chargePointId}/response/${uniqueId}`, JSON.stringify(data[2] || {}));
                         break;
 
-                    case 4: // Error response
+                    case 4:
                         logger.error(`Error from ${chargePointId}:`, data);
                         await OcppMessage.create({
                             messageId: uniqueId,
                             chargePointId: chargePointId,
+                            chargingStationId: station.id,
                             message_type: 'Error',
                             status: 'Failed',
-                            payload: JSON.stringify({
-                                error: data[2],
-                                description: data[3]
-                            }),
+                            payload: JSON.stringify({ error: data[2], description: data[3] }),
                             direction: 'Inbound',
                             timestamp: new Date()
                         });
-
-                        // Publish error to MQTT
-                        mqttClient.publish(`ocpp/${chargePointId}/error/${uniqueId}`, JSON.stringify({
-                            error: data[2],
-                            description: data[3]
-                        }));
+                        mqttClient.publish(`ocpp/${chargePointId}/error/${uniqueId}`, JSON.stringify({ error: data[2], description: data[3] }));
                         break;
 
                     default:
@@ -583,40 +501,27 @@ async function handleOcppMessage(chargePointId, data, ws) {
             return;
         }
 
-        // Case 2: Handle direct payload object (non-standard, but common in some emulators)
         if (typeof data === 'object' && !Array.isArray(data)) {
             logger.info(`Received direct payload from ${chargePointId}:`, JSON.stringify(data));
-
             try {
-                // Look up the charging station to get its ID
                 const station = await ChargingStation.findOne({
-                    where: {
-                        chargePointId
-                    }
+                    where: { chargePointId }
                 });
                 if (!station) {
                     logger.error(`Cannot log message: Station ${chargePointId} not found in database`);
                     return;
                 }
 
-                // Check if this looks like a BootNotification payload
                 if (data.ChargePointModel || data.ChargePointVendor || data.chargePointModel || data.chargePointVendor) {
                     logger.info(`Processing as BootNotification from ${chargePointId}`);
-
-                    // Generate a unique ID for this message
                     const uniqueId = `direct-${Date.now()}`;
-
-                    // Process through the normal handler
                     const response = await messageHandlers.handleRequest(chargePointId, 'BootNotification', uniqueId, data);
-
-                    // Send response back to charging station
                     if (response) {
                         ws.send(JSON.stringify(response));
-
-                        // Log the response with proper fields
                         await OcppMessage.create({
                             messageId: uniqueId,
                             chargePointId: chargePointId,
+                            chargingStationId: station.id,
                             message_type: 'BootNotification',
                             status: 'Sent',
                             payload: JSON.stringify(response[2] || {}),
@@ -624,21 +529,19 @@ async function handleOcppMessage(chargePointId, data, ws) {
                             timestamp: new Date()
                         });
                     }
-
                     return;
                 }
 
-                // Log generic payload for analysis
                 await OcppMessage.create({
                     messageId: `unknown-${Date.now()}`,
                     chargePointId: chargePointId,
+                    chargingStationId: station.id,
                     message_type: 'Unknown',
                     status: 'Received',
                     payload: JSON.stringify(data),
                     direction: 'Inbound',
                     timestamp: new Date()
                 });
-
                 logger.warn(`Received unrecognized payload format from ${chargePointId}`);
             } catch (error) {
                 logger.error(`Error processing direct payload from ${chargePointId}:`, error);
@@ -646,9 +549,7 @@ async function handleOcppMessage(chargePointId, data, ws) {
             return;
         }
 
-        // Case 3: Invalid message format
         logger.error(`Invalid message format from ${chargePointId}:`, JSON.stringify(data));
-
     } catch (error) {
         logger.error(`Error handling OCPP message for ${chargePointId}:`, error);
     }

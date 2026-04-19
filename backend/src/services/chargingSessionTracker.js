@@ -224,7 +224,7 @@ class ChargingSessionTracker {
       eventEmitter.emit('session-update', sessionData);
       
       // Get the mqttClient directly from the shared module
-      const mqttClient = require('../ocpp/mqtt').client;
+      const mqttClient = require('../mqtt/client');
       
       // If we have MQTT, publish the update directly from here
       if (mqttClient) {

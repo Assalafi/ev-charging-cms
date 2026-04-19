@@ -110,7 +110,7 @@ async function handleRemoteStartTransaction(ws, message) {
                 idTag,
                 startTime: new Date(),
                 startMeterValue: 0,
-                status: 'Pending'  // Use 'Pending' until charging station confirms with StartTransaction
+                status: 'InProgress'
             });
             
             // Record this as an outgoing message

@@ -9,7 +9,6 @@ const logger = require('./utils/logger');
 const routes = require('./routes');
 const ocppServer = require('./ocpp/server');
 const mqttClient = require('./mqtt/client');
-const transactionMonitor = require('./services/transactionMonitor');
 const pricingValidationMiddleware = require('./middleware/pricingValidationMiddleware');
 // const metricsMiddleware = require('./middleware/metrics');
 
@@ -183,9 +182,6 @@ async function startServer() {
 
     wsServer.listen(process.env.OCPP_SERVER_PORT, process.env.OCPP_SERVER_HOST, () => {
       logger.info(`OCPP WebSocket server running on ws://${process.env.OCPP_SERVER_HOST}:${process.env.OCPP_SERVER_PORT}${process.env.OCPP_SERVER_PATH}`);
-      // Start intelligent transaction monitor
-      transactionMonitor.start();
-      logger.info('Intelligent transaction monitor started');
     });
 
     // Start metrics server if enabled

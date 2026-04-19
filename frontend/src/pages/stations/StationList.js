@@ -47,7 +47,9 @@ import {
   BatteryChargingFull as ChargingIcon,
   Description as LogsIcon,
   Delete as DeleteIcon,
-  Visibility as VisibilityIcon
+  Visibility as VisibilityIcon,
+  ArrowUpward as ArrowUpwardIcon,
+  ArrowDownward as ArrowDownwardIcon
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import api from '../../services/api';
@@ -69,6 +71,10 @@ function StationList() {
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [anchorEl, setAnchorEl] = useState(null);
   const [selectedStation, setSelectedStation] = useState(null);
+  
+  // Sorting state
+  const [orderBy, setOrderBy] = useState('lastHeartbeat');
+  const [order, setOrder] = useState('desc');
   const [startTransactionDialogOpen, setStartTransactionDialogOpen] = useState(false);
   const [authorizedTags, setAuthorizedTags] = useState([]);
   const [selectedTag, setSelectedTag] = useState('');
@@ -415,6 +421,13 @@ function StationList() {
     setPage(0);
   };
   
+  // Handle sorting
+  const handleSort = (property) => {
+    const isAsc = orderBy === property && order === 'asc';
+    setOrder(isAsc ? 'desc' : 'asc');
+    setOrderBy(property);
+  };
+
   // Filter stations by search term
   const filteredStations = stations.filter(station => 
     station.chargePointId.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -422,6 +435,46 @@ function StationList() {
     (station.model && station.model.toLowerCase().includes(searchTerm.toLowerCase())) ||
     (station.vendor && station.vendor.toLowerCase().includes(searchTerm.toLowerCase()))
   );
+
+  // Sort stations
+  const sortedStations = filteredStations.sort((a, b) => {
+    let aValue, bValue;
+    
+    switch (orderBy) {
+      case 'chargePointId':
+        aValue = a.chargePointId.toLowerCase();
+        bValue = b.chargePointId.toLowerCase();
+        break;
+      case 'name':
+        aValue = a.name.toLowerCase();
+        bValue = b.name.toLowerCase();
+        break;
+      case 'status':
+        aValue = a.status.toLowerCase();
+        bValue = b.status.toLowerCase();
+        break;
+      case 'model':
+        aValue = (a.model || '').toLowerCase();
+        bValue = (b.model || '').toLowerCase();
+        break;
+      case 'lastHeartbeat':
+        aValue = a.lastHeartbeat ? new Date(a.lastHeartbeat).getTime() : 0;
+        bValue = b.lastHeartbeat ? new Date(b.lastHeartbeat).getTime() : 0;
+        break;
+      case 'firmwareVersion':
+        aValue = (a.firmwareVersion || '').toLowerCase();
+        bValue = (b.firmwareVersion || '').toLowerCase();
+        break;
+      default:
+        return 0;
+    }
+    
+    if (order === 'asc') {
+      return aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
+    } else {
+      return aValue > bValue ? -1 : aValue < bValue ? 1 : 0;
+    }
+  });
   
   // Get status color
   const getStatusColor = (status) => {
@@ -564,12 +617,66 @@ function StationList() {
           <Table>
             <TableHead>
               <TableRow>
-                <TableCell>ID</TableCell>
-                <TableCell>Name</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell>Model</TableCell>
-                <TableCell>Last Heartbeat</TableCell>
-                <TableCell>Firmware</TableCell>
+                <TableCell 
+                  sortDirection={orderBy === 'chargePointId' ? order : false}
+                  sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                  onClick={() => handleSort('chargePointId')}
+                >
+                  ID
+                  {orderBy === 'chargePointId' ? (
+                    order === 'desc' ? <ArrowDownwardIcon fontSize="small" /> : <ArrowUpwardIcon fontSize="small" />
+                  ) : null}
+                </TableCell>
+                <TableCell 
+                  sortDirection={orderBy === 'name' ? order : false}
+                  sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                  onClick={() => handleSort('name')}
+                >
+                  Name
+                  {orderBy === 'name' ? (
+                    order === 'desc' ? <ArrowDownwardIcon fontSize="small" /> : <ArrowUpwardIcon fontSize="small" />
+                  ) : null}
+                </TableCell>
+                <TableCell 
+                  sortDirection={orderBy === 'status' ? order : false}
+                  sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                  onClick={() => handleSort('status')}
+                >
+                  Status
+                  {orderBy === 'status' ? (
+                    order === 'desc' ? <ArrowDownwardIcon fontSize="small" /> : <ArrowUpwardIcon fontSize="small" />
+                  ) : null}
+                </TableCell>
+                <TableCell 
+                  sortDirection={orderBy === 'model' ? order : false}
+                  sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                  onClick={() => handleSort('model')}
+                >
+                  Model
+                  {orderBy === 'model' ? (
+                    order === 'desc' ? <ArrowDownwardIcon fontSize="small" /> : <ArrowUpwardIcon fontSize="small" />
+                  ) : null}
+                </TableCell>
+                <TableCell 
+                  sortDirection={orderBy === 'lastHeartbeat' ? order : false}
+                  sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                  onClick={() => handleSort('lastHeartbeat')}
+                >
+                  Last Heartbeat
+                  {orderBy === 'lastHeartbeat' ? (
+                    order === 'desc' ? <ArrowDownwardIcon fontSize="small" /> : <ArrowUpwardIcon fontSize="small" />
+                  ) : null}
+                </TableCell>
+                <TableCell 
+                  sortDirection={orderBy === 'firmwareVersion' ? order : false}
+                  sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                  onClick={() => handleSort('firmwareVersion')}
+                >
+                  Firmware
+                  {orderBy === 'firmwareVersion' ? (
+                    order === 'desc' ? <ArrowDownwardIcon fontSize="small" /> : <ArrowUpwardIcon fontSize="small" />
+                  ) : null}
+                </TableCell>
                 <TableCell>Actions</TableCell>
               </TableRow>
             </TableHead>
@@ -587,7 +694,7 @@ function StationList() {
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredStations
+                sortedStations
                   .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
                   .map((station) => {
                     const realtimeStatus = getRealtimeStatus(station.chargePointId);
@@ -655,7 +762,7 @@ function StationList() {
         <TablePagination
           rowsPerPageOptions={[5, 10, 25]}
           component="div"
-          count={filteredStations.length}
+          count={sortedStations.length}
           rowsPerPage={rowsPerPage}
           page={page}
           onPageChange={handleChangePage}

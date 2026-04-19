@@ -831,12 +831,27 @@ router.post('/:id/remote-stop', authorize(['admin', 'operator']), async (req, re
         }
 
         // 1. Get the active transaction
-        const transaction = await Transaction.findOne({
+        let transaction = await Transaction.findOne({
             where: {
                 transactionId: parseInt(transactionId),
                 status: 'InProgress'
             }
         });
+
+        // Fallback: find any InProgress transaction for this station
+        // Handles CMS/station transactionId mismatch
+        if (!transaction) {
+            transaction = await Transaction.findOne({
+                where: {
+                    chargePointId,
+                    status: 'InProgress'
+                },
+                order: [['startTime', 'DESC']]
+            });
+            if (transaction) {
+                logger.info(`RemoteStop: transactionId ${transactionId} not found, using InProgress transaction ${transaction.transactionId} for ${chargePointId}`);
+            }
+        }
 
         if (!transaction) {
             return res.status(404).json({
@@ -881,8 +896,15 @@ router.post('/:id/remote-stop', authorize(['admin', 'operator']), async (req, re
         }
 
         // 4. Send RemoteStopTransaction command
+        // Use the station's reported transactionId (from currentTransaction) if available,
+        // as the station may use a different ID than what the CMS assigned
+        const stationRecord = await ChargingStation.findOne({ where: { chargePointId } });
+        const stationTransactionId = stationRecord && stationRecord.currentTransaction 
+            ? parseInt(stationRecord.currentTransaction) 
+            : parseInt(transactionId);
+        logger.info(`RemoteStop: sending transactionId ${stationTransactionId} to station ${chargePointId} (requested: ${transactionId})`);
         const result = await ocppServer.sendOcppRequest(chargePointId, 'RemoteStopTransaction', {
-            transactionId: parseInt(transactionId)
+            transactionId: stationTransactionId
         });
 
         // 5. Handle command result

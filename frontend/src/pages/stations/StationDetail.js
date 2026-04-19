@@ -44,7 +44,14 @@ import {
   PowerSettingsNew as PowerIcon,
   BatteryChargingFull as ChargingIcon,
   BatteryChargingFull as BatteryChargingFullIcon,
+  BatteryFull as BatteryFullIcon,
+  Battery60 as Battery60Icon,
+  Battery20 as Battery20Icon,
+  BatteryAlert as BatteryAlertIcon,
   CheckCircle as CheckCircleIcon,
+  ElectricBolt as ElectricBoltIcon,
+  Speed as SpeedIcon,
+  Timeline as TimelineIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import api from '../../services/api';
@@ -87,7 +94,7 @@ function StationDetail() {
   const { stationId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { stationStatus, mqtt, subscribe, unsubscribe } = useMQTT();
+  const { stationStatus, mqtt, subscribe } = useMQTT();
 
   // State
   const [station, setStation] = useState(null);
@@ -105,6 +112,19 @@ function StationDetail() {
   const [commandType, setCommandType] = useState('');
   const [commandLoading, setCommandLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
+
+  // Enhanced real-time data state
+  const [realtimeData, setRealtimeData] = useState({
+    soc: null,
+    voltage: null,
+    current: null,
+    power: null,
+    temperature: null,
+    energy: null,
+    lastMeterValues: null,
+    statusNotifications: [],
+  });
+  const [ocppMessageHistory, setOcppMessageHistory] = useState([]);
 
   // Pagination state for OCPP messages
   const [messagesPage, setMessagesPage] = useState(0);
@@ -546,30 +566,69 @@ function StationDetail() {
     }
   };
 
-  // Get real-time status from connectors
-  const getRealtimeStatus = () => {
-    // First check if we have connector data
+  // Get battery icon based on SOC percentage
+  const getBatteryIcon = (soc) => {
+    if (soc === null || soc === undefined) return <BatteryAlertIcon />;
+    if (soc >= 95) return <BatteryFullIcon />;
+    if (soc >= 80) return <BatteryFullIcon />;
+    if (soc >= 60) return <Battery60Icon />;
+    if (soc >= 40) return <Battery60Icon />;
+    if (soc >= 20) return <Battery20Icon />;
+    return <BatteryAlertIcon />;
+  };
+
+  // Get battery color based on SOC
+  const getBatteryColor = (soc) => {
+    if (soc === null || soc === undefined) return 'default';
+    if (soc >= 80) return 'success';
+    if (soc >= 40) return 'warning';
+    return 'error';
+  };
+
+  // Smart status detection using multiple OCPP sources
+  const getSmartStatus = () => {
+    // Priority 1: Check recent StatusNotification messages from OCPP
+    const recentStatusNotifications = ocppMessageHistory.filter(msg => 
+      msg.messageType === 'StatusNotification' && 
+      msg.timestamp && 
+      (Date.now() - new Date(msg.timestamp).getTime()) < 60000 // Last 60 seconds
+    );
+    
+    if (recentStatusNotifications.length > 0) {
+      const latestStatus = recentStatusNotifications[0];
+      console.log('Using StatusNotification from OCPP:', latestStatus.payload.status);
+      return latestStatus.payload.status;
+    }
+
+    // Priority 2: Check connector status
     if (connectors && connectors.length > 0) {
-      // Check if any connector is charging
       const chargingConnector = connectors.find(c => c.status === 'Charging');
       if (chargingConnector) return 'Charging';
 
-      // Check if any connector is preparing
       const preparingConnector = connectors.find(c => c.status === 'Preparing');
       if (preparingConnector) return 'Preparing';
 
-      // Check if any connector is available
       const availableConnector = connectors.find(c => c.status === 'Available');
       if (availableConnector) return 'Available';
     }
 
-    // Fall back to MQTT status if available
+    // Priority 3: Check if we have active transaction with meter values
+    if (realtimeData.lastMeterValues && realtimeData.lastMeterValues.length > 0) {
+      return 'Charging';
+    }
+
+    // Priority 4: MQTT status
     if (stationStatus && stationStatus[stationId]) {
       return stationStatus[stationId].status;
     }
 
-    // Fall back to station status from main API
+    // Priority 5: Station status from API
     return station?.status || 'Unknown';
+  };
+
+  // Get real-time status from connectors (legacy function maintained for compatibility)
+  const getRealtimeStatus = () => {
+    return getSmartStatus();
   };
 
   // Get OCPP message color
@@ -749,140 +808,164 @@ function StationDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stationId]);
 
-  // Subscribe to MQTT topics for real-time energy consumption updates
+  // Enhanced MQTT subscription for comprehensive OCPP message handling
   useEffect(() => {
     if (!mqtt || !stationId) return;
 
-    // Function to handle incoming energy updates
-    // Assign to our outer variable so it can be called from outside this scope
+    // Function to handle all OCPP messages
     handleEnergyUpdate = (topic, message) => {
       try {
-        console.log('Energy update received on topic:', topic);
+        console.log('📨 MQTT message received on topic:', topic);
         const rawMessage = message.toString();
-        console.log('Raw message:', rawMessage);
-
+        
         let data;
         try {
           data = JSON.parse(rawMessage);
-          console.log('Parsed energy update data:', data);
         } catch (parseError) {
-          console.error('Error parsing message:', parseError);
+          console.error('❌ Error parsing message:', parseError);
           return;
         }
 
-        // IMPORTANT: More relaxed filtering - accept any message related to this station
-        // or with matching transactionId to the active transaction
+        // Accept messages for this station or wildcard matches
         if (
           data.chargePointId === stationId ||
-          (activeTransaction && data.transactionId === activeTransaction) ||
-          topic.includes(`/${stationId}/`)
+          topic.includes(`/${stationId}/`) ||
+          topic.includes('/stations/') ||
+          topic.includes('/ocpp/')
         ) {
-          console.log('✅ Matched update for station:', stationId);
+          console.log('✅ Processing message for station:', stationId);
+          console.log('📊 Message data:', JSON.stringify(data, null, 2));
 
-          // If transactionId is present, update the active transaction
+          // Store in message history for status detection
+          if (data.messageType || data.message) {
+            setOcppMessageHistory(prev => {
+              const newMsg = {
+                ...data,
+                timestamp: data.timestamp || new Date().toISOString(),
+                topic,
+              };
+              // Keep only last 50 messages
+              return [newMsg, ...prev.slice(0, 49)];
+            });
+          }
+
+          // Handle StatusNotification messages for smart status
+          if (data.messageType === 'StatusNotification' || data.message === 'StatusNotification') {
+            const status = data.payload?.status || data.status;
+            if (status) {
+              console.log('🔄 StatusNotification received:', status);
+              setStation(prev => ({
+                ...prev,
+                status: status,
+              }));
+            }
+          }
+
+          // Handle MeterValues messages for comprehensive data
+          if (data.messageType === 'MeterValues' || data.message === 'MeterValues') {
+            const meterValues = data.payload?.meterValue || data.meterValues || [];
+            if (Array.isArray(meterValues) && meterValues.length > 0) {
+              console.log('⚡ MeterValues received:', meterValues);
+              
+              // Process each meter value
+              meterValues.forEach(meterValue => {
+                if (meterValue.sampledValue) {
+                  meterValue.sampledValue.forEach(sample => {
+                    const value = parseFloat(sample.value);
+                    const measurand = sample.measurand || 'Energy.Active.Import.Register';
+                    const unit = sample.unit || 'Wh';
+                    
+                    console.log(`📈 ${measurand}: ${value} ${unit}`);
+                    
+                    // Update real-time data based on measurand type
+                    setRealtimeData(prev => {
+                      const updated = { ...prev };
+                      
+                      switch (measurand) {
+                        case 'SoC':
+                          updated.soc = value;
+                          setBatteryPercentage(value);
+                          break;
+                        case 'Energy.Active.Import.Register':
+                          updated.energy = unit === 'Wh' ? value / 1000 : value;
+                          setEnergyConsumption((unit === 'Wh' ? value / 1000 : value).toFixed(2));
+                          break;
+                        case 'Power.Active.Import':
+                          updated.power = value;
+                          setCurrentPower(value);
+                          break;
+                        case 'Voltage':
+                          updated.voltage = value;
+                          break;
+                        case 'Current.Import':
+                          updated.current = value;
+                          break;
+                        case 'Temperature':
+                          updated.temperature = value;
+                          break;
+                      }
+                      
+                      updated.lastMeterValues = meterValues;
+                      return updated;
+                    });
+                  });
+                }
+              });
+            }
+          }
+
+          // Handle transaction-related messages
           if (data.transactionId) {
-            console.log('Setting active transaction to:', data.transactionId);
             setActiveTransaction(data.transactionId);
+            
+            // Update charging duration if startTime is available
+            if (data.startTime) {
+              const duration = Math.floor((Date.now() - new Date(data.startTime).getTime()) / 1000);
+              setChargingDuration(duration);
+            }
           }
 
-          // Log all received data for debugging
-          console.log('FULL MQTT DATA RECEIVED:', JSON.stringify(data, null, 2));
-
-          // Handle price and amount values
-          if (data.amount !== undefined && data.amount !== null) {
-            const amountValue = parseFloat(data.amount);
-            console.log('RECEIVED AMOUNT:', amountValue, 'TYPE:', typeof data.amount);
-            // Store the amount value for display
-            setChargingAmount(amountValue);
-          }
-
-          if (data.price !== undefined && data.price !== null) {
-            const priceValue = parseFloat(data.price);
-            console.log('RECEIVED PRICE:', priceValue, 'TYPE:', typeof data.price);
-            // Store the price value for display
-            setChargingPrice(priceValue);
-          }
-          
-          // Handle energy value with more verbose logging
+          // Handle legacy energy values
           if (data.energy !== undefined && data.energy !== null) {
-            console.log(
-              'Processing energy value:',
-              data.energy,
-              'type:',
-              typeof data.energy
-            );
-
-            // Be more flexible with energy value format
-            let energyValue;
-            if (typeof data.energy === 'string') {
-              energyValue = parseFloat(data.energy);
-            } else if (typeof data.energy === 'number') {
-              energyValue = data.energy;
-            } else {
-              console.warn('Unexpected energy value type:', typeof data.energy);
-              return;
-            }
-
-            if (!isNaN(energyValue)) {
-              // Convert from Wh to kWh for display
-              const energyInKWh = (energyValue / 1000).toFixed(2);
-              console.log(
-                'Setting energy consumption to:',
-                energyInKWh,
-                'kWh (raw value:',
-                energyValue,
-                'Wh)'
-              );
-              setEnergyConsumption(energyInKWh);
-            } else {
-              console.warn('Invalid energy value received:', data.energy);
-            }
-          } else if (
-            data.energyDelivered !== undefined &&
-            data.energyDelivered !== null
-          ) {
-            // Fallback to energyDelivered if energy is not present
-            console.log(
-              'Using energyDelivered instead of energy:',
-              data.energyDelivered
-            );
-            const energyValue = parseFloat(data.energyDelivered);
+            const energyValue = parseFloat(data.energy);
             if (!isNaN(energyValue)) {
               const energyInKWh = (energyValue / 1000).toFixed(2);
-              console.log(
-                'Setting energy consumption to:',
-                energyInKWh,
-                'kWh (from energyDelivered)'
-              );
               setEnergyConsumption(energyInKWh);
+              setRealtimeData(prev => ({ ...prev, energy: energyValue / 1000 }));
             }
           }
 
-          // Handle power value with better logging
+          // Handle legacy power values
           if (data.power !== undefined && data.power !== null) {
-            console.log('Processing power value:', data.power);
             const powerValue = parseFloat(data.power);
             if (!isNaN(powerValue)) {
-              console.log('Setting current power to:', powerValue, 'W');
               setCurrentPower(powerValue);
+              setRealtimeData(prev => ({ ...prev, power: powerValue }));
             }
           }
 
-          // Handle battery percentage
-          if (
-            data.batteryPercentage !== undefined &&
-            data.batteryPercentage !== null
-          ) {
+          // Handle legacy battery percentage
+          if (data.batteryPercentage !== undefined && data.batteryPercentage !== null) {
             setBatteryPercentage(data.batteryPercentage);
+            setRealtimeData(prev => ({ ...prev, soc: data.batteryPercentage }));
           }
 
-          // Handle charging duration
+          // Handle price and amount
+          if (data.amount !== undefined && data.amount !== null) {
+            setChargingAmount(parseFloat(data.amount));
+          }
+          
+          if (data.price !== undefined && data.price !== null) {
+            setChargingPrice(parseFloat(data.price));
+          }
+
+          // Handle duration
           if (data.duration !== undefined && data.duration !== null) {
             setChargingDuration(data.duration);
           }
         }
       } catch (error) {
-        console.error('Error processing energy update:', error);
+        console.error('❌ Error processing MQTT message:', error);
       }
     };
 
@@ -900,22 +983,20 @@ function StationDetail() {
     // Subscribe to all relevant topics for energy updates
     console.log(`Subscribing to energy updates for station ${stationId}`);
 
-    // Define topics with better naming for debugging
-    const mqttTopics = {
-      stationEnergy: `ocpp/stations/${stationId}/energy`,
-      stationStatus: `ocpp/${stationId}/status`,
-      transactionEnergy: `ocpp/transactions/+/energy`,
-      allTransactions: `ocpp/transactions/#`, // Wildcard to catch all transaction messages
-      stationAll: `ocpp/${stationId}/#`, // Wildcard to catch all station messages
-    };
+    // Subscribe to station-specific topics only (avoid overlapping subscriptions
+    // which cause duplicate message processing and accumulating values)
+    const mqttTopics = [
+      `ocpp/stations/${stationId}/energy`,
+      `ocpp/${stationId}/status`,
+      `ocpp/${stationId}/messages`,
+    ];
 
-    // Log all topics we're subscribing to
     console.log('MQTT Topics for energy updates:', mqttTopics);
 
-    // Subscribe to all topics
-    Object.entries(mqttTopics).forEach(([name, topic]) => {
-      console.log(`Subscribing to ${name}: ${topic}`);
-      subscribe(topic, handleEnergyUpdate);
+    // Store unsubscribe functions returned by subscribe()
+    const unsubscribeFns = mqttTopics.map(topic => {
+      console.log(`Subscribing to: ${topic}`);
+      return subscribe(topic, handleEnergyUpdate);
     });
 
     console.log('Successfully subscribed to all energy update topics');
@@ -956,18 +1037,9 @@ function StationDetail() {
             }
           }
 
-          // Also update power - should be around 11-16 kW for a standard charging station
-          setCurrentPower(11 + Math.random() * 5);
-
-          // Update battery percentage if it exists (simulated)
-          if (batteryPercentage !== null) {
-            setBatteryPercentage(Math.min(100, batteryPercentage + 1));
-          } else {
-            // Start at a reasonable level
-            setBatteryPercentage(20);
-          }
-
-          // Update charging duration - increment by 10 seconds
+          // Note: power and battery percentage are now updated via real MQTT data
+          // from the station's MeterValues (SoC, Power.Active.Import)
+          // Only update duration here as a fallback timer
           setChargingDuration(prev => prev + 10);
         }
       }, 10000); // Update every 10 seconds
@@ -1018,10 +1090,9 @@ function StationDetail() {
     const simulationInterval = setupEnergySimulation();
 
     return () => {
-      // Unsubscribe from all topics when component unmounts
-      Object.values(mqttTopics).forEach(topic => {
-        console.log(`Unsubscribing from ${topic}`);
-        unsubscribe(topic);
+      // Call each unsubscribe function to properly clean up
+      unsubscribeFns.forEach(unsub => {
+        if (typeof unsub === 'function') unsub();
       });
 
       // Clear intervals
@@ -1030,7 +1101,7 @@ function StationDetail() {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stationId, mqtt, transactions]);
+  }, [stationId, mqtt]);
 
   // Function to check connection status directly
   const checkConnectionStatus = async () => {
@@ -1117,52 +1188,20 @@ function StationDetail() {
     }
   };
 
-  // DEBUG FUNCTION - Force update energy values for testing
-  // This doesn't rely on the MQTT handler being initialized
+  // Energy values are now updated via real MQTT data from MeterValues
+  // This function is kept as a no-op for backward compatibility with callers
   const forceUpdateEnergyValues = () => {
-    console.log('⚡ Forcing energy update with test values');
-
-    // These are our test values for energy display
-    const energyValue = 0.0;
-    const powerValue = 0;
-    const batteryValue = 1;
-    const durationValue = 0;
-
-    // Update energy consumption directly - this is the most critical part
-    console.log(`Setting energy consumption to ${energyValue} kWh`);
-    setEnergyConsumption(energyValue.toString());
-    setCurrentPower(powerValue);
-    setBatteryPercentage(batteryValue);
-    setChargingDuration(durationValue);
-
-    // Attempt to log to the console that we're in charging state
+    console.log('forceUpdateEnergyValues called (no-op, using real MQTT data)');
     try {
       if (station?.status !== 'Charging') {
         console.log(
           'Note: Station status is not "Charging" - energy values may not display as expected'
-        );
-      } else {
-        console.log(
-          'Station is in "Charging" state - energy values should display correctly'
         );
       }
     } catch (e) {
       console.log('Could not determine station charging status');
     }
 
-    // If we're trying to simulate a full message, we'd do something like this
-    // but we don't rely on the MQTT handler anymore
-    const mockData = {
-      chargePointId: stationId,
-      transactionId: 12345,
-      connectorId: 1,
-      energy: energyValue * 1000, // convert kWh to Wh for consistency
-      power: powerValue,
-      batteryPercentage: batteryValue,
-      duration: durationValue,
-    };
-
-    console.log('Simulated energy update data:', mockData);
   };
 
   // Function to fetch station details updates without full refresh
@@ -1280,42 +1319,16 @@ function StationDetail() {
           setChargingDuration(stationData.station.chargingDuration);
         }
 
-        // Update battery percentage if provided by the API
-        if (stationData.station.batteryPercentage !== undefined) {
-          console.log(
-            'API provided battery percentage:',
-            stationData.station.batteryPercentage,
-            '%'
-          );
+        // Note: Battery percentage and power are updated via real-time MQTT MeterValues
+        // Only use API values as fallback if we haven't received MQTT data yet
+        if (stationData.station.batteryPercentage !== undefined && batteryPercentage === null) {
+          console.log('API fallback battery percentage:', stationData.station.batteryPercentage, '%');
           setBatteryPercentage(stationData.station.batteryPercentage);
         }
 
-        // Update charging power if provided by the API
-        if (
-          stationData.station.chargingPower !== undefined &&
-          stationData.station.chargingPower > 0
-        ) {
-          console.log(
-            'API provided charging power:',
-            stationData.station.chargingPower,
-            'kW'
-          );
-          setCurrentPower(Math.round(stationData.station.chargingPower * 1000)); // Convert kW to W
-        }
-
-        // If station is charging but we don't have energy consumption value, use our mock function
-        if (
-          stationData.station.status === 'Charging' &&
-          (!stationData.station.energyConsumption ||
-            stationData.station.energyConsumption === '0.00' ||
-            stationData.station.energyConsumption === 0)
-        ) {
-          console.log(
-            'Station is charging but no energy consumption value received, forcing update'
-          );
-          setTimeout(() => {
-            forceUpdateEnergyValues();
-          }, 300);
+        if (stationData.station.chargingPower !== undefined && stationData.station.chargingPower > 0 && currentPower === 0) {
+          console.log('API fallback charging power:', stationData.station.chargingPower, 'kW');
+          setCurrentPower(Math.round(stationData.station.chargingPower * 1000));
         }
 
         // If status changed to/from Charging, also check active transactions
@@ -1976,32 +1989,44 @@ function StationDetail() {
                                           variant="body2"
                                           fontWeight="bold"
                                         >
-                                          {' '}
-                                          {currentPower}W{' '}
+                                          {currentPower}W
                                         </Typography>{' '}
                                       </Grid>{' '}
-                                      {batteryPercentage !== null && (
-                                        <Grid item xs={6}>
+                                      {(realtimeData.soc !== null || batteryPercentage !== null) && (
+                                        <Grid item xs={12}>
                                           <Typography
                                             variant="caption"
                                             color="text.secondary"
                                           >
-                                            Battery Level{' '}
-                                          </Typography>{' '}
+                                            State of Charge (SoC)
+                                          </Typography>
                                           <Box
                                             sx={{
                                               display: 'flex',
                                               alignItems: 'center',
+                                              mt: 0.5,
                                             }}
                                           >
                                             <Box
                                               sx={{
-                                                width: '50px',
-                                                height: '12px',
-                                                border: '1px solid #ccc',
-                                                borderRadius: '3px',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                mr: 1,
+                                                color: getBatteryColor(realtimeData.soc || batteryPercentage) + '.main',
+                                              }}
+                                            >
+                                              {getBatteryIcon(realtimeData.soc || batteryPercentage)}
+                                            </Box>
+                                            <Box
+                                              sx={{
+                                                flex: 1,
+                                                height: '24px',
+                                                border: '2px solid',
+                                                borderColor: getBatteryColor(realtimeData.soc || batteryPercentage) + '.main',
+                                                borderRadius: '12px',
                                                 position: 'relative',
-                                                mr: 0.5,
+                                                backgroundColor: '#f5f5f5',
+                                                overflow: 'hidden',
                                               }}
                                             >
                                               <Box
@@ -2010,26 +2035,67 @@ function StationDetail() {
                                                   left: 0,
                                                   top: 0,
                                                   height: '100%',
-                                                  width: `${batteryPercentage}%`,
-                                                  backgroundColor:
-                                                    batteryPercentage < 20
+                                                  width: `${realtimeData.soc || batteryPercentage || 0}%`,
+                                                  background: `linear-gradient(90deg, ${
+                                                    (realtimeData.soc || batteryPercentage) < 20
                                                       ? '#f44336'
-                                                      : batteryPercentage < 50
+                                                      : (realtimeData.soc || batteryPercentage) < 40
                                                         ? '#ff9800'
-                                                        : '#4caf50',
-                                                  transition:
-                                                    'width 0.5s ease-in-out',
+                                                        : (realtimeData.soc || batteryPercentage) < 80
+                                                          ? '#ffeb3b'
+                                                          : '#4caf50'
+                                                  } 0%, ${
+                                                    (realtimeData.soc || batteryPercentage) < 20
+                                                      ? '#d32f2f'
+                                                      : (realtimeData.soc || batteryPercentage) < 40
+                                                        ? '#f57c00'
+                                                        : (realtimeData.soc || batteryPercentage) < 80
+                                                          ? '#fbc02d'
+                                                          : '#388e3c'
+                                                  } 100%)`,
+                                                  transition: 'width 0.8s ease-in-out',
+                                                  display: 'flex',
+                                                  alignItems: 'center',
+                                                  justifyContent: 'flex-end',
+                                                  pr: 1,
                                                 }}
-                                              />{' '}
-                                            </Box>{' '}
+                                              >
+                                                {(realtimeData.soc || batteryPercentage) > 10 && (
+                                                  <Typography
+                                                    variant="caption"
+                                                    sx={{
+                                                      color: 'white',
+                                                      fontWeight: 'bold',
+                                                      fontSize: '11px',
+                                                    }}
+                                                  >
+                                                    {Math.round(realtimeData.soc || batteryPercentage)}%
+                                                  </Typography>
+                                                )}
+                                              </Box>
+                                            </Box>
                                             <Typography
                                               variant="body2"
                                               fontWeight="bold"
+                                              sx={{
+                                                ml: 1,
+                                                minWidth: '45px',
+                                                color: getBatteryColor(realtimeData.soc || batteryPercentage) + '.main',
+                                              }}
                                             >
-                                              {' '}
-                                              {batteryPercentage} %
-                                            </Typography>{' '}
-                                          </Box>{' '}
+                                              {Math.round(realtimeData.soc || batteryPercentage)}%
+                                            </Typography>
+                                          </Box>
+                                          <Typography
+                                            variant="caption"
+                                            sx={{
+                                              mt: 0.5,
+                                              display: 'block',
+                                              color: 'text.secondary',
+                                            }}
+                                          >
+                                            {realtimeData.soc !== null ? 'Real-time from OCPP' : 'Estimated value'}
+                                          </Typography>
                                         </Grid>
                                       )}{' '}
                                       <Grid item xs={6}>
@@ -2056,7 +2122,139 @@ function StationDetail() {
                                     </Grid>{' '}
                                   </CardContent>{' '}
                                 </Card>
-                              )}{' '}
+                              )}
+                              
+                              {/* Enhanced Real-time Metrics Display */}
+                              {(realtimeData.voltage !== null || realtimeData.current !== null || realtimeData.temperature !== null) && (
+                                <Card
+                                  variant="outlined"
+                                  sx={{
+                                    mt: 1,
+                                    backgroundColor: '#f8f9fa',
+                                    borderLeft: '4px solid #2196f3',
+                                  }}
+                                >
+                                  <CardContent
+                                    sx={{
+                                      p: 1.5,
+                                      '&:last-child': {
+                                        pb: 1.5,
+                                      },
+                                    }}
+                                  >
+                                    <Typography
+                                      variant="subtitle2"
+                                      sx={{
+                                        mb: 1,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                      }}
+                                    >
+                                      <ElectricBoltIcon
+                                        fontSize="small"
+                                        sx={{
+                                          mr: 0.5,
+                                          color: '#2196f3',
+                                        }}
+                                      />
+                                      Real-time Metrics
+                                    </Typography>
+                                    <Grid container spacing={1.5}>
+                                      {realtimeData.voltage !== null && (
+                                        <Grid item xs={4}>
+                                          <Typography
+                                            variant="caption"
+                                            color="text.secondary"
+                                          >
+                                            Voltage
+                                          </Typography>
+                                          <Typography
+                                            variant="body2"
+                                            fontWeight="bold"
+                                            sx={{
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                            }}
+                                          >
+                                            <SpeedIcon
+                                              fontSize="small"
+                                              sx={{
+                                                mr: 0.5,
+                                                color: '#ff9800',
+                                              }}
+                                            />
+                                            {realtimeData.voltage.toFixed(1)}V
+                                          </Typography>
+                                        </Grid>
+                                      )}
+                                      {realtimeData.current !== null && (
+                                        <Grid item xs={4}>
+                                          <Typography
+                                            variant="caption"
+                                            color="text.secondary"
+                                          >
+                                            Current
+                                          </Typography>
+                                          <Typography
+                                            variant="body2"
+                                            fontWeight="bold"
+                                            sx={{
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                            }}
+                                          >
+                                            <ElectricBoltIcon
+                                              fontSize="small"
+                                              sx={{
+                                                mr: 0.5,
+                                                color: '#f44336',
+                                              }}
+                                            />
+                                            {realtimeData.current.toFixed(1)}A
+                                          </Typography>
+                                        </Grid>
+                                      )}
+                                      {realtimeData.temperature !== null && (
+                                        <Grid item xs={4}>
+                                          <Typography
+                                            variant="caption"
+                                            color="text.secondary"
+                                          >
+                                            Temperature
+                                          </Typography>
+                                          <Typography
+                                            variant="body2"
+                                            fontWeight="bold"
+                                            sx={{
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                            }}
+                                          >
+                                            <BatteryChargingFullIcon
+                                              fontSize="small"
+                                              sx={{
+                                                mr: 0.5,
+                                                color: realtimeData.temperature > 40 ? '#f44336' : '#4caf50',
+                                              }}
+                                            />
+                                            {realtimeData.temperature.toFixed(1)}°C
+                                          </Typography>
+                                        </Grid>
+                                      )}
+                                    </Grid>
+                                    <Typography
+                                      variant="caption"
+                                      sx={{
+                                        mt: 1,
+                                        display: 'block',
+                                        color: 'text.secondary',
+                                      }}
+                                    >
+                                      Live from OCPP MeterValues
+                                    </Typography>
+                                  </CardContent>
+                                </Card>
+                              )}
                             </>
                           ) : (
                             <>

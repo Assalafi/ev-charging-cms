@@ -3,6 +3,7 @@ const { Transaction, ChargingStation, MeterValue, sequelize } = require('../mode
 const { Op } = require('sequelize');
 const { authenticate } = require('../middleware/auth');
 const logger = require('../utils/logger');
+const transactionMonitor = require('../services/transactionMonitor');
 
 const router = express.Router();
 
@@ -56,6 +57,97 @@ router.get('/health', async (req, res) => {
       message: 'Health check failed',
       error: error.message,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// Manual transaction check endpoint
+router.post('/check-stuck/:transactionId', authenticate, async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    
+    logger.info(`Manual check requested for transaction ${transactionId}`);
+    
+    const result = await transactionMonitor.checkSpecificTransaction(parseInt(transactionId));
+    
+    if (result.found) {
+      res.json({
+        success: true,
+        message: 'Transaction check completed',
+        transactionId: transactionId,
+        result: result.transaction
+      });
+    } else {
+      res.json({
+        success: false,
+        message: result.message || 'Transaction check failed',
+        transactionId: transactionId
+      });
+    }
+    
+  } catch (error) {
+    logger.error(`Error checking transaction ${req.params.transactionId}:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Error checking transaction',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Force complete transaction endpoint (admin only)
+router.post('/force-complete/:transactionId', authenticate, async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const { reason } = req.body;
+    
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+    
+    logger.info(`Force complete requested for transaction ${transactionId} by user ${req.user.username}`);
+    
+    const transaction = await Transaction.findOne({
+      where: { 
+        transactionId: parseInt(transactionId), 
+        status: 'InProgress' 
+      },
+      include: [{
+        model: ChargingStation,
+        as: 'charging_station',
+        attributes: ['chargePointId', 'status', 'lastHeartbeat']
+      }]
+    });
+
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found or already completed'
+      });
+    }
+
+    await transactionMonitor.forceCompleteTransaction(
+      transaction, 
+      reason || `Manually force completed by ${req.user.username}`
+    );
+
+    res.json({
+      success: true,
+      message: 'Transaction force completed successfully',
+      transactionId: transactionId,
+      reason: reason || `Manually force completed by ${req.user.username}`
+    });
+    
+  } catch (error) {
+    logger.error(`Error force completing transaction ${req.params.transactionId}:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Error force completing transaction',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });

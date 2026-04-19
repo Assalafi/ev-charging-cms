@@ -519,30 +519,51 @@ async function handleStartTransaction(chargePointId, uniqueId, payload) {
       normalizedPayload.transactionId = payload.transactionId
     }
 
-    // Handle meter start value
-    if (normalizedPayload.meterStart === 0) {
-      logger.info(
-        `Received meterStart=0 for ${chargePointId}, using 0 as start value`
-      )
-      // For now, just accept 0 - we'll update with actual values from MeterValues
-    }
-
-    // Create a new transaction record
-    transaction = await Transaction.create({
-      transactionId: normalizedPayload.transactionId,
-      chargePointId,
-      connectorId: normalizedPayload.connectorId,
-      idTag: normalizedPayload.idTag,
-      startTime: new Date(normalizedPayload.timestamp),
-      startMeterValue: normalizedPayload.meterStart,
-      currentMeterValue: normalizedPayload.meterStart,
-      energyDelivered: 0,
-      status: "InProgress",
+    // Check for existing active transaction on this connector (e.g. pre-created by RemoteStartTransaction)
+    const existingTransaction = await Transaction.findOne({
+      where: {
+        chargePointId,
+        connectorId: normalizedPayload.connectorId,
+        status: 'InProgress'
+      },
+      order: [['startTime', 'DESC']]
     })
 
-    logger.info(
-      `Created transaction ${transaction.transactionId} for ${chargePointId}`
-    )
+    if (existingTransaction) {
+      // Reuse the existing transaction from RemoteStartTransaction
+      // This ensures the transactionId stays consistent between database and station
+      logger.info(`Found existing transaction ${existingTransaction.transactionId} on connector ${normalizedPayload.connectorId}, reusing it`)
+      
+      await existingTransaction.update({
+        startTime: new Date(normalizedPayload.timestamp),
+        startMeterValue: normalizedPayload.meterStart,
+        idTag: normalizedPayload.idTag,
+        status: 'InProgress'
+      })
+      
+      // Use the existing transaction's ID so the station and database are in sync
+      normalizedPayload.transactionId = existingTransaction.transactionId
+      transaction = existingTransaction
+      
+      logger.info(`Reused transaction ${transaction.transactionId} for ${chargePointId} - station and database IDs now match`)
+    } else {
+      // No existing transaction, create a new one
+      transaction = await Transaction.create({
+        transactionId: normalizedPayload.transactionId,
+        chargePointId,
+        connectorId: normalizedPayload.connectorId,
+        idTag: normalizedPayload.idTag,
+        startTime: new Date(normalizedPayload.timestamp),
+        startMeterValue: normalizedPayload.meterStart,
+        currentMeterValue: normalizedPayload.meterStart,
+        energyDelivered: 0,
+        status: "InProgress",
+      })
+
+      logger.info(
+        `Created new transaction ${transaction.transactionId} for ${chargePointId}`
+      )
+    }
 
     // Update connector status
     await updateConnectorStatus(
@@ -585,6 +606,20 @@ async function handleStartTransaction(chargePointId, uniqueId, payload) {
       )
     }
 
+    // Send ChangeConfiguration to set MeterValueSampleInterval (matching working system)
+    try {
+      const ocppServer = require('./server')
+      if (ocppServer.isConnected(chargePointId)) {
+        await ocppServer.sendOcppRequest(chargePointId, 'ChangeConfiguration', {
+          key: 'MeterValueSampleInterval',
+          value: '10'
+        })
+        logger.info(`Sent ChangeConfiguration MeterValueSampleInterval=10 to ${chargePointId}`)
+      }
+    } catch (configError) {
+      logger.warn(`Failed to send ChangeConfiguration to ${chargePointId}: ${configError.message}`)
+    }
+
     // Calculate expiry date for response
     let expiryDate = null
     if (authResult.status === "Accepted") {
@@ -613,7 +648,8 @@ async function handleStartTransaction(chargePointId, uniqueId, payload) {
     )
 
     // Return a proper error response but don't block the transaction
-    const fallbackTransactionId = Math.floor(Math.random() * 1000000) + 1
+    // Use the already-created transaction ID if available, otherwise generate one
+    const fallbackTransactionId = transaction ? transaction.transactionId : Math.floor(Math.random() * 1000000) + 1
 
     return [
       3,
@@ -668,12 +704,27 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
       })
 
       if (!transaction) {
-        logger.warn(
-          `Transaction ${normalizedPayload.transactionId} not found or not in progress for ${chargePointId}`
-        )
+        // Fallback: find any InProgress transaction for this chargePointId
+        // This handles cases where CMS and station have different transactionIds
+        transaction = await Transaction.findOne({
+          where: {
+            chargePointId,
+            status: "InProgress",
+          },
+          order: [['startTime', 'DESC']]
+        })
 
-        // Per OCPP 1.6, we still return a success response even if transaction not found
-        return [3, uniqueId, {}]
+        if (transaction) {
+          logger.warn(
+            `Transaction ${normalizedPayload.transactionId} not found, but found InProgress transaction ${transaction.transactionId} for ${chargePointId}. Using it.`
+          )
+        } else {
+          logger.warn(
+            `Transaction ${normalizedPayload.transactionId} not found or not in progress for ${chargePointId}`
+          )
+          // Per OCPP 1.6, we still return a success response even if transaction not found
+          return [3, uniqueId, {}]
+        }
       }
 
       // Validate meter values
@@ -1053,12 +1104,37 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                 // If part of a transaction, update its current energy
                 if (transactionId) {
                   try {
-                    const transaction = await Transaction.findOne({
+                    let transaction = await Transaction.findOne({
                       where: {
                         transactionId,
                         status: "InProgress",
                       },
                     })
+
+                    // Fallback: find any InProgress transaction for this station
+                    // Handles CMS/station transactionId mismatch
+                    if (!transaction) {
+                      transaction = await Transaction.findOne({
+                        where: {
+                          chargePointId,
+                          status: "InProgress",
+                        },
+                        order: [['startTime', 'DESC']]
+                      })
+                      if (transaction) {
+                        logger.info(`MeterValues: transactionId ${transactionId} not found, using InProgress transaction ${transaction.transactionId} for ${chargePointId}`)
+                        // Store station's actual transactionId so RemoteStop can use it
+                        try {
+                          await ChargingStation.update(
+                            { currentTransaction: transactionId },
+                            { where: { chargePointId } }
+                          )
+                          logger.info(`Updated station ${chargePointId} currentTransaction to station-reported ID ${transactionId}`)
+                        } catch (updateErr) {
+                          logger.error(`Failed to update currentTransaction: ${updateErr.message}`)
+                        }
+                      }
+                    }
 
                     if (transaction) {
                       const energyDelivered = Math.max(
@@ -1283,10 +1359,17 @@ async function handleHeartbeat(chargePointId, uniqueId) {
       })
 
       if (station) {
-        // Update the lastHeartbeat time using the model's field name
-        await station.update({
+        // Update lastHeartbeat and lastConnection
+        const updateData = {
           lastHeartbeat: new Date(),
-        })
+          lastConnection: new Date(),
+        }
+        // If station was Unavailable/Disconnected, a heartbeat means it's back
+        // But don't overwrite active charging statuses
+        if (!station.status || station.status === 'Unavailable' || station.status === 'Disconnected') {
+          updateData.status = 'Available'
+        }
+        await station.update(updateData)
         logger.debug(
           `Updated lastHeartbeat for ${chargePointId} to ${new Date().toISOString()}`
         )
