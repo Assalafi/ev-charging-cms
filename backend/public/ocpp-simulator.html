@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OCPP 1.6 WebSocket Simulator</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background-color: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      padding: 20px;
+    }
+    h1 {
+      color: #333;
+      margin-top: 0;
+    }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    input, select, textarea {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    button {
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    #connectionStatus {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 4px;
+    }
+    .connected {
+      background-color: #dff0d8;
+      color: #3c763d;
+    }
+    .disconnected {
+      background-color: #f2dede;
+      color: #a94442;
+    }
+    .connecting {
+      background-color: #fcf8e3;
+      color: #8a6d3b;
+    }
+    #messageLog {
+      height: 300px;
+      overflow-y: auto;
+      border: 1px solid #ddd;
+      padding: 10px;
+      margin-top: 20px;
+      background-color: #f9f9f9;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+    .message {
+      margin-bottom: 8px;
+      padding: 5px;
+      border-radius: 4px;
+    }
+    .incoming {
+      background-color: #e8f5e9;
+    }
+    .outgoing {
+      background-color: #e3f2fd;
+    }
+    .error {
+      background-color: #ffebee;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>OCPP 1.6 WebSocket Simulator</h1>
+    
+    <div class="form-group">
+      <label for="serverUrl">Server Base URL:</label>
+      <input type="text" id="serverUrl" value="ws://localhost:8080/ocpp">
+    </div>
+    
+    <div class="form-group">
+      <label for="stationId">Station ID:</label>
+      <input type="text" id="stationId" value="T001">
+    </div>
+    
+    <div class="form-group">
+      <label for="protocol">Protocol:</label>
+      <select id="protocol">
+        <option value="ocpp1.6">OCPP 1.6</option>
+        <option value="ocpp1.5">OCPP 1.5</option>
+        <option value="ocpp2.0.1">OCPP 2.0.1</option>
+      </select>
+    </div>
+    
+    <button id="connectBtn">Connect</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+    
+    <div id="connectionStatus" class="disconnected">Disconnected</div>
+    
+    <div class="form-group" style="margin-top: 20px;">
+      <label for="messageType">Message Type:</label>
+      <select id="messageType">
+        <option value="BootNotification">BootNotification</option>
+        <option value="Heartbeat">Heartbeat</option>
+        <option value="StatusNotification">StatusNotification</option>
+        <option value="Authorize">Authorize</option>
+        <option value="StartTransaction">StartTransaction</option>
+        <option value="StopTransaction">StopTransaction</option>
+        <option value="MeterValues">MeterValues</option>
+      </select>
+    </div>
+    
+    <div class="form-group">
+      <label for="messagePayload">Message Payload (JSON):</label>
+      <textarea id="messagePayload" rows="6">{
+  "chargePointVendor": "Test Vendor",
+  "chargePointModel": "Test Model",
+  "chargePointSerialNumber": "SN-123",
+  "firmwareVersion": "1.0.0"
+}</textarea>
+    </div>
+    
+    <button id="sendBtn" disabled>Send Message</button>
+    
+    <h3>Message Log:</h3>
+    <div id="messageLog"></div>
+  </div>
+  
+  <script>
+    let socket = null;
+    let messageCounter = 1;
+    
+    document.getElementById('connectBtn').addEventListener('click', connect);
+    document.getElementById('disconnectBtn').addEventListener('click', disconnect);
+    document.getElementById('sendBtn').addEventListener('click', sendMessage);
+    document.getElementById('messageType').addEventListener('change', updatePayloadTemplate);
+    
+    // Initialize the payload template based on the default message type
+    updatePayloadTemplate();
+    
+    function connect() {
+      const serverBaseUrl = document.getElementById('serverUrl').value;
+      const stationId = document.getElementById('stationId').value;
+      const protocol = document.getElementById('protocol').value;
+      
+      if (!serverBaseUrl || !stationId) {
+        addToLog('Error: Server URL and Station ID are required', 'error');
+        return;
+      }
+      
+      // Format the full URL
+      const fullUrl = `${serverBaseUrl}/${stationId}`;
+      
+      try {
+        // Update status to connecting
+        updateConnectionStatus('connecting', `Connecting to ${fullUrl}...`);
+        
+        // Create WebSocket connection
+        socket = new WebSocket(fullUrl, [protocol]);
+        
+        // Connection opened
+        socket.addEventListener('open', (event) => {
+          updateConnectionStatus('connected', `Connected to ${fullUrl}`);
+          document.getElementById('connectBtn').disabled = true;
+          document.getElementById('disconnectBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          
+          // Send Boot Notification automatically
+          sendBootNotification();
+        });
+        
+        // Listen for messages
+        socket.addEventListener('message', (event) => {
+          const message = JSON.parse(event.data);
+          addToLog(`Received: ${event.data}`, 'incoming');
+          
+          // If it's a response to a call, parse the response
+          if (message[0] === 3) { // CALLRESULT
+            const messageId = message[1];
+            const payload = message[2];
+            
+            // Display in a more readable format
+            addToLog(`Response for message ${messageId}: ${JSON.stringify(payload, null, 2)}`, 'incoming');
+          }
+        });
+        
+        // Connection closed
+        socket.addEventListener('close', (event) => {
+          updateConnectionStatus('disconnected', `Disconnected: ${event.code} - ${event.reason || 'No reason provided'}`);
+          document.getElementById('connectBtn').disabled = false;
+          document.getElementById('disconnectBtn').disabled = true;
+          document.getElementById('sendBtn').disabled = true;
+          socket = null;
+        });
+        
+        // Connection error
+        socket.addEventListener('error', (event) => {
+          addToLog(`WebSocket error: ${event}`, 'error');
+          updateConnectionStatus('disconnected', 'Connection error');
+        });
+      } catch (error) {
+        addToLog(`Error creating WebSocket: ${error.message}`, 'error');
+        updateConnectionStatus('disconnected', `Error: ${error.message}`);
+      }
+    }
+    
+    function disconnect() {
+      if (socket) {
+        socket.close(1000, 'User initiated disconnect');
+      }
+    }
+    
+    function sendMessage() {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        addToLog('Error: Not connected', 'error');
+        return;
+      }
+      
+      const messageType = document.getElementById('messageType').value;
+      let payload;
+      
+      try {
+        payload = JSON.parse(document.getElementById('messagePayload').value);
+      } catch (error) {
+        addToLog(`Error parsing JSON payload: ${error.message}`, 'error');
+        return;
+      }
+      
+      // Create OCPP message
+      const messageId = `msg-${messageCounter++}`;
+      const ocppMessage = [2, messageId, messageType, payload];
+      
+      try {
+        socket.send(JSON.stringify(ocppMessage));
+        addToLog(`Sent ${messageType}: ${JSON.stringify(payload, null, 2)}`, 'outgoing');
+      } catch (error) {
+        addToLog(`Error sending message: ${error.message}`, 'error');
+      }
+    }
+    
+    function sendBootNotification() {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      
+      const messageId = `boot-${Date.now()}`;
+      const bootMessage = [
+        2, // MessageTypeId (2 = Call)
+        messageId,
+        'BootNotification',
+        {
+          chargePointVendor: 'Test Vendor',
+          chargePointModel: 'Test Model',
+          chargePointSerialNumber: 'SN-123',
+          firmwareVersion: '1.0.0'
+        }
+      ];
+      
+      socket.send(JSON.stringify(bootMessage));
+      addToLog(`Sent automatic BootNotification`, 'outgoing');
+    }
+    
+    function updateConnectionStatus(status, message) {
+      const statusElement = document.getElementById('connectionStatus');
+      statusElement.className = status;
+      statusElement.textContent = message;
+    }
+    
+    function addToLog(message, type) {
+      const logElement = document.getElementById('messageLog');
+      const messageElement = document.createElement('div');
+      messageElement.className = `message ${type}`;
+      
+      const timestamp = new Date().toLocaleTimeString();
+      messageElement.textContent = `[${timestamp}] ${message}`;
+      
+      logElement.appendChild(messageElement);
+      logElement.scrollTop = logElement.scrollHeight;
+    }
+    
+    function updatePayloadTemplate() {
+      const messageType = document.getElementById('messageType').value;
+      let template = {};
+      
+      switch (messageType) {
+        case 'BootNotification':
+          template = {
+            chargePointVendor: "Test Vendor",
+            chargePointModel: "Test Model",
+            chargePointSerialNumber: "SN-123",
+            firmwareVersion: "1.0.0"
+          };
+          break;
+        case 'Heartbeat':
+          template = {};
+          break;
+        case 'StatusNotification':
+          template = {
+            connectorId: 1,
+            errorCode: "NoError",
+            status: "Available"
+          };
+          break;
+        case 'Authorize':
+          template = {
+            idTag: "TEST_TAG"
+          };
+          break;
+        case 'StartTransaction':
+          template = {
+            connectorId: 1,
+            idTag: "TEST_TAG",
+            meterStart: 0,
+            timestamp: new Date().toISOString()
+          };
+          break;
+        case 'StopTransaction':
+          template = {
+            transactionId: 123,
+            meterStop: 100,
+            timestamp: new Date().toISOString(),
+            reason: "Local"
+          };
+          break;
+        case 'MeterValues':
+          template = {
+            connectorId: 1,
+            transactionId: 123,
+            meterValue: [
+              {
+                timestamp: new Date().toISOString(),
+                sampledValue: [
+                  {
+                    value: "50",
+                    measurand: "Energy.Active.Import.Register",
+                    unit: "Wh"
+                  }
+                ]
+              }
+            ]
+          };
+          break;
+      }
+      
+      document.getElementById('messagePayload').value = JSON.stringify(template, null, 2);
+    }
+  </script>
+</body>
+</html>
