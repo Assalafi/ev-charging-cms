@@ -123,7 +123,7 @@ router.post('/auth/signup', async (req, res) => {
     const token = jwt.sign(
       { id: user.id, name: user.name, email: user.email, phone: user.phone, tagId: user.tagId, isMobile: true },
       getJwtSecret(),
-      { expiresIn: '24h' }
+      { expiresIn: '365d' }
     );
 
     logger.info(`Mobile user registered: ${email} (tagId: ${tagId})`);
@@ -188,8 +188,8 @@ router.post('/auth/login', async (req, res) => {
 
     await user.update({ lastLogin: new Date() });
 
-    // Token expiry: forever if rememberMe, 24h otherwise
-    const tokenOptions = rememberMe ? {} : { expiresIn: '24h' };
+    // Token expiry: forever if rememberMe, 365 days otherwise
+    const tokenOptions = rememberMe ? {} : { expiresIn: '365d' };
     const token = jwt.sign(
       { id: user.id, name: user.name, email: user.email, phone: user.phone, tagId: user.tagId, isMobile: true },
       getJwtSecret(),
