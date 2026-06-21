@@ -395,11 +395,8 @@ function StationList() {
       setTimeout(() => setSuccess(null), 5000);
     } catch (error) {
       console.error('Error deleting station:', error);
-      if (error.response?.status === 400) {
-        setError(error.response.data.message || 'Cannot delete station with active transactions');
-      } else {
-        setError('Failed to delete charging station');
-      }
+      const msg = error.response?.data?.message || error.response?.data?.error || error.message || 'Unknown error';
+      setError(`Failed to delete charging station: ${msg}`);
       setDeleteLoading(false);
     }
   };

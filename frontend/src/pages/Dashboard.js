@@ -121,6 +121,7 @@ function Dashboard() {
                         endDate: new Date().toISOString().split('T')[0] + 'T23:59:59.999Z',
                         status: 'SUCCESS',
                         type: 'CREDIT',
+                        gateway: 'paystack',
                         limit: 10000
                     }
                 }),

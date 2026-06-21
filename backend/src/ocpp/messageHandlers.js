@@ -7,6 +7,25 @@ const chargingSessionTracker = require("../services/chargingSessionTracker")
 const { validatePricingSettings } = require("../utils/pricingValidator")
 const { billTransaction } = require("../services/billingService")
 
+// Track pending remote starts so we can accept StartTransaction from stations
+// that use their own default idTag instead of the one from RemoteStartTransaction
+const pendingRemoteStarts = new Map()
+
+/**
+ * Register a pending remote start for a station
+ */
+function registerPendingRemoteStart(chargePointId, idTag, connectorId) {
+  pendingRemoteStarts.set(chargePointId, { idTag, connectorId, timestamp: Date.now() })
+  logger.info(`Registered pending remote start for ${chargePointId} with tag ${idTag}`)
+  // Auto-expire after 60 seconds
+  setTimeout(() => {
+    if (pendingRemoteStarts.has(chargePointId)) {
+      pendingRemoteStarts.delete(chargePointId)
+      logger.info(`Expired pending remote start for ${chargePointId}`)
+    }
+  }, 60000)
+}
+
 /**
  * Handle OCPP requests from charging stations
  */
@@ -554,19 +573,34 @@ async function handleStartTransaction(chargePointId, uniqueId, payload) {
     )
 
     if (authResult.status !== "Accepted") {
-      logger.warn(
-        `Rejected transaction start from ${chargePointId}: Tag ${normalizedPayload.idTag} status is ${authResult.status}`
-      )
-      return [
-        3,
-        uniqueId,
-        {
-          transactionId: 0,
-          idTagInfo: {
-            status: authResult.status,
+      // Check if there's a pending RemoteStart for this station
+      // Some chargers (e.g. 7KVA) use their own default tag instead of the one from RemoteStart
+      const pendingStart = pendingRemoteStarts.get(chargePointId)
+      if (pendingStart) {
+        logger.info(
+          `Tag ${normalizedPayload.idTag} not authorized, but found pending RemoteStart for ${chargePointId} with tag ${pendingStart.idTag}. Accepting with RemoteStart tag.`
+        )
+        // Use the authorized tag from the RemoteStart instead
+        normalizedPayload.idTag = pendingStart.idTag
+        pendingRemoteStarts.delete(chargePointId)
+      } else {
+        logger.warn(
+          `Rejected transaction start from ${chargePointId}: Tag ${normalizedPayload.idTag} status is ${authResult.status}`
+        )
+        return [
+          3,
+          uniqueId,
+          {
+            transactionId: 0,
+            idTagInfo: {
+              status: authResult.status,
+            },
           },
-        },
-      ]
+        ]
+      }
+    } else {
+      // Tag was accepted, clear any pending remote start
+      pendingRemoteStarts.delete(chargePointId)
     }
 
     // Generate a transaction ID if not provided
@@ -2311,4 +2345,5 @@ module.exports = {
   handleDiagnosticsStatusNotification,
   handleFirmwareStatusNotification,
   updateConnectorStatus,
+  registerPendingRemoteStart,
 }

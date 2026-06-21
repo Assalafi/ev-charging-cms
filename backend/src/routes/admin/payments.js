@@ -92,7 +92,7 @@ router.put('/settings', authorize(['admin']), async (req, res) => {
  */
 router.get('/transactions', authorize(['admin', 'operator']), async (req, res) => {
   try {
-    const { page = 1, limit = 50, status, userId, type, startDate, endDate } = req.query;
+    const { page = 1, limit = 50, status, userId, type, startDate, endDate, gateway } = req.query;
     
     const offset = (page - 1) * limit;
     const whereClause = {};
@@ -100,6 +100,7 @@ router.get('/transactions', authorize(['admin', 'operator']), async (req, res) =
     if (status) whereClause.status = status;
     if (userId) whereClause.userId = userId;
     if (type) whereClause.type = type;
+    if (gateway) whereClause.gateway = gateway;
     
     // Date range filtering with time
     if (startDate || endDate) {

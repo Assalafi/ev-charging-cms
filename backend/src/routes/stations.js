@@ -345,7 +345,7 @@ router.get('/', authenticate, async (req, res) => {
     try {
         const stations = await ChargingStation.findAll({
             order: [
-                ['createdAt', 'DESC']
+                ['lastHeartbeat', 'DESC NULLS LAST']
             ]
         });
 
@@ -1080,11 +1080,13 @@ router.post('/:id/trigger-boot', authorize(['admin', 'operator']), async (req, r
  * @desc    Delete a charging station
  * @access  Private/Admin
  */
-router.delete('/:id', authorize('admin'), async (req, res) => {
+router.delete('/:id', authorize(['admin', 'operator']), async (req, res) => {
     try {
         const {
             id
         } = req.params;
+
+        logger.info(`DELETE station request received for: ${id}`);
 
         // Find the station
         const station = await ChargingStation.findOne({
@@ -1115,6 +1117,36 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
             });
         }
 
+        // Delete related records first (foreign key constraints)
+        const stationDbId = station.id;
+        logger.info(`Deleting related records for station ${id} (db id: ${stationDbId})`);
+        
+        try {
+            await sequelize.query(`DELETE FROM connectors WHERE "chargePointId" = :id`, { replacements: { id: stationDbId } });
+            logger.info(`Deleted connectors for station ${id}`);
+        } catch (e) { logger.warn(`connectors cleanup: ${e.message}`); }
+        
+        try {
+            await sequelize.query(`DELETE FROM ocpp_messages WHERE "chargePointId" = :cpId OR "chargingStationId" = :id`, { replacements: { cpId: id, id: stationDbId } });
+            logger.info(`Deleted ocpp_messages for station ${id}`);
+        } catch (e) { logger.warn(`ocpp_messages cleanup: ${e.message}`); }
+        
+        try {
+            await sequelize.query(`DELETE FROM firmware_update_histories WHERE "ChargingStationId" = :id OR "chargingStationId" = :id`, { replacements: { id: stationDbId } });
+            logger.info(`Deleted firmware_update_histories for station ${id}`);
+        } catch (e) { logger.warn(`firmware_update_histories cleanup: ${e.message}`); }
+        
+        try {
+            await sequelize.query(`DELETE FROM reservations WHERE "chargingStationId" = :id`, { replacements: { id: stationDbId } });
+            logger.info(`Deleted reservations for station ${id}`);
+        } catch (e) { logger.warn(`reservations cleanup: ${e.message}`); }
+        
+        try {
+            // Set transactions to null reference instead of deleting them (preserve history)
+            await sequelize.query(`UPDATE transactions SET "chargePointId" = NULL, "chargingStationId" = NULL WHERE "chargePointId" = :cpId OR "chargingStationId" = :id`, { replacements: { cpId: id, id: stationDbId } });
+            logger.info(`Unlinked transactions for station ${id}`);
+        } catch (e) { logger.warn(`transactions cleanup: ${e.message}`); }
+
         // Delete the station
         await station.destroy();
 
@@ -1125,10 +1157,12 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
             message: 'Charging station deleted successfully'
         });
     } catch (error) {
-        logger.error(`Error deleting station ${req.params.id}:`, error);
+        logger.error(`Error deleting station ${req.params.id}:`, error.message);
+        logger.error('Error details:', error);
         res.status(500).json({
             success: false,
-            message: 'Server error'
+            message: 'Server error',
+            error: error.message
         });
     }
 });

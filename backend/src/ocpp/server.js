@@ -889,6 +889,11 @@ async function sendOcppRequest(chargePointId, action, payload) {
             }
             
             logger.debug(`RemoteStartTransaction payload: ${JSON.stringify(normalizedPayload)}`);
+            
+            // Register pending remote start so handleStartTransaction can accept
+            // stations that use their own default tag instead of the provided one
+            const { registerPendingRemoteStart } = require('./messageHandlers');
+            registerPendingRemoteStart(chargePointId, normalizedPayload.idTag, normalizedPayload.connectorId);
         }
         else if (action === 'RemoteStopTransaction') {
             // For RemoteStopTransaction, we only need transactionId and it should be camelCase
