@@ -342,6 +342,81 @@ router.post('/verify/:transactionId', authorize(['admin']), async (req, res) => 
 });
 
 /**
+ * @route   POST /api/admin/payments/wallets/:walletId/fund
+ * @desc    Admin fund a user's wallet (manual top-up)
+ */
+router.post('/wallets/:walletId/fund', authorize(['admin']), async (req, res) => {
+  try {
+    const { walletId } = req.params;
+    const { amount, description } = req.body;
+
+    if (!amount || parseFloat(amount) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Amount must be greater than 0'
+      });
+    }
+
+    const wallet = await Wallet.findByPk(walletId, {
+      include: [{ model: MobileUser, as: 'user', attributes: ['id', 'name', 'email', 'phone'] }]
+    });
+
+    if (!wallet) {
+      return res.status(404).json({
+        success: false,
+        message: 'Wallet not found'
+      });
+    }
+
+    const fundAmount = parseFloat(amount);
+    const previousBalance = parseFloat(wallet.balance);
+    const newBalance = previousBalance + fundAmount;
+
+    // Create payment transaction record
+    const transaction = await PaymentTransaction.create({
+      userId: wallet.userId,
+      walletId: wallet.id,
+      type: 'CREDIT',
+      amount: fundAmount,
+      currency: wallet.currency || 'NGN',
+      reference: `ADMIN-FUND-${Date.now()}-${wallet.id}`,
+      gateway: 'admin',
+      status: 'SUCCESS',
+      description: description || `Admin wallet top-up by ${req.user.username}`,
+      metadata: {
+        fundedBy: req.user.id,
+        fundedByUsername: req.user.username,
+        previousBalance,
+        newBalance,
+        fundedAt: new Date().toISOString()
+      }
+    });
+
+    // Update wallet balance
+    await wallet.update({ balance: newBalance });
+
+    logger.info(`Admin ${req.user.username} funded wallet ${walletId} (user: ${wallet.user?.name}) with ${fundAmount}. Balance: ${previousBalance} -> ${newBalance}`);
+
+    res.json({
+      success: true,
+      message: `Successfully added ${fundAmount} to ${wallet.user?.name || 'user'}'s wallet`,
+      transaction: {
+        id: transaction.id,
+        amount: fundAmount,
+        previousBalance,
+        newBalance
+      }
+    });
+  } catch (error) {
+    logger.error('Admin fund wallet error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fund wallet: ' + error.message
+    });
+  }
+});
+
+/**
  * @route   GET /api/admin/payments/users
  * @desc    Get mobile users for filter dropdown
  */

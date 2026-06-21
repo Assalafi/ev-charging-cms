@@ -39,7 +39,8 @@ import {
   TrendingUp as TrendingUpIcon,
   AccountBalanceWallet as WalletIcon,
   CreditCard as CreditCardIcon,
-  VerifiedUser as VerifyIcon
+  VerifiedUser as VerifyIcon,
+  Add as AddIcon
 } from '@mui/icons-material';
 import api from '../services/api';
 
@@ -99,6 +100,11 @@ function PaymentManagement() {
   });
   const [mobileUsers, setMobileUsers] = useState([]);
   const [verifying, setVerifying] = useState(null);
+  const [fundDialog, setFundDialog] = useState({ open: false, wallet: null });
+  const [fundAmount, setFundAmount] = useState('');
+  const [fundDescription, setFundDescription] = useState('');
+  const [fundLoading, setFundLoading] = useState(false);
+  const [fundConfirmText, setFundConfirmText] = useState('');
 
   useEffect(() => {
     fetchPaymentSettings();
@@ -235,6 +241,53 @@ function PaymentManagement() {
       setTimeout(() => setError(''), 5000);
     } finally {
       setVerifying(null);
+    }
+  };
+
+  const handleOpenFundDialog = (wallet) => {
+    setFundDialog({ open: true, wallet });
+    setFundAmount('');
+    setFundDescription('');
+    setFundConfirmText('');
+  };
+
+  const handleCloseFundDialog = () => {
+    setFundDialog({ open: false, wallet: null });
+    setFundAmount('');
+    setFundDescription('');
+    setFundConfirmText('');
+    setFundLoading(false);
+  };
+
+  const handleFundWallet = async () => {
+    if (!fundAmount || parseFloat(fundAmount) <= 0) {
+      setError('Please enter a valid amount');
+      setTimeout(() => setError(''), 3000);
+      return;
+    }
+    if (fundConfirmText !== 'CONFIRM') {
+      setError('Please type CONFIRM to proceed');
+      setTimeout(() => setError(''), 3000);
+      return;
+    }
+    setFundLoading(true);
+    try {
+      const response = await api.post(`/admin/payments/wallets/${fundDialog.wallet.id}/fund`, {
+        amount: parseFloat(fundAmount),
+        description: fundDescription || undefined
+      });
+      if (response.data.success) {
+        setSuccess(response.data.message);
+        handleCloseFundDialog();
+        fetchWallets();
+        fetchStats();
+        setTimeout(() => setSuccess(''), 5000);
+      }
+    } catch (error) {
+      setError(error.response?.data?.message || 'Failed to fund wallet');
+      setTimeout(() => setError(''), 5000);
+    } finally {
+      setFundLoading(false);
     }
   };
 
@@ -476,6 +529,7 @@ function PaymentManagement() {
                     <TableCell>Currency</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell>Created</TableCell>
+                    <TableCell>Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -494,6 +548,17 @@ function PaymentManagement() {
                       </TableCell>
                       <TableCell>
                         {new Date(wallet.createdAt).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          color="success"
+                          startIcon={<AddIcon />}
+                          onClick={() => handleOpenFundDialog(wallet)}
+                        >
+                          Fund
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -739,6 +804,78 @@ function PaymentManagement() {
           </Grid>
         </Grid>
       </TabPanel>
+      {/* Fund Wallet Dialog */}
+      <Dialog
+        open={fundDialog.open}
+        onClose={handleCloseFundDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ bgcolor: 'warning.light', color: 'warning.contrastText' }}>
+          ⚠️ Fund Wallet - {fundDialog.wallet?.user?.name || 'Unknown User'}
+        </DialogTitle>
+        <DialogContent sx={{ mt: 2 }}>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <strong>WARNING:</strong> You are about to manually add funds to this user's wallet. 
+            This action will immediately credit the wallet and create a transaction record. 
+            This cannot be automatically reversed. Please double-check the amount before proceeding.
+          </Alert>
+          <Box sx={{ mb: 2, p: 2, bgcolor: 'grey.50', borderRadius: 1 }}>
+            <Typography variant="body2" color="textSecondary">User</Typography>
+            <Typography variant="body1" fontWeight="bold">{fundDialog.wallet?.user?.name}</Typography>
+            <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>Email</Typography>
+            <Typography variant="body1">{fundDialog.wallet?.user?.email}</Typography>
+            <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>Current Balance</Typography>
+            <Typography variant="h6" color="primary">{formatCurrency(fundDialog.wallet?.balance || 0)}</Typography>
+          </Box>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Amount (NGN)"
+            type="number"
+            value={fundAmount}
+            onChange={(e) => setFundAmount(e.target.value)}
+            margin="normal"
+            inputProps={{ min: 1 }}
+          />
+          <TextField
+            fullWidth
+            label="Description (optional)"
+            value={fundDescription}
+            onChange={(e) => setFundDescription(e.target.value)}
+            margin="normal"
+            placeholder="e.g. Promotional credit, Refund, etc."
+          />
+          {fundAmount && parseFloat(fundAmount) > 0 && (
+            <Alert severity="info" sx={{ mt: 2 }}>
+              New balance will be: <strong>{formatCurrency(parseFloat(fundDialog.wallet?.balance || 0) + parseFloat(fundAmount))}</strong>
+            </Alert>
+          )}
+          <TextField
+            fullWidth
+            label='Type "CONFIRM" to proceed'
+            value={fundConfirmText}
+            onChange={(e) => setFundConfirmText(e.target.value.toUpperCase())}
+            margin="normal"
+            error={fundConfirmText !== '' && fundConfirmText !== 'CONFIRM'}
+            helperText='You must type "CONFIRM" to enable the fund button'
+          />
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={handleCloseFundDialog} disabled={fundLoading}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={handleFundWallet}
+            disabled={fundLoading || fundConfirmText !== 'CONFIRM' || !fundAmount || parseFloat(fundAmount) <= 0}
+            startIcon={fundLoading ? <CircularProgress size={16} color="inherit" /> : <AddIcon />}
+          >
+            {fundLoading ? 'Processing...' : `Fund ${fundAmount ? formatCurrency(parseFloat(fundAmount)) : ''}`}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
