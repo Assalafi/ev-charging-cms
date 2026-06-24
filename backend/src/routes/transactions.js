@@ -802,22 +802,19 @@ router.post('/:id/reconcile', authenticate, async (req, res) => {
       correctAmount
     });
     
-    if (Math.abs(currentAmount - correctAmount) < 0.01) {
-      await t.rollback();
-      return res.json({
-        success: true,
-        message: 'Transaction amount is already correct',
-        transaction
-      });
+    // Update transaction amount if pricing is wrong
+    const amountChanged = Math.abs(currentAmount - correctAmount) >= 0.01;
+    if (amountChanged) {
+      await transaction.update({ amount: correctAmount }, { transaction: t });
+      logger.info(`Reconcile: TX${transactionId} amount updated from ₦${currentAmount.toFixed(2)} to ₦${correctAmount.toFixed(2)}`);
     }
     
-    const adjustment = currentAmount - correctAmount; // Positive means overcharge, negative means undercharge
+    // Now check if wallet deduction matches the correct amount
+    // This catches cases where billing ran too early (partial energy) or multiple times
+    let walletAdjustment = 0;
+    let walletMessage = '';
     
-    // Update transaction amount
-    await transaction.update({ amount: correctAmount }, { transaction: t });
-    
-    // Find user and update wallet if adjustment is significant
-    if (Math.abs(adjustment) > 0.01 && transaction.idTag) {
+    if (transaction.idTag) {
       const user = await MobileUser.findOne({
         where: { tagId: transaction.idTag },
         transaction: t
@@ -830,39 +827,94 @@ router.post('/:id/reconcile', authenticate, async (req, res) => {
         });
         
         if (wallet) {
-          const newBalance = parseFloat(wallet.balance) + adjustment;
-          await wallet.update({ balance: newBalance }, { transaction: t });
+          // Sum all existing debits for this transaction
+          const existingDebits = await PaymentTransaction.findAll({
+            where: {
+              type: 'DEBIT',
+              reference: { [Op.like]: `CHG-${transactionId}-%` }
+            },
+            transaction: t
+          });
+          const totalDebited = existingDebits.reduce((sum, d) => sum + parseFloat(d.amount), 0);
           
-          // Create payment transaction record
-          await PaymentTransaction.create({
-            userId: user.id,
-            walletId: wallet.id,
-            amount: Math.abs(adjustment),
-            type: adjustment > 0 ? 'CREDIT' : 'DEBIT',
-            status: 'SUCCESS',
-            reference: `RECONCILE-TX${transactionId}-${Date.now()}`,
-            description: `Transaction reconciliation for TX${transactionId}`,
-            metadata: JSON.stringify({
-              transaction_id: transactionId,
-              previous_amount: currentAmount,
-              corrected_amount: correctAmount,
-              adjustment,
-              location_pricing: { pricePerKwh, minimumCharge }
-            })
-          }, { transaction: t });
+          // Sum any previous reconciliation adjustments for this transaction
+          const existingReconciles = await PaymentTransaction.findAll({
+            where: {
+              reference: { [Op.like]: `RECONCILE-TX${transactionId}-%` }
+            },
+            transaction: t
+          });
+          const totalReconciled = existingReconciles.reduce((sum, r) => {
+            const amt = parseFloat(r.amount);
+            return sum + (r.type === 'DEBIT' ? -amt : amt);
+          }, 0);
           
-          logger.info(`Wallet adjusted by ${adjustment} for user ${user.id}`);
+          // Net amount actually taken from wallet for this transaction
+          const netBilled = totalDebited + totalReconciled;
+          
+          // How much more (or less) needs to come out of the wallet
+          walletAdjustment = correctAmount - netBilled;
+          
+          logger.info(`Reconcile wallet check TX${transactionId}: correctAmount=₦${correctAmount.toFixed(2)}, totalDebited=₦${totalDebited.toFixed(2)}, totalReconciled=₦${totalReconciled.toFixed(2)}, netBilled=₦${netBilled.toFixed(2)}, walletAdjustment=₦${walletAdjustment.toFixed(2)}`);
+          
+          if (Math.abs(walletAdjustment) >= 1) {
+            const newBalance = parseFloat(wallet.balance) - walletAdjustment;
+            await wallet.update({ balance: newBalance }, { transaction: t });
+            
+            await PaymentTransaction.create({
+              userId: user.id,
+              walletId: wallet.id,
+              amount: Math.abs(walletAdjustment),
+              type: walletAdjustment > 0 ? 'DEBIT' : 'CREDIT',
+              status: 'SUCCESS',
+              reference: `RECONCILE-TX${transactionId}-${Date.now()}`,
+              description: `Reconciliation for TX${transactionId}: ${walletAdjustment > 0 ? 'under-billed' : 'over-billed'} by ₦${Math.abs(walletAdjustment).toFixed(2)}`,
+              metadata: JSON.stringify({
+                transaction_id: transactionId,
+                correct_amount: correctAmount,
+                total_debited: totalDebited,
+                total_reconciled: totalReconciled,
+                net_billed: netBilled,
+                wallet_adjustment: walletAdjustment,
+                previous_balance: parseFloat(wallet.balance),
+                new_balance: newBalance,
+                location_pricing: { pricePerKwh, minimumCharge }
+              })
+            }, { transaction: t });
+            
+            walletMessage = ` Wallet ${walletAdjustment > 0 ? 'debited' : 'credited'} ₦${Math.abs(walletAdjustment).toFixed(2)} (was billed ₦${netBilled.toFixed(2)}, should be ₦${correctAmount.toFixed(2)}).`;
+            logger.info(`Reconcile: Wallet adjusted by ₦${walletAdjustment.toFixed(2)} for user ${user.id} (${user.email}). Balance: ₦${parseFloat(wallet.balance).toFixed(2)} → ₦${newBalance.toFixed(2)}`);
+          } else {
+            walletMessage = ' Wallet billing is correct.';
+          }
         }
       }
     }
     
+    if (!amountChanged && Math.abs(walletAdjustment) < 1) {
+      await t.rollback();
+      return res.json({
+        success: true,
+        message: 'Transaction amount and wallet billing are already correct.',
+        transaction
+      });
+    }
+    
     await t.commit();
+    
+    let message = '';
+    if (amountChanged) {
+      message += `Amount updated from ₦${currentAmount.toFixed(2)} to ₦${correctAmount.toFixed(2)}.`;
+    } else {
+      message += `Amount ₦${correctAmount.toFixed(2)} is correct.`;
+    }
+    message += walletMessage;
     
     res.json({
       success: true,
-      message: `Transaction reconciled successfully. Amount updated from ₦${currentAmount.toFixed(2)} to ₦${correctAmount.toFixed(2)}`,
+      message: `Transaction reconciled successfully. ${message}`,
       transaction,
-      adjustment
+      adjustment: walletAdjustment
     });
   } catch (error) {
     await t.rollback();

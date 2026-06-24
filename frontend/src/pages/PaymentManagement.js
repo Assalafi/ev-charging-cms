@@ -458,7 +458,7 @@ function PaymentManagement() {
                         {new Date(transaction.createdAt).toLocaleString()}
                       </TableCell>
                       <TableCell>
-                        {transaction.status === 'PENDING' && transaction.type === 'CREDIT' && (
+                        {(transaction.status === 'PENDING' || transaction.status === 'FAILED') && transaction.type === 'CREDIT' && (
                           <Button
                             size="small"
                             variant="contained"
