@@ -59,6 +59,66 @@ module.exports = (sequelize) => {
             type: DataTypes.DATE,
             allowNull: true,
             comment: 'Timestamp when wallet was debited. NULL means not yet billed.'
+        },
+        sellingPricePerWh: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+            comment: 'Snapshot of selling price per Wh at transaction time'
+        },
+        productionCostPerWh: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+            comment: 'Snapshot of production cost per Wh at transaction time'
+        },
+        partnerSharePercent: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+            comment: 'Snapshot of partner share percentage at transaction time'
+        },
+        minimumChargeApplied: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false,
+            comment: 'Whether minimum charge was applied'
+        },
+        productionCostAmount: {
+            type: DataTypes.FLOAT,
+            defaultValue: 0,
+            comment: 'Production cost amount (energyWh * productionCostPerWh)'
+        },
+        profitAmount: {
+            type: DataTypes.FLOAT,
+            defaultValue: 0,
+            comment: 'Profit after production cost (billableAmount - productionCostAmount)'
+        },
+        partnerEarning: {
+            type: DataTypes.FLOAT,
+            defaultValue: 0,
+            comment: 'Partner share of profit'
+        },
+        companyEarning: {
+            type: DataTypes.FLOAT,
+            defaultValue: 0,
+            comment: 'Company share of profit'
+        },
+        partnerId: {
+            type: DataTypes.INTEGER,
+            allowNull: true,
+            comment: 'Partner company ID at transaction time'
+        },
+        locationId: {
+            type: DataTypes.INTEGER,
+            allowNull: true,
+            comment: 'Location ID at transaction time'
+        },
+        settlementId: {
+            type: DataTypes.INTEGER,
+            allowNull: true,
+            comment: 'Settlement ID this transaction is included in'
+        },
+        settlementStatus: {
+            type: DataTypes.STRING(20),
+            defaultValue: 'pending',
+            comment: 'Settlement status for this transaction'
         }
     }, {
         tableName: 'transactions',
@@ -75,6 +135,15 @@ module.exports = (sequelize) => {
             },
             {
                 fields: ['startTime']
+            },
+            {
+                fields: ['partnerId']
+            },
+            {
+                fields: ['settlementId']
+            },
+            {
+                fields: ['settlementStatus']
             }
         ]
     });

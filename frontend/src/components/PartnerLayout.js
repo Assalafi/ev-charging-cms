@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
   CssBaseline,
@@ -23,78 +23,76 @@ import {
 import {
   Menu as MenuIcon,
   Dashboard as DashboardIcon,
-  EvStation as StationIcon,
-  Receipt as TransactionIcon,
-  Settings as SettingsIcon,
-  Person as PersonIcon,
-  Logout as LogoutIcon,
-  SystemUpdateAlt as AppUpdateIcon,
-  People as UsersIcon,
+  EvStation as EvStationIcon,
+  TrendingUp as TrendingUpIcon,
+  AttachMoney as MoneyIcon,
   LocationOn as LocationIcon,
-  Payment as PaymentIcon,
-  Campaign as AdsIcon,
-  Business as PartnerIcon,
-  AccountBalance as SettlementIcon
+  Receipt as TransactionIcon,
+  AccountBalance as SettlementIcon,
+  Notifications as NotificationIcon,
+  Assessment as ReportIcon,
+  Help as SupportIcon,
+  Person as PersonIcon,
+  Logout as LogoutIcon
 } from '@mui/icons-material';
-import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
 const drawerWidth = 240;
 
-function Layout() {
+const PartnerLayout = () => {
   const { currentUser, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
-  
+
   const [mobileOpen, setMobileOpen] = useState(false);
   const [anchorEl, setAnchorEl] = useState(null);
-  
+
   const handleDrawerToggle = () => {
     setMobileOpen(!mobileOpen);
   };
-  
+
   const handleMenuOpen = (event) => {
     setAnchorEl(event.currentTarget);
   };
-  
+
   const handleMenuClose = () => {
     setAnchorEl(null);
   };
-  
+
   const handleLogout = () => {
     handleMenuClose();
     logout();
     navigate('/login');
   };
-  
+
   const handleNavigate = (path) => {
     navigate(path);
     if (isMobile) {
       setMobileOpen(false);
     }
   };
-  
+
   const menuItems = [
-    { text: 'Dashboard', icon: <DashboardIcon />, path: '/dashboard' },
-    { text: 'Charging Stations', icon: <StationIcon />, path: '/stations' },
-    { text: 'Transactions', icon: <TransactionIcon />, path: '/transactions' },
-    { text: 'Mobile Users', icon: <UsersIcon />, path: '/mobile-users' },
-    { text: 'Locations', icon: <LocationIcon />, path: '/locations' },
-    { text: 'Payments', icon: <PaymentIcon />, path: '/payments' },
-    { text: 'Ads Board', icon: <AdsIcon />, path: '/ads-board' },
-    { text: 'Partners', icon: <PartnerIcon />, path: '/partners' },
-    { text: 'Settlements', icon: <SettlementIcon />, path: '/settlements' },
-    { text: 'Settings', icon: <SettingsIcon />, path: '/settings' },
-    { text: 'App Update', icon: <AppUpdateIcon />, path: '/app-update' }
+    { text: 'Dashboard', icon: <DashboardIcon />, path: '/partner/dashboard' },
+    { text: 'Monitor Map', icon: <EvStationIcon />, path: '/partner/monitor' },
+    { text: 'Stations', icon: <EvStationIcon />, path: '/partner/stations' },
+    { text: 'Locations', icon: <LocationIcon />, path: '/partner/locations' },
+    { text: 'Transactions', icon: <TransactionIcon />, path: '/partner/transactions' },
+    { text: 'Performance', icon: <TrendingUpIcon />, path: '/partner/performance' },
+    { text: 'Revenue', icon: <MoneyIcon />, path: '/partner/revenue' },
+    { text: 'Settlements', icon: <SettlementIcon />, path: '/partner/settlements' },
+    { text: 'Reports', icon: <ReportIcon />, path: '/partner/reports' },
+    { text: 'Notifications', icon: <NotificationIcon />, path: '/partner/notifications' },
+    { text: 'Support', icon: <SupportIcon />, path: '/partner/support' }
   ];
-  
+
   const drawer = (
     <div>
       <Toolbar>
         <Typography variant="h6" noWrap component="div">
-          EV Charging CMS
+          Partner Portal
         </Typography>
       </Toolbar>
       <Divider />
@@ -115,7 +113,7 @@ function Layout() {
       </List>
     </div>
   );
-  
+
   return (
     <Box sx={{ display: 'flex' }}>
       <CssBaseline />
@@ -137,7 +135,7 @@ function Layout() {
             <MenuIcon />
           </IconButton>
           <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
-            {menuItems.find(item => item.path === location.pathname)?.text || 'Dashboard'}
+            {menuItems.find(item => item.path === location.pathname)?.text || 'Partner Dashboard'}
           </Typography>
           <IconButton
             onClick={handleMenuOpen}
@@ -181,7 +179,7 @@ function Layout() {
           open={mobileOpen}
           onClose={handleDrawerToggle}
           ModalProps={{
-            keepMounted: true, // Better open performance on mobile
+            keepMounted: true,
           }}
           sx={{
             display: { xs: 'block', md: 'none' },
@@ -216,6 +214,6 @@ function Layout() {
       </Box>
     </Box>
   );
-}
+};
 
-export default Layout;
+export default PartnerLayout;

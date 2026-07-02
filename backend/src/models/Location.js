@@ -58,6 +58,26 @@ module.exports = (sequelize) => {
       defaultValue: 150,
       comment: 'Minimum charge in Naira'
     },
+    partnerId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Reference to partner company (NULL = main company location)'
+    },
+    productionCostPerWh: {
+      type: DataTypes.FLOAT,
+      defaultValue: 0,
+      comment: 'Production cost per Wh for this location'
+    },
+    partnerSharePercent: {
+      type: DataTypes.FLOAT,
+      defaultValue: 0,
+      comment: 'Partner share percentage from profit (0-100)'
+    },
+    settlementEnabled: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+      comment: 'Whether settlement is enabled for this location'
+    },
     active: {
       type: DataTypes.BOOLEAN,
       defaultValue: true

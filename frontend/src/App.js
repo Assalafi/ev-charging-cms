@@ -18,6 +18,16 @@ import MobileUsersList from './pages/mobileUsers/MobileUsersList';
 import LocationsList from './pages/locations/LocationsList';
 import AdsBoardList from './pages/adsBoard/AdsBoardList';
 import PaymentManagement from './pages/PaymentManagement';
+import PartnerList from './pages/partners/PartnerList';
+import PartnerDetail from './pages/partners/PartnerDetail';
+import PartnerForm from './pages/partners/PartnerForm';
+import PartnerDashboard from './pages/partner/PartnerDashboard';
+import PartnerMonitorMap from './pages/partner/PartnerMonitorMap';
+import PartnerPerformance from './pages/partner/PartnerPerformance';
+import PartnerSettlements from './pages/partner/PartnerSettlements';
+import ComingSoon from './pages/partner/ComingSoon';
+import PartnerLayout from './components/PartnerLayout';
+import SettlementList from './pages/settlements/SettlementList';
 import NotFound from './pages/NotFound';
 import { useAuth } from './contexts/AuthContext';
 
@@ -63,9 +73,35 @@ function App() {
         <Route path="payments" element={<PaymentManagement />} />
         <Route path="ads-board" element={<AdsBoardList />} />
         
+        <Route path="partners">
+          <Route index element={<PartnerList />} />
+          <Route path="new" element={<PartnerForm />} />
+          <Route path=":id" element={<PartnerDetail />} />
+          <Route path=":id/edit" element={<PartnerForm />} />
+        </Route>
+        
+        <Route path="settlements">
+          <Route index element={<SettlementList />} />
+        </Route>
+
         <Route path="profile" element={<Profile />} />
         <Route path="settings" element={<Settings />} />
         <Route path="app-update" element={<AppUpdate />} />
+      </Route>
+
+      <Route path="/partner" element={<PrivateRoute><PartnerLayout /></PrivateRoute>}>
+        <Route index element={<PartnerDashboard />} />
+        <Route path="dashboard" element={<PartnerDashboard />} />
+        <Route path="monitor" element={<PartnerMonitorMap />} />
+        <Route path="stations" element={<ComingSoon title="Partner Stations" />} />
+        <Route path="locations" element={<ComingSoon title="Partner Locations" />} />
+        <Route path="transactions" element={<ComingSoon title="Partner Transactions" />} />
+        <Route path="performance" element={<PartnerPerformance />} />
+        <Route path="revenue" element={<ComingSoon title="Partner Revenue" />} />
+        <Route path="settlements" element={<PartnerSettlements />} />
+        <Route path="reports" element={<ComingSoon title="Partner Reports" />} />
+        <Route path="notifications" element={<ComingSoon title="Partner Notifications" />} />
+        <Route path="support" element={<ComingSoon title="Partner Support" />} />
       </Route>
       
       <Route path="*" element={<NotFound />} />

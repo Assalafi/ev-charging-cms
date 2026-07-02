@@ -6,6 +6,7 @@ const tagAuthService = require("../services/tagAuthorization")
 const chargingSessionTracker = require("../services/chargingSessionTracker")
 const { validatePricingSettings } = require("../utils/pricingValidator")
 const { billTransaction } = require("../services/billingService")
+const { calculatePartnerRevenue } = require("../services/partnerRevenueService")
 
 // Track pending remote starts so we can accept StartTransaction from stations
 // that use their own default idTag instead of the one from RemoteStartTransaction
@@ -1028,6 +1029,32 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         throw new Error(`Cannot complete transaction: ${priceError.message}`)
       }
 
+      // ═══ PARTNER REVENUE CALCULATION ═══
+      let partnerRevenue = null
+      try {
+        partnerRevenue = await calculatePartnerRevenue({
+          chargePointId,
+          energyWh: energyDelivered,
+          billableAmount: transactionAmount
+        })
+        logger.info(`Partner revenue calculated for tx ${transaction.transactionId}:`, partnerRevenue)
+      } catch (partnerError) {
+        logger.error(`Error calculating partner revenue for tx ${transaction.transactionId}:`, partnerError)
+        // Continue with default values if partner revenue calculation fails
+        partnerRevenue = {
+          locationId: null,
+          partnerId: null,
+          sellingPricePerWh: pricePerWh || 0.4,
+          productionCostPerWh: 0,
+          partnerSharePercent: 0,
+          productionCostAmount: 0,
+          profitAmount: transactionAmount,
+          partnerEarning: 0,
+          companyEarning: transactionAmount,
+          settlementStatus: null
+        }
+      }
+
       // First update the connector status to "Finishing" to indicate transition
       await updateConnectorStatus(
         chargePointId,
@@ -1036,7 +1063,7 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         null
       )
 
-      // Update the transaction
+      // Update the transaction with all fields including partner revenue
       await transaction.update({
         status: "Completed",
         stopTime: new Date(normalizedPayload.timestamp),
@@ -1044,6 +1071,18 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         energyDelivered: energyDelivered,
         amount: transactionAmount,
         reason: normalizedPayload.reason,
+        // Partner revenue snapshot fields
+        sellingPricePerWh: partnerRevenue.sellingPricePerWh,
+        productionCostPerWh: partnerRevenue.productionCostPerWh,
+        partnerSharePercent: partnerRevenue.partnerSharePercent,
+        minimumChargeApplied: isUsingMinimumCharge,
+        productionCostAmount: partnerRevenue.productionCostAmount,
+        profitAmount: partnerRevenue.profitAmount,
+        partnerEarning: partnerRevenue.partnerEarning,
+        companyEarning: partnerRevenue.companyEarning,
+        partnerId: partnerRevenue.partnerId,
+        locationId: partnerRevenue.locationId,
+        settlementStatus: partnerRevenue.settlementStatus
       })
 
       logger.info(

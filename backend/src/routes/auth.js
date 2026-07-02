@@ -13,6 +13,7 @@ const router = express.Router();
  * @access  Public
  */
 router.post('/login', async (req, res) => {
+  logger.info('=== LOGIN ENDPOINT CALLED ===');
   try {
     const { username, password } = req.body;
     
@@ -52,20 +53,23 @@ router.post('/login', async (req, res) => {
     
     // Update last login
     await user.update({ lastLogin: new Date() });
-    
+
+    logger.info('Login user data:', { id: user.id, username: user.username, partnerId: user.partnerId });
+
     // Generate JWT token with consistent secret
     const secret = process.env.JWT_SECRET || config.security.jwtSecret || 'ev-charging-secure-secret';
     const token = jwt.sign(
-      { 
-        id: user.id, 
-        username: user.username, 
-        email: user.email, 
-        role: user.role 
+      {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        partnerId: user.partnerId
       },
       secret,
       { expiresIn: '24h' }
     );
-    
+
     res.json({
       success: true,
       token,
@@ -73,7 +77,8 @@ router.post('/login', async (req, res) => {
         id: user.id,
         username: user.username,
         email: user.email,
-        role: user.role
+        role: user.role,
+        partnerId: user.partnerId
       }
     });
   } catch (error) {

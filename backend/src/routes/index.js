@@ -16,6 +16,12 @@ const adminMobileUsersRoutes = require('./admin/mobileUsers');
 const adminLocationsRoutes = require('./admin/locations');
 const adminPaymentsRoutes = require('./admin/payments');
 const adminAdsBoardRoutes = require('./admin/adsBoard');
+const adminPartnersRoutes = require('./admin/partners');
+const adminSettlementsRoutes = require('./admin/settlements');
+const partnerDashboardRoutes = require('./partner/dashboard');
+const partnerMonitorRoutes = require('./partner/monitor');
+const partnerPerformanceRoutes = require('./partner/performance');
+const partnerSettlementsRoutes = require('./partner/settlements');
 // Temporarily commenting out simulator routes due to import issues
 // const simulatorRoutes = require('./simulator');
 
@@ -40,6 +46,12 @@ router.use('/admin/mobile-users', adminMobileUsersRoutes);
 router.use('/admin/locations', adminLocationsRoutes);
 router.use('/admin/payments', adminPaymentsRoutes);
 router.use('/admin/ads-board', adminAdsBoardRoutes);
+router.use('/admin/partners', adminPartnersRoutes);
+router.use('/admin/settlements', adminSettlementsRoutes);
+router.use('/partner/dashboard', partnerDashboardRoutes);
+router.use('/partner/monitor', partnerMonitorRoutes);
+router.use('/partner/performance', partnerPerformanceRoutes);
+router.use('/partner/settlements', partnerSettlementsRoutes);
 router.use('/mobile', mobileRoutes);
 // Temporarily commenting out simulator routes due to import issues
 // router.use('/simulator', simulatorRoutes);

@@ -132,8 +132,13 @@ async function initializeDatabase() {
       await sequelize.sync({ alter: true });
       logger.info('Database models synchronized with alter');
     } else {
-      await sequelize.sync();
-      logger.info('Database models synchronized');
+      try {
+        await sequelize.sync();
+        logger.info('Database models synchronized');
+      } catch (syncError) {
+        logger.error('Database sync warning (non-fatal):', syncError.message);
+        logger.info('Server will continue with existing schema');
+      }
     }
   } catch (error) {
     logger.error('Database connection failed:', error);
