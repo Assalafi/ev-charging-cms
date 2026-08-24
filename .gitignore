@@ -49,6 +49,8 @@ logs/
 *.sql
 *.dump
 *.sql.gz
+!database/init.sql
+!db_schema.sql
 
 # Archives and server-side backup copies
 *.tar.gz
