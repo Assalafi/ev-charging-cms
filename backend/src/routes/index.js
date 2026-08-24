@@ -3,6 +3,7 @@ const authRoutes = require('./auth');
 const stationRoutes = require('./stations');
 const transactionRoutes = require('./transactions');
 const { authenticate } = require('../middleware/auth'); // Import the authenticate middleware
+const { requirePermission } = require('../middleware/permissions');
 const ocppRoutes = require('./ocpp');
 const settingsRoutes = require('./settings');
 const pricingRoutes = require('./pricing');
@@ -10,6 +11,21 @@ const remoteCommandsRoutes = require('./remoteCommands');
 const remoteControlRoutes = require('./remoteControl');
 const meterValuesRoutes = require('./meterValues');
 const tagsRoutes = require('./tags');
+const reconciliationRoutes = require('./admin/reconciliation');
+const mobileRoutes = require('./mobile');
+const adminMobileUsersRoutes = require('./admin/mobileUsers');
+const adminLocationsRoutes = require('./admin/locations');
+const adminPaymentsRoutes = require('./admin/payments');
+const adminAdsBoardRoutes = require('./admin/adsBoard');
+const adminPartnersRoutes = require('./admin/partners');
+const adminSettlementsRoutes = require('./admin/settlements');
+const adminMonitorRoutes = require('./admin/monitor');
+const partnerDashboardRoutes = require('./partner/dashboard');
+const partnerMonitorRoutes = require('./partner/monitor');
+const partnerPerformanceRoutes = require('./partner/performance');
+const partnerSettlementsRoutes = require('./partner/settlements');
+const partnerTransactionsRoutes = require('./partner/transactions');
+const partnerProfileRoutes = require('./partner/profile');
 // Temporarily commenting out simulator routes due to import issues
 // const simulatorRoutes = require('./simulator');
 
@@ -22,13 +38,33 @@ router.use('/transactions', transactionRoutes);
 router.use('/ocpp', ocppRoutes);
 
 // Direct route for marking transactions as complete (to avoid routing conflicts)
-router.post('/complete-transaction/:id', authenticate, require('./completeTransaction'));
+router.post(
+  '/complete-transaction/:id',
+  authenticate,
+  requirePermission('stations.remote_control'),
+  require('./completeTransaction')
+);
 router.use('/settings', settingsRoutes);
 router.use('/pricing', pricingRoutes);
 router.use('/remote-commands', remoteCommandsRoutes);
 router.use('/remote', remoteControlRoutes); // New OCPP 1.6 compliant remote control endpoints
 router.use('/meter-values', meterValuesRoutes);
 router.use('/tags', tagsRoutes);
+router.use('/admin/reconciliation', reconciliationRoutes);
+router.use('/admin/mobile-users', adminMobileUsersRoutes);
+router.use('/admin/locations', adminLocationsRoutes);
+router.use('/admin/payments', adminPaymentsRoutes);
+router.use('/admin/ads-board', adminAdsBoardRoutes);
+router.use('/admin/partners', adminPartnersRoutes);
+router.use('/admin/settlements', adminSettlementsRoutes);
+router.use('/admin/monitor', adminMonitorRoutes);
+router.use('/partner/dashboard', partnerDashboardRoutes);
+router.use('/partner/monitor', partnerMonitorRoutes);
+router.use('/partner/performance', partnerPerformanceRoutes);
+router.use('/partner/settlements', partnerSettlementsRoutes);
+router.use('/partner/transactions', partnerTransactionsRoutes);
+router.use('/partner/profile', partnerProfileRoutes);
+router.use('/mobile', mobileRoutes);
 // Temporarily commenting out simulator routes due to import issues
 // router.use('/simulator', simulatorRoutes);
 

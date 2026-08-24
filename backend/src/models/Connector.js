@@ -58,6 +58,11 @@ module.exports = (sequelize) => {
       type: DataTypes.FLOAT,
       defaultValue: 0
     },
+    soc: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'State of Charge (battery percentage) from EV'
+    },
     lastStatusUpdate: {
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW

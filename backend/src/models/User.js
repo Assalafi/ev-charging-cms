@@ -26,8 +26,13 @@ module.exports = (sequelize) => {
       allowNull: false
     },
     role: {
-      type: DataTypes.ENUM('admin', 'operator', 'viewer'),
+      type: DataTypes.ENUM('super_admin', 'admin', 'finance', 'operations', 'support', 'viewer', 'partner_owner', 'partner_manager', 'partner_finance', 'partner_viewer'),
       defaultValue: 'viewer'
+    },
+    partnerId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Reference to partner company (NULL for main company users)'
     },
     lastLogin: {
       type: DataTypes.DATE

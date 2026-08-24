@@ -4,6 +4,7 @@ const { User } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const logger = require('../utils/logger');
 const config = require('../../../config/backend').backend;
+const { Op } = require('sequelize');
 
 const router = express.Router();
 
@@ -13,6 +14,7 @@ const router = express.Router();
  * @access  Public
  */
 router.post('/login', async (req, res) => {
+  logger.info('=== LOGIN ENDPOINT CALLED ===');
   try {
     const { username, password } = req.body;
     
@@ -52,20 +54,23 @@ router.post('/login', async (req, res) => {
     
     // Update last login
     await user.update({ lastLogin: new Date() });
-    
+
+    logger.info('Login user data:', { id: user.id, username: user.username, partnerId: user.partnerId });
+
     // Generate JWT token with consistent secret
     const secret = process.env.JWT_SECRET || config.security.jwtSecret || 'ev-charging-secure-secret';
     const token = jwt.sign(
-      { 
-        id: user.id, 
-        username: user.username, 
-        email: user.email, 
-        role: user.role 
+      {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        partnerId: user.partnerId
       },
       secret,
       { expiresIn: '24h' }
     );
-    
+
     res.json({
       success: true,
       token,
@@ -73,7 +78,8 @@ router.post('/login', async (req, res) => {
         id: user.id,
         username: user.username,
         email: user.email,
-        role: user.role
+        role: user.role,
+        partnerId: user.partnerId
       }
     });
   } catch (error) {
@@ -93,7 +99,7 @@ router.post('/login', async (req, res) => {
 router.post('/register', authenticate, async (req, res) => {
   try {
     // Check if requester is admin
-    if (req.user.role !== 'admin') {
+    if (!['super_admin', 'admin'].includes(req.user.role)) {
       return res.status(403).json({ 
         success: false, 
         message: 'Access denied' 
@@ -113,7 +119,7 @@ router.post('/register', authenticate, async (req, res) => {
     // Check if user already exists
     const existingUser = await User.findOne({
       where: {
-        [sequelize.Op.or]: [
+        [Op.or]: [
           { username },
           { email }
         ]
@@ -127,6 +133,18 @@ router.post('/register', authenticate, async (req, res) => {
       });
     }
     
+    const rolesByCreator = {
+      super_admin: ['super_admin', 'admin', 'finance', 'operations', 'support', 'viewer'],
+      admin: ['admin', 'finance', 'operations', 'support', 'viewer']
+    };
+    const allowedRoles = rolesByCreator[req.user.role] || [];
+    if (role && !allowedRoles.includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid administrative role'
+      });
+    }
+
     // Create user
     const user = await User.create({
       username,

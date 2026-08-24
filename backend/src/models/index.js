@@ -26,6 +26,17 @@ const MeterValue = require('./MeterValue')(sequelize);
 const Settings = require('./Settings')(sequelize);
 const Connector = require('./Connector')(sequelize);
 const AuthorizedTag = require('./AuthorizedTag')(sequelize);
+const Location = require('./Location')(sequelize);
+const MobileUser = require('./MobileUser')(sequelize);
+const Wallet = require('./Wallet')(sequelize);
+const PaymentTransaction = require('./PaymentTransaction')(sequelize);
+const PaymentSettings = require('./PaymentSettings')(sequelize);
+const Reservation = require('./Reservation')(sequelize);
+
+// Partnership models
+const PartnerCompany = require('./PartnerCompany')(sequelize);
+const PartnerSettlement = require('./PartnerSettlement')(sequelize);
+const PartnerSettlementItem = require('./PartnerSettlementItem')(sequelize);
 
 // Define relationships
 ChargingStation.hasMany(Transaction, { foreignKey: 'chargingStationId' });
@@ -46,6 +57,48 @@ Connector.belongsTo(ChargingStation, {
   foreignKey: 'chargePointId',
   targetKey: 'chargePointId' 
 });
+
+// Location relationships
+ChargingStation.belongsTo(Location, { foreignKey: 'locationId', as: 'locationInfo' });
+Location.hasMany(ChargingStation, { foreignKey: 'locationId', as: 'stations' });
+
+// MobileUser and Wallet relationships
+MobileUser.hasOne(Wallet, { foreignKey: 'userId', as: 'wallet' });
+Wallet.belongsTo(MobileUser, { foreignKey: 'userId', as: 'user' });
+
+// PaymentTransaction relationships
+PaymentTransaction.belongsTo(Wallet, { foreignKey: 'walletId', as: 'wallet' });
+PaymentTransaction.belongsTo(MobileUser, { foreignKey: 'userId', as: 'user' });
+Wallet.hasMany(PaymentTransaction, { foreignKey: 'walletId', as: 'transactions' });
+MobileUser.hasMany(PaymentTransaction, { foreignKey: 'userId', as: 'payments' });
+
+// MobileUser -> AuthorizedTag and Transaction associations (used by admin routes)
+MobileUser.hasOne(AuthorizedTag, { foreignKey: 'tagId', sourceKey: 'tagId', as: 'authorizedTag' });
+MobileUser.hasMany(Transaction, { foreignKey: 'idTag', sourceKey: 'tagId', as: 'transactions' });
+
+// Reservation relationships
+Reservation.belongsTo(ChargingStation, { foreignKey: 'chargePointId', targetKey: 'chargePointId', as: 'station' });
+ChargingStation.hasMany(Reservation, { foreignKey: 'chargePointId', sourceKey: 'chargePointId', as: 'reservations' });
+
+// Partnership relationships
+PartnerCompany.hasMany(User, { foreignKey: 'partnerId', as: 'users' });
+User.belongsTo(PartnerCompany, { foreignKey: 'partnerId', as: 'partner' });
+
+PartnerCompany.hasMany(Location, { foreignKey: 'partnerId', as: 'locations' });
+Location.belongsTo(PartnerCompany, { foreignKey: 'partnerId', as: 'partner' });
+
+PartnerCompany.hasMany(Transaction, { foreignKey: 'partnerId', as: 'transactions' });
+Transaction.belongsTo(PartnerCompany, { foreignKey: 'partnerId', as: 'partner' });
+
+Transaction.belongsTo(Location, { foreignKey: 'locationId', as: 'location' });
+
+PartnerCompany.hasMany(PartnerSettlement, { foreignKey: 'partnerId', as: 'settlements' });
+PartnerSettlement.belongsTo(PartnerCompany, { foreignKey: 'partnerId', as: 'partner' });
+
+PartnerSettlement.hasMany(PartnerSettlementItem, { foreignKey: 'settlementId', as: 'items' });
+PartnerSettlementItem.belongsTo(PartnerSettlement, { foreignKey: 'settlementId', as: 'settlement' });
+
+PartnerSettlementItem.belongsTo(Transaction, { foreignKey: 'transactionId', as: 'transaction' });
 
 // Initialize TimescaleDB hypertable after sync - if available
 sequelize.afterSync(async () => {
@@ -80,5 +133,14 @@ module.exports = {
   MeterValue,
   Settings,
   Connector,
-  AuthorizedTag
+  AuthorizedTag,
+  Location,
+  MobileUser,
+  Wallet,
+  PaymentTransaction,
+  PaymentSettings,
+  Reservation,
+  PartnerCompany,
+  PartnerSettlement,
+  PartnerSettlementItem
 };

@@ -52,7 +52,11 @@ function Login() {
             const result = await login(username, password);
 
             if (result.success) {
-                navigate(from, {
+                // Redirect based on user role
+                const partnerRoles = ['partner_owner', 'partner_manager', 'partner_finance', 'partner_viewer'];
+                const isPartner = partnerRoles.includes(result.user.role);
+                const redirectTo = isPartner ? '/partner/dashboard' : '/dashboard';
+                navigate(location.state?.from?.pathname || redirectTo, {
                     replace: true
                 });
             } else {
@@ -144,15 +148,6 @@ function Login() {
                         >
                             {loading ? <CircularProgress size={24} /> : 'Sign In'}
                         </Button>
-
-                        <Box sx={{
-                            mt: 2,
-                            textAlign: 'center'
-                        }}>
-                            <Typography variant="caption" color="text.secondary">
-                                Default credentials: admin / admin123
-                            </Typography>
-                        </Box>
                     </Box>
                 </Paper>
             </Box>

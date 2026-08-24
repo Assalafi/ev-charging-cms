@@ -33,7 +33,7 @@ import {
   Schedule as TimeIcon,
   Bolt as EnergyIcon,
   AttachMoney as CostIcon,
-  CheckCircle as CompleteIcon
+  Sync as ReconcileIcon
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import { 
@@ -51,7 +51,6 @@ import axios from 'axios';
 import { formatCurrency } from '../../utils/currencyFormatter';
 import transactionService from '../../services/transactionService';
 import api from '../../services/api';
-import { useMQTT } from '../../contexts/MQTTContext';
 
 // Register Chart.js components
 ChartJS.register(
@@ -82,7 +81,6 @@ function TabPanel({ children, value, index, ...other }) {
 function TransactionDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { mqtt, subscribe, unsubscribe } = useMQTT();
   
   // State
   const [transaction, setTransaction] = useState(null);
@@ -91,17 +89,8 @@ function TransactionDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [tabValue, setTabValue] = useState(0);
-  const [completing, setCompleting] = useState(false);
-  
-  // Enhanced real-time data state
-  const [realtimeData, setRealtimeData] = useState({
-    energy: null,
-    power: null,
-    amount: null,
-    price: null,
-    lastMeterValues: null,
-    ocppMessages: [],
-  });
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileMessage, setReconcileMessage] = useState(null);
   
   // Chart data
   const [energyChartData, setEnergyChartData] = useState({
@@ -204,34 +193,31 @@ function TransactionDetail() {
   const handleBack = () => {
     navigate('/transactions');
   };
-  
-  // Handle manual transaction completion
-  const handleCompleteTransaction = async () => {
-    if (!transaction || !window.confirm('Are you sure you want to manually complete this transaction? This action cannot be undone.')) {
+
+// Handle reconciliation
+  const handleReconcile = async () => {
+    if (!window.confirm('This will recalculate the transaction amount using location-based pricing. Continue?')) {
       return;
     }
-    
-    setCompleting(true);
-    setError(null);
-    
+
+    setReconciling(true);
+    setReconcileMessage(null);
+
     try {
-      const response = await api.post('/api/transactions/complete', {
-        transactionId: transaction.transactionId,
-        reason: 'Manually completed from transaction detail page'
+      const response = await api.post(`/transactions/${id}/reconcile`);
+      setReconcileMessage({
+        type: 'success',
+        text: response.data.message || 'Transaction reconciled successfully'
       });
-      
-      if (response.data.success) {
-        // Refresh the transaction data to show updated status
-        await fetchTransactionData();
-        alert('Transaction completed successfully!');
-      } else {
-        setError(response.data.message || 'Failed to complete transaction');
-      }
+      // Refresh transaction data
+      fetchTransactionData();
     } catch (error) {
-      console.error('Error completing transaction:', error);
-      setError(error.response?.data?.message || 'Failed to complete transaction');
+      setReconcileMessage({
+        type: 'error',
+        text: error.response?.data?.message || 'Failed to reconcile transaction'
+      });
     } finally {
-      setCompleting(false);
+      setReconciling(false);
     }
   };
   
@@ -478,141 +464,6 @@ function TransactionDetail() {
     return values;
   };
   
-  // Enhanced MQTT subscription for real-time OCPP data
-  useEffect(() => {
-    if (!mqtt || !transaction) return;
-
-    // Function to handle OCPP messages for this transaction
-    const handleTransactionMessage = (topic, message) => {
-      try {
-        console.log('📨 MQTT message received for transaction:', topic);
-        const data = JSON.parse(message.toString());
-        
-        // Filter messages for this specific transaction
-        if (
-          data.transactionId === parseInt(id) ||
-          data.chargePointId === transaction?.chargePointId
-        ) {
-          console.log('✅ Processing OCPP message for transaction:', id);
-          console.log('📊 Message data:', JSON.stringify(data, null, 2));
-          
-          // Store in message history
-          setRealtimeData(prev => ({
-            ...prev,
-            ocppMessages: [data, ...prev.ocppMessages.slice(0, 49)]
-          }));
-          
-          // Handle MeterValues messages
-          if (data.messageType === 'MeterValues' || data.message === 'MeterValues') {
-            const meterValues = data.payload?.meterValue || data.meterValues || [];
-            if (Array.isArray(meterValues) && meterValues.length > 0) {
-              console.log('⚡ Real-time MeterValues received:', meterValues);
-              
-              // Process each meter value
-              meterValues.forEach(meterValue => {
-                if (meterValue.sampledValue) {
-                  meterValue.sampledValue.forEach(sample => {
-                    const value = parseFloat(sample.value);
-                    const measurand = sample.measurand || 'Energy.Active.Import.Register';
-                    const unit = sample.unit || 'Wh';
-                    
-                    console.log(`📈 ${measurand}: ${value} ${unit}`);
-                    
-                    // Update real-time data
-                    setRealtimeData(prev => {
-                      const updated = { ...prev };
-                      
-                      switch (measurand) {
-                        case 'Energy.Active.Import.Register':
-                          updated.energy = unit === 'Wh' ? value / 1000 : value;
-                          // Update transaction energy if it's higher than current
-                          if (transaction) {
-                            setTransaction(prev => ({
-                              ...prev,
-                              energyDelivered: Math.max(prev.energyDelivered || 0, updated.energy)
-                            }));
-                          }
-                          break;
-                        case 'Power.Active.Import':
-                          updated.power = value;
-                          break;
-                      }
-                      
-                      updated.lastMeterValues = meterValues;
-                      return updated;
-                    });
-                  });
-                }
-              });
-            }
-          }
-          
-          // Handle pricing and amount from OCPP
-          if (data.amount !== undefined && data.amount !== null) {
-            setRealtimeData(prev => ({
-              ...prev,
-              amount: parseFloat(data.amount)
-            }));
-            // Update transaction amount
-            if (transaction) {
-              setTransaction(prev => ({
-                ...prev,
-                amount: parseFloat(data.amount)
-              }));
-            }
-          }
-          
-          if (data.price !== undefined && data.price !== null) {
-            setRealtimeData(prev => ({
-              ...prev,
-              price: parseFloat(data.price)
-            }));
-          }
-          
-          // Handle legacy energy values
-          if (data.energy !== undefined && data.energy !== null) {
-            const energyValue = parseFloat(data.energy);
-            if (!isNaN(energyValue)) {
-              const energyInKWh = energyValue / 1000;
-              setRealtimeData(prev => ({ ...prev, energy: energyInKWh }));
-              if (transaction) {
-                setTransaction(prev => ({
-                  ...prev,
-                  energyDelivered: Math.max(prev.energyDelivered || 0, energyInKWh)
-                }));
-              }
-            }
-          }
-        }
-      } catch (error) {
-        console.error('❌ Error processing MQTT message:', error);
-      }
-    };
-
-    // Subscribe to relevant MQTT topics for this transaction
-    const topics = [
-      `ocpp/transactions/${id}/#`,
-      `ocpp/transactions/#`,
-      `ocpp/meterValues/#`,
-      `ocpp/${transaction?.chargePointId}/#`,
-      `ocpp/#`
-    ];
-
-    console.log('🔌 Subscribing to MQTT topics for transaction:', id);
-    topics.forEach(topic => {
-      console.log('  -', topic);
-      subscribe(topic, handleTransactionMessage);
-    });
-
-    return () => {
-      // Unsubscribe from all topics
-      topics.forEach(topic => {
-        console.log('🔌 Unsubscribing from:', topic);
-        unsubscribe(topic);
-      });
-    };
-  }, [mqtt, transaction, id, subscribe, unsubscribe]);
-
   // Fetch data on component mount
   useEffect(() => {
     fetchTransactionData();
@@ -682,21 +533,20 @@ function TransactionDetail() {
           Back
         </Button>
         <Box>
-          {transaction?.status === 'InProgress' && (
-            <Button
-              variant="contained"
-              color="warning"
-              startIcon={completing ? <CircularProgress size={20} /> : <CompleteIcon />}
-              onClick={handleCompleteTransaction}
-              disabled={completing}
-              sx={{ mr: 1 }}
-            >
-              {completing ? 'Completing...' : 'Complete Manually'}
-            </Button>
-          )}
           <IconButton onClick={handleRefresh} color="primary" sx={{ mr: 1 }}>
             <RefreshIcon />
           </IconButton>
+          {transaction?.status === 'Completed' && (
+            <Button
+              variant="contained"
+              startIcon={<ReconcileIcon />}
+              onClick={handleReconcile}
+              disabled={reconciling}
+              color="warning"
+            >
+              {reconciling ? 'Reconciling...' : 'Reconcile'}
+            </Button>
+          )}
         </Box>
       </Box>
       
@@ -704,6 +554,16 @@ function TransactionDetail() {
         Transaction Details
         {getStatusChip(transaction.status)}
       </Typography>
+
+      {reconcileMessage && (
+        <Alert 
+          severity={reconcileMessage.type} 
+          sx={{ mb: 3 }}
+          onClose={() => setReconcileMessage(null)}
+        >
+          {reconcileMessage.text}
+        </Alert>
+      )}
       
       <Grid container spacing={3}>
         <Grid item xs={12} md={6}>
@@ -815,27 +675,12 @@ function TransactionDetail() {
                 <Grid item xs={6}>
                   <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
                     <EnergyIcon color="primary" sx={{ mr: 1 }} />
-                    <Box sx={{ flex: 1 }}>
-                      <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                        <Typography variant="h6">
-                          {(realtimeData.energy !== null ? realtimeData.energy : transaction.energyDelivered)?.toFixed(2) || '0.00'} kWh
-                        </Typography>
-                        {realtimeData.energy !== null && (
-                          <Chip 
-                            label="Live" 
-                            color="success" 
-                            size="small" 
-                            sx={{ ml: 1, height: 20, fontSize: '0.7rem' }}
-                          />
-                        )}
-                      </Box>
+                    <Box>
+                      <Typography variant="h6">
+                        {transaction.energyDelivered?.toFixed(2) || '0.00'} kWh
+                      </Typography>
                       <Typography variant="body2" color="text.secondary">
                         Energy Delivered
-                        {realtimeData.energy !== null && (
-                          <Typography component="span" variant="caption" sx={{ ml: 1, color: 'success.main' }}>
-                            (Real-time from OCPP)
-                          </Typography>
-                        )}
                       </Typography>
                     </Box>
                   </Box>
@@ -844,33 +689,15 @@ function TransactionDetail() {
                 <Grid item xs={6}>
                   <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
                     <CostIcon color="primary" sx={{ mr: 1 }} />
-                    <Box sx={{ flex: 1 }}>
-                      <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                        <Typography variant="h6">
-                          {formatCurrency(realtimeData.amount !== null ? realtimeData.amount : (transaction.amount || 0))}
-                        </Typography>
-                        {realtimeData.amount !== null && (
-                          <Chip 
-                            label="Live" 
-                            color="success" 
-                            size="small" 
-                            sx={{ ml: 1, height: 20, fontSize: '0.7rem' }}
-                          />
-                        )}
-                      </Box>
+                    <Box>
+                      <Typography variant="h6">
+                        {transaction.amount 
+                          ? formatCurrency(transaction.amount)
+                          : formatCurrency(0)}
+                      </Typography>
                       <Typography variant="body2" color="text.secondary">
                         Amount
-                        {realtimeData.amount !== null && (
-                          <Typography component="span" variant="caption" sx={{ ml: 1, color: 'success.main' }}>
-                            (Real-time from OCPP)
-                          </Typography>
-                        )}
                       </Typography>
-                      {realtimeData.price !== null && (
-                        <Typography variant="caption" color="text.secondary">
-                          Price: ₦{realtimeData.price.toFixed(2)}/kWh
-                        </Typography>
-                      )}
                     </Box>
                   </Box>
                 </Grid>
@@ -908,7 +735,6 @@ function TransactionDetail() {
           <Tab label="Energy Chart" />
           <Tab label="Power Chart" />
           <Tab label="Meter Values" />
-          <Tab label="OCPP Messages" />
         </Tabs>
         
         {/* Energy Chart Tab */}
@@ -996,62 +822,6 @@ function TransactionDetail() {
                       ));
                     }
                   })}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          )}
-        </TabPanel>
-        
-        {/* OCPP Messages Tab */}
-        <TabPanel value={tabValue} index={3}>
-          {realtimeData.ocppMessages.length === 0 ? (
-            <Typography variant="body1" color="text.secondary" align="center">
-              No OCPP messages received for this transaction yet
-            </Typography>
-          ) : (
-            <TableContainer component={Paper} sx={{ mt: 2, mb: 2 }}>
-              <Table aria-label="ocpp messages table">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Timestamp</TableCell>
-                    <TableCell>Message Type</TableCell>
-                    <TableCell>Transaction ID</TableCell>
-                    <TableCell>Charge Point ID</TableCell>
-                    <TableCell>Data</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {realtimeData.ocppMessages.map((message, index) => (
-                    <TableRow key={index} hover>
-                      <TableCell>
-                        {message.timestamp 
-                          ? format(new Date(message.timestamp), 'dd MMM yyyy HH:mm:ss')
-                          : format(new Date(), 'dd MMM yyyy HH:mm:ss')}
-                      </TableCell>
-                      <TableCell>
-                        <Chip 
-                          label={message.messageType || message.message || 'Unknown'} 
-                          color="primary" 
-                          size="small" 
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2" fontWeight="medium">
-                          {message.transactionId || '-'}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2" fontWeight="medium">
-                          {message.chargePointId || '-'}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
-                          {JSON.stringify(message.payload || message, null, 2).substring(0, 100)}...
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  ))}
                 </TableBody>
               </Table>
             </TableContainer>

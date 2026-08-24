@@ -56,6 +56,28 @@ router.post('/:stationId/reset', authorize(['admin']), async (req, res) => {
             });
         }
 
+        // Complete any active transactions for this station before reset
+        const activeTransactions = await Transaction.findAll({
+            where: { chargePointId: stationId, status: 'InProgress' }
+        });
+
+        if (activeTransactions.length > 0) {
+            const { billTransaction } = require('../services/billingService');
+            for (const tx of activeTransactions) {
+                try {
+                    await tx.update({
+                        status: 'Completed',
+                        stopTime: new Date(),
+                        reason: `Station${type}Reset`
+                    });
+                    await billTransaction(tx.transactionId);
+                    logger.info(`Reset: Completed and billed tx ${tx.transactionId} before ${type} reset of ${stationId}`);
+                } catch (txErr) {
+                    logger.error(`Reset: Error completing tx ${tx.transactionId}: ${txErr.message}`);
+                }
+            }
+        }
+
         // Send Reset command
         const result = await ocppServer.sendOcppRequest(stationId, 'Reset', {
             type
@@ -71,7 +93,8 @@ router.post('/:stationId/reset', authorize(['admin']), async (req, res) => {
         res.json({
             success: true,
             messageId: result.messageId,
-            message: `${type} reset command sent successfully`
+            message: `${type} reset command sent successfully`,
+            completedTransactions: activeTransactions.length
         });
     } catch (error) {
         logger.error(`Error sending Reset command:`, error);

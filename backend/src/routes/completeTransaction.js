@@ -1,5 +1,6 @@
 const { Transaction } = require('../models');
 const logger = require('../utils/logger');
+const { completeTransaction } = require('../services/completeTransactionService');
 
 /**
  * Route handler for completing transactions manually
@@ -35,15 +36,10 @@ module.exports = async (req, res) => {
     }
     
     // Set end time if not already set
-    const endTime = transaction.stopTime || new Date();
-    
-    // Update the transaction
-    await transaction.update({
-      status: 'Completed',
-      stopTime: endTime,
-      stopReason: req.body.reason || 'Manually completed due to error',
-      updatedAt: new Date()
-    });
+    await completeTransaction(
+      transaction,
+      req.body.reason || 'Manually completed due to error'
+    );
     
     logger.info(`Transaction ${transactionId} manually marked as complete through dedicated endpoint`);
     

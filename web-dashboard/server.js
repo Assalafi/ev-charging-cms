@@ -95,6 +95,32 @@ app.get(config.routes.ocppStatus, async (req, res) => {
   }
 });
 
+// App version settings (mobile force update)
+app.get('/api/mobile/app-version', async (req, res) => {
+  try {
+    const response = await axios.get(`${API_URL.replace('/api', '')}/api/mobile/app-version`);
+    res.json(response.data);
+  } catch (error) {
+    console.error('Error fetching app version:', error.message);
+    res.status(500).json({ error: 'Failed to fetch app version settings' });
+  }
+});
+
+app.put('/api/mobile/app-version', async (req, res) => {
+  try {
+    const token = req.headers.authorization;
+    const response = await axios.put(
+      `${API_URL.replace('/api', '')}/api/mobile/app-version`,
+      req.body,
+      { headers: { Authorization: token, 'Content-Type': 'application/json' } }
+    );
+    res.json(response.data);
+  } catch (error) {
+    console.error('Error updating app version:', error.message);
+    res.status(error.response?.status || 500).json(error.response?.data || { error: 'Failed to update' });
+  }
+});
+
 // Serve the main HTML file for all other routes
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, config.staticDir, 'index.html'));

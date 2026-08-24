@@ -65,6 +65,7 @@ function TransactionList() {
   // Pagination
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [totalCount, setTotalCount] = useState(0);
   
   // Filters
   const [showFilters, setShowFilters] = useState(false);
@@ -186,7 +187,24 @@ function TransactionList() {
     // Then fetch transactions
     try {
       console.log('Fetching transactions...');
-      const transactions = await fetchTransactions();
+      const response = await api.get('/transactions', {
+        params: {
+          limit: rowsPerPage,
+          offset: page * rowsPerPage,
+          sort: 'startTime',
+          order: 'DESC',
+          ...(filters.stationId && { chargePointId: filters.stationId }),
+          ...(filters.status && { status: filters.status }),
+          ...(filters.idTag && { idTag: filters.idTag }),
+          ...(filters.dateRange?.startDate && { startDate: filters.dateRange.startDate.toISOString() }),
+          ...(filters.dateRange?.endDate && { endDate: filters.dateRange.endDate.toISOString() })
+        }
+      });
+      
+      const transactions = response.data?.transactions || [];
+      const count = response.data?.count || 0;
+      setTotalCount(count);
+      
       console.log('Raw transactions from fetchTransactions:', transactions);
       
       if (transactions && transactions.length > 0) {
@@ -236,7 +254,7 @@ function TransactionList() {
         console.log('No transactions found in the database');
         setTransactions([]);
         setErrorState({
-          hasError: true,
+          hasError: count === 0,
           type: 'info',
           message: 'No transactions found in the database.'
         });
@@ -334,12 +352,14 @@ function TransactionList() {
   // Handle pagination change
   const handleChangePage = (event, newValue) => {
     setPage(newValue);
+    fetchData();
   };
   
   // Handle rows per page change
   const handleChangeRowsPerPage = (event) => {
     setRowsPerPage(parseInt(event.target.value, 10));
     setPage(0);
+    fetchData();
   };
   
   // Filter transactions by search term
@@ -637,9 +657,7 @@ function TransactionList() {
                 </TableCell>
               </TableRow>
             ) : (
-              filteredTransactions
-                .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-                .map((transaction, index) => {
+              transactions.map((transaction, index) => {
                   console.log(`Rendering transaction ${index}:`, transaction);
                   // Get station info if available
                   const station = stations.find(s => s.chargePointId === transaction.chargePointId);
@@ -714,7 +732,7 @@ function TransactionList() {
         <TablePagination
           rowsPerPageOptions={[5, 10, 25, 50]}
           component="div"
-          count={filteredTransactions.length}
+          count={totalCount}
           rowsPerPage={rowsPerPage}
           page={page}
           onPageChange={handleChangePage}

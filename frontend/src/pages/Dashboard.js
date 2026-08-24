@@ -104,19 +104,25 @@ function Dashboard() {
         try {
             // Fetch all data in parallel
             const [
-                todayTransactions,
+                todayEnergyResponse,
+                paymentTransactionsResponse,
                 statsResponse,
                 stationsResponse,
                 transactionsResponse,
                 energyResponse,
                 stationUsageResponse
             ] = await Promise.all([
-                // Get today's transactions
-                api.get('/transactions', {
+                // Get today's energy from database
+                api.get('/transactions/stats/today'),
+                // Get today's payment transactions for real revenue
+                api.get('/admin/payments/transactions', {
                     params: {
-                        startDate: new Date().setHours(0, 0, 0, 0),
-                        endDate: new Date().setHours(23, 59, 59, 999),
-                        status: 'Completed'
+                        startDate: new Date().toISOString().split('T')[0] + 'T00:00:00.000Z',
+                        endDate: new Date().toISOString().split('T')[0] + 'T23:59:59.999Z',
+                        status: 'SUCCESS',
+                        type: 'CREDIT',
+                        gateway: 'paystack',
+                        limit: 10000
                     }
                 }),
                 // Get summary statistics
@@ -131,29 +137,17 @@ function Dashboard() {
                 api.get('/transactions/stats/usage?period=month')
             ]);
             
-            // Calculate daily energy and revenue from today's transactions
-            let dailyEnergy = 0;
+            // Get daily energy from backend and calculate revenue from payments
+            const dailyEnergy = todayEnergyResponse.data?.energyToday || 0;
             let dailyRevenue = 0;
-            
-            console.log('Today\'s transactions:', todayTransactions.data);
-            
-            if (todayTransactions.data?.transactions?.length > 0) {
-                todayTransactions.data.transactions.forEach(transaction => {
-                    // Sum up energy delivered (convert to number if it's a string)
-                    const energy = parseFloat(transaction.energyDelivered) || 0;
-                    dailyEnergy += energy;
-                    
-                    // Sum up amount (convert to number if it's a string)
-                    const amount = parseFloat(transaction.amount) || 0;
+
+            // Calculate real revenue from successful payment transactions
+            if (paymentTransactionsResponse.data?.transactions?.length > 0) {
+                paymentTransactionsResponse.data.transactions.forEach(payment => {
+                    const amount = parseFloat(payment.amount) || 0;
                     dailyRevenue += amount;
-                    
-                    console.log('Transaction:', {
-                        id: transaction.id,
-                        energyDelivered: transaction.energyDelivered,
-                        amount: transaction.amount,
-                        timestamp: transaction.timestamp || transaction.startTime
-                    });
                 });
+                console.log('Today\'s payment transactions for revenue:', paymentTransactionsResponse.data.transactions);
             }
             
             console.log('Calculated values:', { dailyEnergy, dailyRevenue });
@@ -203,22 +197,7 @@ function Dashboard() {
                         successCount++;
                     }
                 });
-                
-                // Add data from today's transactions too
-                if (todayTransactions.data?.transactions?.length > 0) {
-                    todayTransactions.data.transactions.forEach(transaction => {
-                        // Avoid double-counting any transactions
-                        const isDuplicate = allTransactions.some(t => t.id === transaction.id);
-                        if (!isDuplicate) {
-                            totalCount++;
-                            const status = transaction.status?.toLowerCase() || '';
-                            if (status === 'completed' && !transaction.errorCode) {
-                                successCount++;
-                            }
-                        }
-                    });
-                }
-                
+
                 // Calculate success percentage
                 return totalCount > 0 ? (successCount / totalCount) * 100 : 0;
             };
@@ -826,13 +805,8 @@ function Dashboard() {
                     </Card>
                 </Grid>
 
-        {/* Pricing Widget */}
-        <Grid item xs={12} md={3}>
-            <PricingWidget />
-        </Grid>
-
             {/* Recent transactions */}
-            <Grid item xs={12} md={3}>
+            <Grid item xs={12} md={6}>
                 <Card sx={{
                     height: '100%',
                     borderRadius: 2

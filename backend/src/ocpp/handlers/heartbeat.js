@@ -22,24 +22,16 @@ async function handleHeartbeat(chargePointId, uniqueId) {
             
             if (station) {
                 // If station exists, update it
-                const updateData = {
-                    lastHeartbeat: new Date(),
-                    lastConnection: new Date(),
-                };
-                // Only set Available if station was Unavailable/Disconnected
-                // Don't overwrite active charging statuses
-                if (!station.status || station.status === 'Unavailable' || station.status === 'Disconnected') {
-                    updateData.status = 'Available';
-                }
-                await station.update(updateData);
+                await station.update({
+                    lastSeen: new Date(), // Using lastSeen instead of lastHeartbeatTime
+                    status: 'Connected'
+                });
             } else {
                 // If station doesn't exist, create it
                 await ChargingStation.create({
                     chargePointId,
-                    name: `Station ${chargePointId}`,
-                    status: 'Available',
-                    lastHeartbeat: new Date(),
-                    lastConnection: new Date()
+                    status: 'Connected',
+                    lastSeen: new Date()
                 });
                 logger.info(`Created new charging station record for ${chargePointId}`);
             }

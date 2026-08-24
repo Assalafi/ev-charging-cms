@@ -27,7 +27,14 @@ import {
   Receipt as TransactionIcon,
   Settings as SettingsIcon,
   Person as PersonIcon,
-  Logout as LogoutIcon
+  Logout as LogoutIcon,
+  SystemUpdateAlt as AppUpdateIcon,
+  People as UsersIcon,
+  LocationOn as LocationIcon,
+  Payment as PaymentIcon,
+  Campaign as AdsIcon,
+  Business as PartnerIcon,
+  AccountBalance as SettlementIcon
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -71,9 +78,17 @@ function Layout() {
   
   const menuItems = [
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/dashboard' },
+    { text: 'Monitor Map', icon: <LocationIcon />, path: '/monitor' },
     { text: 'Charging Stations', icon: <StationIcon />, path: '/stations' },
     { text: 'Transactions', icon: <TransactionIcon />, path: '/transactions' },
-    { text: 'Settings', icon: <SettingsIcon />, path: '/settings' }
+    { text: 'Mobile Users', icon: <UsersIcon />, path: '/mobile-users' },
+    { text: 'Locations', icon: <LocationIcon />, path: '/locations' },
+    { text: 'Payments', icon: <PaymentIcon />, path: '/payments' },
+    { text: 'Ads Board', icon: <AdsIcon />, path: '/ads-board' },
+    { text: 'Partners', icon: <PartnerIcon />, path: '/partners' },
+    { text: 'Settlements', icon: <SettlementIcon />, path: '/settlements' },
+    { text: 'Settings', icon: <SettingsIcon />, path: '/settings' },
+    { text: 'App Update', icon: <AppUpdateIcon />, path: '/app-update' }
   ];
   
   const drawer = (

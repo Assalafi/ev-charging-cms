@@ -13,6 +13,7 @@ const {
 const ocppServer = require('../ocpp/server');
 const mqttClient = require('../mqtt/client');
 const logger = require('../utils/logger');
+const { requirePermission } = require('../middleware/permissions');
 
 const router = express.Router();
 
@@ -21,7 +22,7 @@ const router = express.Router();
  * @desc    Get all charging stations for diagnostic purposes (no auth required)
  * @access  Public
  */
-router.get('/diagnostic', async (req, res) => {
+router.get('/diagnostic', authenticate, requirePermission('stations.monitor'), async (req, res) => {
     try {
         const stations = await ChargingStation.findAll({
             order: [
@@ -56,7 +57,7 @@ router.get('/diagnostic', async (req, res) => {
  * @desc    Get a single charging station for diagnostic purposes (no auth required)
  * @access  Public
  */
-router.get('/diagnostic/:id', async (req, res) => {
+router.get('/diagnostic/:id', authenticate, requirePermission('stations.monitor'), async (req, res) => {
     try {
         const station = await ChargingStation.findOne({
             where: {
@@ -95,7 +96,7 @@ router.get('/diagnostic/:id', async (req, res) => {
  * @desc    Get connectors for a charging station (no auth required)
  * @access  Public
  */
-router.get('/diagnostic/:id/connectors', async (req, res) => {
+router.get('/diagnostic/:id/connectors', authenticate, requirePermission('stations.monitor'), async (req, res) => {
     try {
         const {
             Connector
@@ -196,7 +197,7 @@ router.get('/:id/connectors', authenticate, async (req, res) => {
  * @desc    Get transactions for a charging station (no auth required)
  * @access  Public
  */
-router.get('/diagnostic/:id/transactions', async (req, res) => {
+router.get('/diagnostic/:id/transactions', authenticate, requirePermission('stations.monitor'), async (req, res) => {
     try {
         const status = req.query.status || 'InProgress';
 
@@ -228,7 +229,7 @@ router.get('/diagnostic/:id/transactions', async (req, res) => {
  * @desc    Start a transaction remotely for diagnostic purposes (no auth required)
  * @access  Public
  */
-router.post('/diagnostic/:id/remote-start', async (req, res) => {
+router.post('/diagnostic/:id/remote-start', authenticate, requirePermission('stations.remote_control'), async (req, res) => {
     try {
         const {
             connectorId = 1, idTag = 'TEST_TAG'
@@ -281,7 +282,7 @@ router.post('/diagnostic/:id/remote-start', async (req, res) => {
  * @desc    Stop a transaction remotely for diagnostic purposes (no auth required)
  * @access  Public
  */
-router.post('/diagnostic/:id/remote-stop', async (req, res) => {
+router.post('/diagnostic/:id/remote-stop', authenticate, requirePermission('stations.remote_control'), async (req, res) => {
     try {
         let {
             transactionId
@@ -345,7 +346,7 @@ router.get('/', authenticate, async (req, res) => {
     try {
         const stations = await ChargingStation.findAll({
             order: [
-                ['createdAt', 'DESC']
+                ['lastHeartbeat', 'DESC NULLS LAST']
             ]
         });
 
@@ -447,11 +448,7 @@ router.get('/:id/connection', authenticate, async (req, res) => {
         }
 
         // Direct check of connection status from OCPP server
-        const isConnected = ocppServer.isConnected(stationId);
-
-        // NOTE: We're temporarily removing the heartbeat check as it's causing false disconnections
-        // Trust the OCPP server's connection status directly
-        // If needed, this can be re-enabled with a longer timeout period
+        let isConnected = ocppServer.isConnected(stationId);
 
         // Get the most recent heartbeat time for this station
         const stationData = await ChargingStation.findOne({
@@ -460,6 +457,20 @@ router.get('/:id/connection', authenticate, async (req, res) => {
             },
             attributes: ['lastHeartbeat']
         });
+
+        // If not connected via WebSocket, check if we have a recent heartbeat
+        // Stations sending heartbeats are considered connected (within 2 minutes)
+        if (!isConnected && stationData?.lastHeartbeat) {
+            const now = new Date();
+            const lastHeartbeat = new Date(stationData.lastHeartbeat);
+            const timeSinceHeartbeat = now - lastHeartbeat;
+            const twoMinutes = 2 * 60 * 1000; // 2 minutes in milliseconds
+
+            if (timeSinceHeartbeat < twoMinutes) {
+                isConnected = true;
+                logger.info(`Station ${stationId} considered connected due to recent heartbeat (${timeSinceHeartbeat / 1000}s ago)`);
+            }
+        }
 
         // Respond with connection status and heartbeat info
         res.json({
@@ -831,27 +842,12 @@ router.post('/:id/remote-stop', authorize(['admin', 'operator']), async (req, re
         }
 
         // 1. Get the active transaction
-        let transaction = await Transaction.findOne({
+        const transaction = await Transaction.findOne({
             where: {
                 transactionId: parseInt(transactionId),
                 status: 'InProgress'
             }
         });
-
-        // Fallback: find any InProgress transaction for this station
-        // Handles CMS/station transactionId mismatch
-        if (!transaction) {
-            transaction = await Transaction.findOne({
-                where: {
-                    chargePointId,
-                    status: 'InProgress'
-                },
-                order: [['startTime', 'DESC']]
-            });
-            if (transaction) {
-                logger.info(`RemoteStop: transactionId ${transactionId} not found, using InProgress transaction ${transaction.transactionId} for ${chargePointId}`);
-            }
-        }
 
         if (!transaction) {
             return res.status(404).json({
@@ -896,15 +892,8 @@ router.post('/:id/remote-stop', authorize(['admin', 'operator']), async (req, re
         }
 
         // 4. Send RemoteStopTransaction command
-        // Use the station's reported transactionId (from currentTransaction) if available,
-        // as the station may use a different ID than what the CMS assigned
-        const stationRecord = await ChargingStation.findOne({ where: { chargePointId } });
-        const stationTransactionId = stationRecord && stationRecord.currentTransaction 
-            ? parseInt(stationRecord.currentTransaction) 
-            : parseInt(transactionId);
-        logger.info(`RemoteStop: sending transactionId ${stationTransactionId} to station ${chargePointId} (requested: ${transactionId})`);
         const result = await ocppServer.sendOcppRequest(chargePointId, 'RemoteStopTransaction', {
-            transactionId: stationTransactionId
+            transactionId: parseInt(transactionId)
         });
 
         // 5. Handle command result
@@ -1092,11 +1081,13 @@ router.post('/:id/trigger-boot', authorize(['admin', 'operator']), async (req, r
  * @desc    Delete a charging station
  * @access  Private/Admin
  */
-router.delete('/:id', authorize('admin'), async (req, res) => {
+router.delete('/:id', authorize(['admin', 'operator']), async (req, res) => {
     try {
         const {
             id
         } = req.params;
+
+        logger.info(`DELETE station request received for: ${id}`);
 
         // Find the station
         const station = await ChargingStation.findOne({
@@ -1127,6 +1118,36 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
             });
         }
 
+        // Delete related records first (foreign key constraints)
+        const stationDbId = station.id;
+        logger.info(`Deleting related records for station ${id} (db id: ${stationDbId})`);
+        
+        try {
+            await sequelize.query(`DELETE FROM connectors WHERE "chargePointId" = :id`, { replacements: { id: stationDbId } });
+            logger.info(`Deleted connectors for station ${id}`);
+        } catch (e) { logger.warn(`connectors cleanup: ${e.message}`); }
+        
+        try {
+            await sequelize.query(`DELETE FROM ocpp_messages WHERE "chargePointId" = :cpId OR "chargingStationId" = :id`, { replacements: { cpId: id, id: stationDbId } });
+            logger.info(`Deleted ocpp_messages for station ${id}`);
+        } catch (e) { logger.warn(`ocpp_messages cleanup: ${e.message}`); }
+        
+        try {
+            await sequelize.query(`DELETE FROM firmware_update_histories WHERE "ChargingStationId" = :id OR "chargingStationId" = :id`, { replacements: { id: stationDbId } });
+            logger.info(`Deleted firmware_update_histories for station ${id}`);
+        } catch (e) { logger.warn(`firmware_update_histories cleanup: ${e.message}`); }
+        
+        try {
+            await sequelize.query(`DELETE FROM reservations WHERE "chargingStationId" = :id`, { replacements: { id: stationDbId } });
+            logger.info(`Deleted reservations for station ${id}`);
+        } catch (e) { logger.warn(`reservations cleanup: ${e.message}`); }
+        
+        try {
+            // Set transactions to null reference instead of deleting them (preserve history)
+            await sequelize.query(`UPDATE transactions SET "chargePointId" = NULL, "chargingStationId" = NULL WHERE "chargePointId" = :cpId OR "chargingStationId" = :id`, { replacements: { cpId: id, id: stationDbId } });
+            logger.info(`Unlinked transactions for station ${id}`);
+        } catch (e) { logger.warn(`transactions cleanup: ${e.message}`); }
+
         // Delete the station
         await station.destroy();
 
@@ -1137,10 +1158,12 @@ router.delete('/:id', authorize('admin'), async (req, res) => {
             message: 'Charging station deleted successfully'
         });
     } catch (error) {
-        logger.error(`Error deleting station ${req.params.id}:`, error);
+        logger.error(`Error deleting station ${req.params.id}:`, error.message);
+        logger.error('Error details:', error);
         res.status(500).json({
             success: false,
-            message: 'Server error'
+            message: 'Server error',
+            error: error.message
         });
     }
 });

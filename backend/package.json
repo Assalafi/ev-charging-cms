@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
+    "migrate:partner": "node scripts/migrate-partner-schema.js",
     "test": "jest"
   },
   "dependencies": {
@@ -17,6 +18,8 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.0",
     "mqtt": "^4.3.7",
+    "multer": "^2.0.2",
+    "pdfkit": "^0.15.2",
     "pg": "^8.10.0",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.31.0",

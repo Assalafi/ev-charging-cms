@@ -53,7 +53,8 @@ async function updateTransactionAmounts() {
     for (const transaction of transactions) {
       try {
         // Get energy delivered
-        const energy = parseFloat(transaction.energyDelivered) || 0;
+        // OCPP meter values are in Wh (Watt-hours), convert to kWh by dividing by 1000
+        const energy = (parseFloat(transaction.energyDelivered) || 0) / 1000;
         
         // Calculate the transaction amount
         let amount = energy * baseRate;

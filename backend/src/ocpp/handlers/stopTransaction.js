@@ -66,9 +66,10 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         }
 
         // Calculate energy delivered if available
+        // OCPP meter values are in Wh (Watt-hours), convert to kWh by dividing by 1000
         let energyDelivered = 0;
         if (meterStop !== undefined && transaction.startMeterValue !== undefined) {
-            energyDelivered = meterStop - transaction.startMeterValue;
+            energyDelivered = (meterStop - transaction.startMeterValue) / 1000;
         }
 
         // Update transaction record

@@ -1,9 +1,10 @@
 const express = require('express');
-const { Transaction, ChargingStation, MeterValue, sequelize } = require('../models');
+const { Transaction, ChargingStation, MeterValue, sequelize, Location, Wallet, MobileUser, PaymentTransaction } = require('../models');
 const { Op } = require('sequelize');
 const { authenticate } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
 const logger = require('../utils/logger');
-const transactionMonitor = require('../services/transactionMonitor');
+const { completeTransaction } = require('../services/completeTransactionService');
 
 const router = express.Router();
 
@@ -57,97 +58,6 @@ router.get('/health', async (req, res) => {
       message: 'Health check failed',
       error: error.message,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// Manual transaction check endpoint
-router.post('/check-stuck/:transactionId', authenticate, async (req, res) => {
-  try {
-    const { transactionId } = req.params;
-    
-    logger.info(`Manual check requested for transaction ${transactionId}`);
-    
-    const result = await transactionMonitor.checkSpecificTransaction(parseInt(transactionId));
-    
-    if (result.found) {
-      res.json({
-        success: true,
-        message: 'Transaction check completed',
-        transactionId: transactionId,
-        result: result.transaction
-      });
-    } else {
-      res.json({
-        success: false,
-        message: result.message || 'Transaction check failed',
-        transactionId: transactionId
-      });
-    }
-    
-  } catch (error) {
-    logger.error(`Error checking transaction ${req.params.transactionId}:`, error);
-    res.status(500).json({
-      success: false,
-      message: 'Error checking transaction',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-// Force complete transaction endpoint (admin only)
-router.post('/force-complete/:transactionId', authenticate, async (req, res) => {
-  try {
-    const { transactionId } = req.params;
-    const { reason } = req.body;
-    
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin access required'
-      });
-    }
-    
-    logger.info(`Force complete requested for transaction ${transactionId} by user ${req.user.username}`);
-    
-    const transaction = await Transaction.findOne({
-      where: { 
-        transactionId: parseInt(transactionId), 
-        status: 'InProgress' 
-      },
-      include: [{
-        model: ChargingStation,
-        as: 'charging_station',
-        attributes: ['chargePointId', 'status', 'lastHeartbeat']
-      }]
-    });
-
-    if (!transaction) {
-      return res.status(404).json({
-        success: false,
-        message: 'Transaction not found or already completed'
-      });
-    }
-
-    await transactionMonitor.forceCompleteTransaction(
-      transaction, 
-      reason || `Manually force completed by ${req.user.username}`
-    );
-
-    res.json({
-      success: true,
-      message: 'Transaction force completed successfully',
-      transactionId: transactionId,
-      reason: reason || `Manually force completed by ${req.user.username}`
-    });
-    
-  } catch (error) {
-    logger.error(`Error force completing transaction ${req.params.transactionId}:`, error);
-    res.status(500).json({
-      success: false,
-      message: 'Error force completing transaction',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -380,7 +290,7 @@ router.get('/', authenticate, async (req, res) => {
  * @desc    Mark a transaction as complete (for fixing stuck transactions)
  * @access  Private
  */
-router.post('/complete/:id', authenticate, async (req, res) => {
+router.post('/complete/:id', authenticate, requirePermission('stations.remote_control'), async (req, res) => {
   try {
     const transactionId = req.params.id;
     
@@ -410,15 +320,10 @@ router.post('/complete/:id', authenticate, async (req, res) => {
     }
     
     // Set end time if not already set
-    const endTime = transaction.stopTime || new Date();
-    
-    // Update the transaction
-    await transaction.update({
-      status: 'Completed',
-      stopTime: endTime,
-      stopReason: req.body.reason || 'Manually completed due to error',
-      updatedAt: new Date()
-    });
+    await completeTransaction(
+      transaction,
+      req.body.reason || 'Manually completed due to error'
+    );
     
     logger.info(`Transaction ${transactionId} manually marked as complete`);
     
@@ -704,11 +609,55 @@ router.get('/stats/usage', authenticate, async (req, res) => {
 });
 
 /**
+ * @route   GET /api/transactions/stats/today
+ * @desc    Get today's energy from database
+ * @access  Private
+ */
+router.get('/stats/today', authenticate, async (req, res) => {
+  try {
+    const now = new Date();
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(now);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const transactions = await Transaction.findAll({
+      where: {
+        startTime: { [Op.gte]: startOfDay, [Op.lte]: endOfDay },
+        status: 'Completed'
+      },
+      attributes: ['energyDelivered', 'stopMeterValue', 'startMeterValue'],
+      raw: true
+    });
+
+    let totalEnergyWh = 0;
+    transactions.forEach(t => {
+      const energyFromDelivered = parseFloat(t.energyDelivered) || 0;
+      const energyFromMeter = (parseFloat(t.stopMeterValue) || 0) - (parseFloat(t.startMeterValue) || 0);
+      totalEnergyWh += Math.max(energyFromDelivered, energyFromMeter, 0);
+    });
+
+    const totalEnergyKwh = totalEnergyWh / 1000; // Convert Wh to kWh
+
+    res.json({
+      success: true,
+      energyToday: totalEnergyKwh
+    });
+  } catch (error) {
+    logger.error('Error fetching today\'s energy statistics:', error);
+    res.json({
+      success: true,
+      energyToday: 0
+    });
+  }
+});
+
+/**
  * @route   POST /api/transactions/complete
  * @desc    Mark a transaction as complete (for fixing stuck transactions)
  * @access  Private
  */
-router.post('/complete', authenticate, async (req, res) => {
+router.post('/complete', authenticate, requirePermission('stations.remote_control'), async (req, res) => {
   try {
     const { transactionId, reason } = req.body;
     
@@ -747,15 +696,10 @@ router.post('/complete', authenticate, async (req, res) => {
     }
     
     // Set end time if not already set
-    const endTime = transaction.stopTime || new Date();
-    
-    // Update the transaction
-    await transaction.update({
-      status: 'Completed',
-      stopTime: endTime,
-      stopReason: reason || 'Manually completed due to error',
-      updatedAt: new Date()
-    });
+    await completeTransaction(
+      transaction,
+      reason || 'Manually completed due to error'
+    );
     
     logger.info(`Transaction ${transactionId} manually marked as complete`);
     
@@ -769,6 +713,208 @@ router.post('/complete', authenticate, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to mark transaction as complete'
+    });
+  }
+});
+
+/**
+ * @route   POST /api/transactions/:id/reconcile
+ * @desc    Reconcile a transaction using location-based pricing (fixes Wh to kWh errors)
+ * @access  Private
+ */
+router.post('/:id/reconcile', authenticate, async (req, res) => {
+  const t = await sequelize.transaction();
+  
+  try {
+    const transactionId = req.params.id;
+    
+    // Find transaction
+    let transaction = await Transaction.findOne({
+      where: { transactionId: parseInt(transactionId) || transactionId },
+      transaction: t
+    });
+    
+    if (!transaction) {
+      await t.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
+      });
+    }
+    
+    if (transaction.status !== 'Completed') {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Can only reconcile completed transactions'
+      });
+    }
+    
+    // Get station to find location
+    const station = await ChargingStation.findOne({
+      where: { chargePointId: transaction.chargePointId },
+      transaction: t
+    });
+    
+    if (!station || !station.locationId) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Station or location not found'
+      });
+    }
+    
+    // Get location pricing
+    const location = await Location.findByPk(station.locationId, { transaction: t });
+    
+    if (!location) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Location not found'
+      });
+    }
+    
+    const pricePerKwh = location.pricePerWh * 1000; // Convert from per Wh to per kWh
+    const minimumCharge = location.minimumCharge || 0;
+    const currentEnergy = parseFloat(transaction.energyDelivered) || 0; // in Wh
+    const currentAmount = parseFloat(transaction.amount) || 0;
+    
+    // Calculate correct amount (energyDelivered is in Wh, convert to kWh)
+    const energyInKwh = currentEnergy / 1000;
+    const baseAmount = energyInKwh * pricePerKwh;
+    const correctAmount = Math.max(baseAmount, minimumCharge);
+    
+    logger.info(`Reconciling transaction ${transactionId}:`, {
+      currentEnergy,
+      currentAmount,
+      pricePerKwh,
+      minimumCharge,
+      baseAmount,
+      correctAmount
+    });
+    
+    // Update transaction amount if pricing is wrong
+    const amountChanged = Math.abs(currentAmount - correctAmount) >= 0.01;
+    if (amountChanged) {
+      await transaction.update({ amount: correctAmount }, { transaction: t });
+      logger.info(`Reconcile: TX${transactionId} amount updated from ₦${currentAmount.toFixed(2)} to ₦${correctAmount.toFixed(2)}`);
+    }
+    
+    // Now check if wallet deduction matches the correct amount
+    // This catches cases where billing ran too early (partial energy) or multiple times
+    let walletAdjustment = 0;
+    let walletMessage = '';
+    
+    if (transaction.idTag) {
+      const user = await MobileUser.findOne({
+        where: { tagId: transaction.idTag },
+        transaction: t
+      });
+      
+      if (user) {
+        const wallet = await Wallet.findOne({
+          where: { userId: user.id },
+          transaction: t
+        });
+        
+        if (wallet) {
+          // Sum all existing debits for this transaction
+          const existingDebits = await PaymentTransaction.findAll({
+            where: {
+              type: 'DEBIT',
+              reference: { [Op.like]: `CHG-${transactionId}-%` }
+            },
+            transaction: t
+          });
+          const totalDebited = existingDebits.reduce((sum, d) => sum + parseFloat(d.amount), 0);
+          
+          // Sum any previous reconciliation adjustments for this transaction
+          const existingReconciles = await PaymentTransaction.findAll({
+            where: {
+              reference: { [Op.like]: `RECONCILE-TX${transactionId}-%` }
+            },
+            transaction: t
+          });
+          const totalReconciled = existingReconciles.reduce((sum, r) => {
+            const amt = parseFloat(r.amount);
+            return sum + (r.type === 'DEBIT' ? -amt : amt);
+          }, 0);
+          
+          // Net amount actually taken from wallet for this transaction
+          const netBilled = totalDebited + totalReconciled;
+          
+          // How much more (or less) needs to come out of the wallet
+          walletAdjustment = correctAmount - netBilled;
+          
+          logger.info(`Reconcile wallet check TX${transactionId}: correctAmount=₦${correctAmount.toFixed(2)}, totalDebited=₦${totalDebited.toFixed(2)}, totalReconciled=₦${totalReconciled.toFixed(2)}, netBilled=₦${netBilled.toFixed(2)}, walletAdjustment=₦${walletAdjustment.toFixed(2)}`);
+          
+          if (Math.abs(walletAdjustment) >= 1) {
+            const newBalance = parseFloat(wallet.balance) - walletAdjustment;
+            await wallet.update({ balance: newBalance }, { transaction: t });
+            
+            await PaymentTransaction.create({
+              userId: user.id,
+              walletId: wallet.id,
+              amount: Math.abs(walletAdjustment),
+              type: walletAdjustment > 0 ? 'DEBIT' : 'CREDIT',
+              status: 'SUCCESS',
+              reference: `RECONCILE-TX${transactionId}-${Date.now()}`,
+              description: `Reconciliation for TX${transactionId}: ${walletAdjustment > 0 ? 'under-billed' : 'over-billed'} by ₦${Math.abs(walletAdjustment).toFixed(2)}`,
+              metadata: JSON.stringify({
+                transaction_id: transactionId,
+                correct_amount: correctAmount,
+                total_debited: totalDebited,
+                total_reconciled: totalReconciled,
+                net_billed: netBilled,
+                wallet_adjustment: walletAdjustment,
+                previous_balance: parseFloat(wallet.balance),
+                new_balance: newBalance,
+                location_pricing: { pricePerKwh, minimumCharge }
+              })
+            }, { transaction: t });
+            
+            walletMessage = ` Wallet ${walletAdjustment > 0 ? 'debited' : 'credited'} ₦${Math.abs(walletAdjustment).toFixed(2)} (was billed ₦${netBilled.toFixed(2)}, should be ₦${correctAmount.toFixed(2)}).`;
+            logger.info(`Reconcile: Wallet adjusted by ₦${walletAdjustment.toFixed(2)} for user ${user.id} (${user.email}). Balance: ₦${parseFloat(wallet.balance).toFixed(2)} → ₦${newBalance.toFixed(2)}`);
+          } else {
+            walletMessage = ' Wallet billing is correct.';
+          }
+        }
+      }
+    }
+    
+    if (!amountChanged && Math.abs(walletAdjustment) < 1) {
+      await t.rollback();
+      return res.json({
+        success: true,
+        message: 'Transaction amount and wallet billing are already correct.',
+        transaction
+      });
+    }
+    
+    await t.commit();
+    
+    let message = '';
+    if (amountChanged) {
+      message += `Amount updated from ₦${currentAmount.toFixed(2)} to ₦${correctAmount.toFixed(2)}.`;
+    } else {
+      message += `Amount ₦${correctAmount.toFixed(2)} is correct.`;
+    }
+    message += walletMessage;
+    
+    res.json({
+      success: true,
+      message: `Transaction reconciled successfully. ${message}`,
+      transaction,
+      adjustment: walletAdjustment
+    });
+  } catch (error) {
+    await t.rollback();
+    logger.error(`Error reconciling transaction ${req.params.id}:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reconcile transaction',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });

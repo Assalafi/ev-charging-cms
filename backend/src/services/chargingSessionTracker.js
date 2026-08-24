@@ -232,10 +232,43 @@ class ChargingSessionTracker {
           // Get chargePointId from active transaction in database
           const Transaction = require('../models').Transaction;
           Transaction.findOne({ where: { transactionId } })
-            .then(transaction => {
+            .then(async (transaction) => {
               if (transaction) {
+                // If transaction is Completed but tracker is still active, the charger
+                // is still physically charging. The handleMeterValues handler will reopen
+                // the transaction. We just skip the DB update here to avoid conflicts.
+                if (transaction.status !== 'InProgress') {
+                  logger.info(`MQTT Direct: tx ${transactionId} status is ${transaction.status}, skipping tracker DB update (handleMeterValues will handle reopen)`);
+                  return;
+                }
+
                 const chargePointId = transaction.chargePointId;
                 
+                // Calculate amount based on energy for real-time price tracking
+                let calculatedAmount = 0;
+                try {
+                  const { ChargingStation, Location } = require('../models');
+                  const stationForPrice = await ChargingStation.findOne({
+                    where: { chargePointId },
+                    attributes: ['locationId']
+                  });
+                  let pricePerWh = 0.4;
+                  let minimumCharge = 150;
+                  if (stationForPrice && stationForPrice.locationId) {
+                    const location = await Location.findByPk(stationForPrice.locationId);
+                    if (location) {
+                      pricePerWh = location.pricePerWh ?? 0.4;
+                      minimumCharge = location.minimumCharge ?? 150;
+                    }
+                  }
+                  const ratePerKwh = pricePerWh * 1000;
+                  // totalEnergy is in Wh, convert to kWh
+                  const energyInKwh = sessionData.totalEnergy / 1000;
+                  calculatedAmount = Math.max(energyInKwh * ratePerKwh, minimumCharge);
+                } catch (priceErr) {
+                  logger.error(`MQTT Direct: Price calc error: ${priceErr.message}`);
+                }
+
                 // Create energy update message - using the raw value without conversion
                 const updateMessage = {
                   timestamp: new Date().toISOString(),
@@ -244,7 +277,8 @@ class ChargingSessionTracker {
                   energy: sessionData.totalEnergy, // Keep original value (Wh)
                   power: sessionData.currentPower,
                   batteryPercentage: sessionData.batteryPercentage,
-                  duration: sessionData.duration
+                  duration: sessionData.duration,
+                  amount: calculatedAmount
                 };
                 
                 logger.info(`MQTT Direct: Publishing energy update from tracker: ${JSON.stringify(updateMessage)}`);
@@ -261,7 +295,8 @@ class ChargingSessionTracker {
                   energy: sessionData.totalEnergy,
                   power: sessionData.currentPower,
                   batteryPercentage: sessionData.batteryPercentage,
-                  duration: sessionData.duration, // Add explicit duration in seconds
+                  duration: sessionData.duration,
+                  amount: calculatedAmount,
                   timestamp: new Date().toISOString()
                 }));
                 
@@ -271,18 +306,12 @@ class ChargingSessionTracker {
                   energy: sessionData.totalEnergy,
                   power: sessionData.currentPower,
                   duration: sessionData.duration,
+                  amount: calculatedAmount,
                   timestamp: new Date().toISOString()
                 }));
                 
-                // Update the transaction in the database with the latest energy value
-                transaction.update({
-                  energyDelivered: sessionData.totalEnergy,
-                  currentMeterValue: session.currentEnergy
-                }).then(() => {
-                  logger.info(`MQTT Direct: Updated transaction ${transactionId} with energy: ${sessionData.totalEnergy} Wh`);
-                }).catch(err => {
-                  logger.error(`MQTT Direct: Error updating transaction: ${err.message}`);
-                });
+                // Note: Transaction DB updates are handled by messageHandlers.js (OCPP meter values)
+                // Tracker only publishes real-time MQTT updates to avoid energy unit conflicts
               }
             })
             .catch(err => {

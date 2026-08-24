@@ -1,4 +1,10 @@
-require('dotenv').config();
+// Load environment variables - try .env.development first, fall back to .env
+const path = require('path');
+const fs = require('fs');
+const envPath = fs.existsSync(path.join(__dirname, '..', '.env.development')) 
+  ? '.env.development' 
+  : '.env';
+require('dotenv').config({ path: envPath });
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -6,20 +12,40 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { sequelize } = require('./models');
 const logger = require('./utils/logger');
+const config = require('../../config');
 const routes = require('./routes');
 const ocppServer = require('./ocpp/server');
 const mqttClient = require('./mqtt/client');
 const pricingValidationMiddleware = require('./middleware/pricingValidationMiddleware');
+const transactionMonitor = require('./services/transactionMonitor');
 // const metricsMiddleware = require('./middleware/metrics');
 
 // Initialize Express app
 const app = express();
 const server = http.createServer(app);
 
+// Trust proxy for nginx reverse proxy - disable to avoid rate limiter conflicts
+app.set('trust proxy', false);
+
 // ======================
 // Security Middleware
 // ======================
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https:"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:", "http:"],
+      connectSrc: ["'self'", "https:", "http:"],
+      fontSrc: ["'self'", "https:", "data:"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
+    },
+  },
+}));
+
 app.use(express.json({ limit: process.env.MAX_FILE_SIZE || '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: process.env.MAX_FILE_SIZE || '50mb' }));
 
@@ -27,15 +53,19 @@ app.use(express.urlencoded({ extended: true, limit: process.env.MAX_FILE_SIZE ||
 // CORS Configuration
 // ======================
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN?.split(',') || [
+  origin: process.env.NODE_ENV === 'development' ? true : (process.env.CORS_ORIGIN?.split(',') || [
     'https://evcharging.eride.ng',
-    'http://localhost:3000'
-  ],
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'capacitor://localhost',
+    'http://localhost'
+  ]),
   methods: process.env.CORS_METHODS?.split(',') || ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: process.env.CORS_ALLOWED_HEADERS?.split(',') || [
     'Content-Type',
     'Authorization',
-    'X-Requested-With'
+    'X-Requested-With',
+    'X-Request-ID'
   ],
   credentials: process.env.CORS_CREDENTIALS === 'true',
   preflightContinue: process.env.CORS_PREFLIGHT_CONTINUE === 'true'
@@ -45,21 +75,41 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 // ======================
-// Rate Limiting
+// Rate Limiting - DISABLED
 // ======================
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
-  max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
-  message: process.env.RATE_LIMIT_MESSAGE || 'Too many requests, please try again later'
-});
-
-app.use(limiter);
+// Rate limiter disabled due to proxy validation conflicts causing server crashes
+// TODO: Implement alternative rate limiting solution that works with reverse proxy
+// const limiter = rateLimit({
+//   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+//   max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
+//   message: process.env.RATE_LIMIT_MESSAGE || 'Too many requests, please try again later'
+// });
+// app.use(limiter);
 
 // ======================
 // Static Files
 // ======================
 app.use('/public', express.static(process.env.UPLOADS_DIR || './uploads'));
 app.use('/firmware', express.static(process.env.FIRMWARE_DIR || './uploads/firmware'));
+
+// Enhanced uploads serving with better headers for mobile compatibility
+app.use('/uploads', (req, res, next) => {
+  // Set headers for better mobile compatibility
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  next();
+}, express.static(process.env.UPLOADS_DIR || './uploads', {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.png')) {
+      res.setHeader('Content-Type', 'image/png');
+    } else if (path.endsWith('.jpg') || path.endsWith('.jpeg')) {
+      res.setHeader('Content-Type', 'image/jpeg');
+    }
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  }
+}));
 
 // ======================
 // Monitoring
@@ -129,8 +179,7 @@ async function initializeDatabase() {
     logger.info('Database connection established successfully');
 
     if (process.env.NODE_ENV === 'development') {
-      await sequelize.sync({ alter: true });
-      logger.info('Database models synchronized with alter');
+      logger.info('Development mode: skipping database sync (using imported schema)');
     } else {
       await sequelize.sync();
       logger.info('Database models synchronized');
@@ -145,17 +194,15 @@ async function initializeDatabase() {
 // MQTT Connection
 // ======================
 function initializeMQTT() {
-  if (process.env.MQTT_ENABLED === 'true') {
-    mqttClient.connect({
-      host: process.env.MQTT_HOST,
-      port: parseInt(process.env.MQTT_PORT),
-      clientId: process.env.MQTT_CLIENT_ID,
-      username: process.env.MQTT_USERNAME,
-      password: process.env.MQTT_PASSWORD,
-      protocol: process.env.MQTT_PROTOCOL,
-      qos: parseInt(process.env.MQTT_QOS),
-      retain: process.env.MQTT_RETAIN === 'true'
-    });
+  const mqttEnabled = process.env.MQTT_ENABLED !== 'false';
+  logger.info(`MQTT enabled: ${mqttEnabled} (MQTT_ENABLED=${process.env.MQTT_ENABLED})`);
+  if (mqttEnabled) {
+    try {
+      mqttClient.connect();
+      logger.info('MQTT client initialization requested');
+    } catch (error) {
+      logger.error('Failed to initialize MQTT client:', error);
+    }
   }
 }
 
@@ -169,20 +216,40 @@ async function startServer() {
     initializeMQTT();
 
     // Start HTTP server
-    server.listen(process.env.PORT, process.env.HOST, () => {
-      logger.info(`HTTP server running on ${process.env.BASE_URL}`);
+    const port = process.env.PORT || 5000;
+    const host = process.env.HOST || '0.0.0.0';
+    server.listen(port, host, () => {
+      const baseUrl = process.env.BASE_URL || `http://${host}:${port}`;
+      logger.info(`HTTP server running on ${baseUrl}`);
+      logger.info(`Server listening on ${host}:${port}`);
     });
 
     // Start OCPP WebSocket server
+    const wsPort = parseInt(process.env.OCPP_SERVER_PORT) || (config.server && config.server.websocket && config.server.websocket.port) || 8081;
+    const wsHost = process.env.OCPP_SERVER_HOST || (config.server && config.server.websocket && config.server.websocket.host) || '0.0.0.0';
+    const wsPath = process.env.OCPP_SERVER_PATH || (config.server && config.server.websocket && config.server.websocket.path) || '/ocpp';
+    const supportedProtocols = (config.ocpp && config.ocpp.supportedVersions) || ['ocpp1.6', 'ocpp1.5', 'ocpp2.0.1'];
+
+    logger.info(`Initializing OCPP WebSocket server on ws://${wsHost}:${wsPort}${wsPath}`);
+    
     const wsServer = http.createServer();
     ocppServer.init(wsServer, {
-      path: process.env.OCPP_SERVER_PATH,
-      supportedProtocols: process.env.OCPP_SUPPORTED_VERSIONS?.split(',')
+      path: wsPath,
+      supportedProtocols: supportedProtocols
     });
 
-    wsServer.listen(process.env.OCPP_SERVER_PORT, process.env.OCPP_SERVER_HOST, () => {
-      logger.info(`OCPP WebSocket server running on ws://${process.env.OCPP_SERVER_HOST}:${process.env.OCPP_SERVER_PORT}${process.env.OCPP_SERVER_PATH}`);
+    wsServer.listen(wsPort, wsHost, () => {
+      logger.info(`OCPP WebSocket server running on ws://${wsHost}:${wsPort}${wsPath}`);
+      logger.info(`Supported OCPP protocols: ${supportedProtocols.join(', ')}`);
     });
+
+    wsServer.on('error', (err) => {
+      logger.error(`OCPP WebSocket server error:`, err);
+    });
+
+    // Start intelligent transaction monitor after both servers are ready
+    transactionMonitor.start();
+    logger.info('Intelligent transaction monitor started');
 
     // Start metrics server if enabled
     // if (process.env.METRICS_ENABLED === 'true') {
@@ -204,6 +271,9 @@ process.on('SIGINT', async () => {
   logger.info('Shutting down server gracefully...');
   
   try {
+    // Stop transaction monitor
+    transactionMonitor.stop();
+    
     await Promise.all([
       mqttClient.disconnect(),
       sequelize.close(),

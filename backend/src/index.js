@@ -9,7 +9,6 @@ const logger = require('./utils/logger');
 const routes = require('./routes');
 const ocppServer = require('./ocpp/server');
 const mqttClient = require('./mqtt/client');
-const transactionMonitor = require('./services/transactionMonitor');
 const pricingValidationMiddleware = require('./middleware/pricingValidationMiddleware');
 // const metricsMiddleware = require('./middleware/metrics');
 
@@ -133,8 +132,13 @@ async function initializeDatabase() {
       await sequelize.sync({ alter: true });
       logger.info('Database models synchronized with alter');
     } else {
-      await sequelize.sync();
-      logger.info('Database models synchronized');
+      try {
+        await sequelize.sync();
+        logger.info('Database models synchronized');
+      } catch (syncError) {
+        logger.error('Database sync warning (non-fatal):', syncError.message);
+        logger.info('Server will continue with existing schema');
+      }
     }
   } catch (error) {
     logger.error('Database connection failed:', error);
@@ -169,6 +173,10 @@ async function startServer() {
     await initializeDatabase();
     initializeMQTT();
 
+    // Reconcile any unbilled charging transactions from before crash/restart
+    const { billUnbilledTransactions } = require('./services/billingService');
+    billUnbilledTransactions().catch(err => logger.error('Billing reconciliation startup error:', err));
+
     // Start HTTP server
     server.listen(process.env.PORT, process.env.HOST, () => {
       logger.info(`HTTP server running on ${process.env.BASE_URL}`);
@@ -183,10 +191,12 @@ async function startServer() {
 
     wsServer.listen(process.env.OCPP_SERVER_PORT, process.env.OCPP_SERVER_HOST, () => {
       logger.info(`OCPP WebSocket server running on ws://${process.env.OCPP_SERVER_HOST}:${process.env.OCPP_SERVER_PORT}${process.env.OCPP_SERVER_PATH}`);
-      // Start intelligent transaction monitor
-      transactionMonitor.start();
-      logger.info('Intelligent transaction monitor started');
     });
+
+    // Start wallet monitor (auto-stop sessions when wallet exhausted)
+    const walletMonitor = require('./services/walletMonitor');
+    walletMonitor.init(ocppServer);
+    walletMonitor.start();
 
     // Start metrics server if enabled
     // if (process.env.METRICS_ENABLED === 'true') {

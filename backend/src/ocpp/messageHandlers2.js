@@ -516,9 +516,9 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
           throw new Error(`Pricing validation failed: ${error}`)
         }
         
-        // Only convert Wh to kWh if needed - check if already in kWh
-        const energyInKwh = energyDelivered > 100 ? energyDelivered / 1000 : energyDelivered
-        logger.debug(`StopTransaction ENERGY CHECK: Original value=${energyDelivered}, interpreted as=${energyInKwh} kWh`)
+        // Always convert from Wh to kWh (energyDelivered from OCPP is always in Wh)
+        const energyInKwh = energyDelivered / 1000
+        logger.debug(`StopTransaction ENERGY CHECK: Original value=${energyDelivered} Wh, converted to=${energyInKwh} kWh`)
         
         // Access the validated and parsed settings directly
         let ratePerKwh = settings.baseRatePerKwh;
