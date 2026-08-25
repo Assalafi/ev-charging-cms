@@ -9,7 +9,7 @@ const adsBoardService = {
       });
       return response.data;
     } catch (error) {
-      throw error.response?.data || { message: 'Failed to fetch ads' };
+      throw new Error(error.serverMessage || error.data?.message || error.response?.data?.message || 'Failed to fetch ads');
     }
   },
 

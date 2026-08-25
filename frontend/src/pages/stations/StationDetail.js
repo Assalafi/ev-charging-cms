@@ -33,6 +33,7 @@ import {
   Select,
 } from '@mui/material';
 import {
+  ArrowBack as ArrowBackIcon,
   Refresh as RefreshIcon,
   PlayArrow as StartIcon,
   Stop as StopIcon,
@@ -72,7 +73,7 @@ function TabPanel({ children, value, index, ...other }) {
       {value === index && (
         <Box
           sx={{
-            p: 3,
+            p: { xs: 1.25, sm: 2, md: 3 },
           }}
         >
           {' '}
@@ -1532,70 +1533,61 @@ function StationDetail() {
         </Alert>
       )}
       {/* Header */}{' '}
-      <Box
+      <Button startIcon={<ArrowBackIcon />} onClick={() => navigate('/stations')} sx={{ mb: 1.5, px: 0 }}>Back to stations</Button>
+      <Paper
         sx={{
-          mb: 3,
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
+          mb: 2.5, p: { xs: 2, sm: 3 }, borderRadius: 4, overflow: 'hidden', position: 'relative',
+          color: 'white', background: 'linear-gradient(135deg, #082F2A 0%, #0E6F58 55%, #11A777 100%)',
+          boxShadow: '0 18px 44px rgba(8,47,42,.2)',
+          '&::after': { content: '""', position: 'absolute', width: 240, height: 240, borderRadius: '50%', right: -80, top: -120, bgcolor: 'rgba(255,255,255,.08)' }
         }}
       >
-        <Box>
-          <Typography variant="h4" component="h1" gutterBottom>
-            Station: {station?.name}{' '}
-          </Typography>{' '}
-          <Chip
-            label={displayStatus}
-            color={getStatusColor(displayStatus)}
-            sx={{
-              mr: 1,
-            }}
-          />{' '}
-          {station?.isConnected && (
-            <Chip label="Online" color="success" size="small" />
-          )}{' '}
-        </Box>{' '}
-        <Box>
-          {' '}
-          {isEditing ? (
-            <>
-              <IconButton
-                onClick={handleSaveStation}
-                color="primary"
-                sx={{
-                  mr: 1,
-                }}
-              >
-                <SaveIcon />
-              </IconButton>{' '}
-              <IconButton onClick={handleEditToggle} color="error">
-                <CancelIcon />
-              </IconButton>{' '}
-            </>
-          ) : (
-            <>
-              <Button
-                variant="outlined"
-                startIcon={<EditIcon />}
-                onClick={handleEditToggle}
-                sx={{
-                  mr: 1,
-                }}
-              >
-                Edit{' '}
-              </Button>{' '}
-              <IconButton onClick={fetchStationData}>
-                <RefreshIcon />
-              </IconButton>{' '}
-            </>
-          )}{' '}
-        </Box>{' '}
-      </Box>
+        <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ md: 'flex-start' }} gap={2} position="relative" zIndex={1}>
+          <Box minWidth={0}>
+            <Typography variant="overline" sx={{ color: 'rgba(255,255,255,.72)', letterSpacing: 1.2 }}>Charging station</Typography>
+            <Typography variant="h3" component="h1" sx={{ fontSize: { xs: '1.75rem', sm: '2.35rem' }, lineHeight: 1.15 }}>{station?.name || station?.chargePointId}</Typography>
+            <Typography sx={{ mt: 0.6, color: 'rgba(255,255,255,.76)' }}>{station?.chargePointId} • {station?.vendor || 'Unknown vendor'} {station?.model ? `• ${station.model}` : ''}</Typography>
+            <Stack direction="row" gap={1} mt={1.5} flexWrap="wrap">
+              <Chip label={displayStatus} color={getStatusColor(displayStatus)} size="small" />
+              <Chip label={station?.isConnected ? 'Connected' : 'Disconnected'} size="small" sx={{ bgcolor: station?.isConnected ? 'rgba(187,247,208,.9)' : 'rgba(255,255,255,.16)', color: station?.isConnected ? '#14532D' : 'white' }} />
+              <Chip label={`Updated ${format(lastUpdated, 'HH:mm:ss')}`} size="small" sx={{ bgcolor: 'rgba(255,255,255,.12)', color: 'white' }} />
+            </Stack>
+          </Box>
+          <Stack direction="row" gap={1}>
+            {isEditing ? <>
+              <Button variant="contained" color="inherit" startIcon={<SaveIcon />} onClick={handleSaveStation} sx={{ color: '#0B5D49' }}>Save</Button>
+              <Button variant="outlined" startIcon={<CancelIcon />} onClick={handleEditToggle} sx={{ color: 'white', borderColor: 'rgba(255,255,255,.5)' }}>Cancel</Button>
+            </> : <>
+              <Button variant="outlined" startIcon={<EditIcon />} onClick={handleEditToggle} sx={{ color: 'white', borderColor: 'rgba(255,255,255,.5)' }}>Edit</Button>
+              <IconButton onClick={fetchStationData} sx={{ color: 'white', border: '1px solid rgba(255,255,255,.35)' }}><RefreshIcon /></IconButton>
+            </>}
+          </Stack>
+        </Stack>
+        <Grid container spacing={1.25} mt={2} position="relative" zIndex={1}>
+          {[
+            ['Connectors', connectors.length || station?.connectorCount || 0],
+            ['Live energy', `${Number(energyConsumption || 0).toFixed(2)} kWh`],
+            ['Current power', `${Number(currentPower || 0).toFixed(0)} W`],
+            ['Firmware', station?.firmwareVersion || 'Unknown']
+          ].map(([label, value]) => <Grid item xs={6} md={3} key={label}>
+            <Box sx={{ p: { xs: 1.25, sm: 1.5 }, borderRadius: 2.5, bgcolor: 'rgba(255,255,255,.11)', border: '1px solid rgba(255,255,255,.12)' }}>
+              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,.7)' }}>{label}</Typography><Typography fontWeight={750} noWrap>{value}</Typography>
+            </Box>
+          </Grid>)}
+        </Grid>
+      </Paper>
       {/* Tabs */}{' '}
       <Paper
         sx={{
           mb: 3,
-          borderRadius: 2,
+          borderRadius: 3,
+          overflow: 'hidden',
+          border: '1px solid',
+          borderColor: 'divider',
+          boxShadow: '0 12px 34px rgba(15,23,42,.06)',
+          '& .MuiCard-root': { borderRadius: 3, border: '1px solid', borderColor: 'divider', boxShadow: '0 8px 24px rgba(15,23,42,.04)' },
+          '& .MuiCardHeader-root': { px: { xs: 1.5, sm: 2.25 }, py: 1.75 },
+          '& .MuiCardContent-root': { px: { xs: 1.5, sm: 2.25 } }
         }}
       >
         <Tabs
@@ -1603,7 +1595,10 @@ function StationDetail() {
           onChange={handleTabChange}
           indicatorColor="primary"
           textColor="primary"
-          variant="fullWidth"
+          variant="scrollable"
+          scrollButtons="auto"
+          allowScrollButtonsMobile
+          sx={{ px: { xs: 0.5, sm: 1.5 }, borderBottom: '1px solid', borderColor: 'divider', '& .MuiTab-root': { minHeight: 62, fontWeight: 700, textTransform: 'none' } }}
         >
           <Tab label="Details" />
           <Tab label="Transactions" />
@@ -2241,8 +2236,8 @@ function StationDetail() {
             </Grid>{' '}
           </Grid>{' '}
         </TabPanel>
-        {/* Station Details Tab */}{' '}
-        <TabPanel value={tabValue} index={0}>
+        {/* Legacy duplicate details panel retained but not rendered */}{' '}
+        <TabPanel value={tabValue} index={-1}>
           {' '}
           {/* Remote Command Panel */}{' '}
           <Card

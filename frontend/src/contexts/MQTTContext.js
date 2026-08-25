@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import mqtt from 'mqtt';
 import { useAuth } from './AuthContext';
 
@@ -13,8 +13,9 @@ export function MQTTProvider({ children }) {
   const [client, setClient] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const [connectionError, setConnectionError] = useState(null);
-  const [subscriptions, setSubscriptions] = useState({});
+  const subscriptionsRef = useRef({});
   const [stationStatus, setStationStatus] = useState({});
+  const [lastMessageAt, setLastMessageAt] = useState(null);
 
   // Connect to MQTT broker
   useEffect(() => {
@@ -43,15 +44,20 @@ export function MQTTProvider({ children }) {
       setIsConnected(true);
       setConnectionError(null);
       
-      // Subscribe to all station status updates
-      mqttClient.subscribe('ocpp/+/status', (err) => {
-        if (err) console.error('Error subscribing to station status:', err);
+      // Status and energy topics drive immediate dashboard refreshes.
+      mqttClient.subscribe([
+        'ocpp/+/status',
+        'ocpp/transactions/+/energy',
+        'ocpp/stations/+/energy'
+      ], (err) => {
+        if (err) console.error('Error subscribing to live charging updates:', err);
       });
     });
 
     mqttClient.on('message', (topic, message) => {
       try {
         const data = JSON.parse(message.toString());
+        setLastMessageAt(Date.now());
         
         // Handle station status updates
         if (topic.match(/^ocpp\/(.+)\/status$/)) {
@@ -66,8 +72,8 @@ export function MQTTProvider({ children }) {
         }
         
         // Handle subscribed topics
-        if (subscriptions[topic]) {
-          subscriptions[topic].forEach(callback => {
+        if (subscriptionsRef.current[topic]) {
+          subscriptionsRef.current[topic].forEach(callback => {
             try {
               callback(data);
             } catch (error) {
@@ -119,36 +125,31 @@ export function MQTTProvider({ children }) {
       }
 
       console.log(`Subscribed to ${topic}`);
-      setSubscriptions(prev => {
-        const topicCallbacks = prev[topic] || [];
-        return {
-          ...prev,
-          [topic]: [...topicCallbacks, callback]
-        };
-      });
+      const topicCallbacks = subscriptionsRef.current[topic] || [];
+      subscriptionsRef.current = {
+        ...subscriptionsRef.current,
+        [topic]: [...topicCallbacks, callback]
+      };
     });
 
     // Return unsubscribe function
     return () => {
-      setSubscriptions(prev => {
-        const topicCallbacks = prev[topic] || [];
-        const updatedCallbacks = topicCallbacks.filter(cb => cb !== callback);
-        
-        const newSubscriptions = { ...prev };
-        
-        if (updatedCallbacks.length === 0) {
-          // No more callbacks for this topic, unsubscribe
-          if (client && isConnected) {
-            client.unsubscribe(topic);
-            console.log(`Unsubscribed from ${topic}`);
-          }
-          delete newSubscriptions[topic];
-        } else {
-          newSubscriptions[topic] = updatedCallbacks;
+      const topicCallbacks = subscriptionsRef.current[topic] || [];
+      const updatedCallbacks = topicCallbacks.filter(cb => cb !== callback);
+      const newSubscriptions = { ...subscriptionsRef.current };
+
+      if (updatedCallbacks.length === 0) {
+        // No more callbacks for this topic, unsubscribe
+        if (client && isConnected) {
+          client.unsubscribe(topic);
+          console.log(`Unsubscribed from ${topic}`);
         }
-        
-        return newSubscriptions;
-      });
+        delete newSubscriptions[topic];
+      } else {
+        newSubscriptions[topic] = updatedCallbacks;
+      }
+
+      subscriptionsRef.current = newSubscriptions;
     };
   }, [client, isConnected]);
 
@@ -186,6 +187,7 @@ export function MQTTProvider({ children }) {
     isConnected,
     connectionError,
     stationStatus,
+    lastMessageAt,
     subscribe,
     publish,
     subscribeToStation,

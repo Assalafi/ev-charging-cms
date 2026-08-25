@@ -1,12 +1,13 @@
 const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 const config = require('../../../config/backend').backend;
+const { User } = require('../models');
 
 /**
  * Authentication middleware
  * Verifies JWT token and attaches user data to request
  */
-function authenticate(req, res, next) {
+async function authenticate(req, res, next) {
   // Get token from header
   const authHeader = req.headers.authorization;
   
@@ -42,8 +43,14 @@ function authenticate(req, res, next) {
       throw new Error('Invalid token payload');
     }
     
-    // Attach user data to request
-    req.user = decoded;
+    // Always load the current account so deactivation and permission edits take
+    // effect immediately instead of waiting for the JWT to expire.
+    const user = await User.findByPk(decoded.id, { attributes: { exclude: ['password'] } });
+    if (!user || !user.active) {
+      return res.status(401).json({ success: false, message: 'Account is disabled or no longer exists' });
+    }
+
+    req.user = user.toJSON();
     next();
   } catch (error) {
     logger.error('Authentication error:', error);

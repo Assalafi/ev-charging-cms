@@ -1,7 +1,8 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const { Wallet, PaymentTransaction, MobileUser, PaymentSettings } = require('../../models');
-const { authenticate, authorize } = require('../../middleware/auth');
+const { authenticate } = require('../../middleware/auth');
+const { requirePermission } = require('../../middleware/permissions');
 const logger = require('../../utils/logger');
 
 const router = express.Router();
@@ -13,7 +14,7 @@ router.use(authenticate);
  * @route   GET /api/admin/payments/settings
  * @desc    Get payment settings
  */
-router.get('/settings', authorize(['admin', 'operator']), async (req, res) => {
+router.get('/settings', requirePermission('payments.view'), async (req, res) => {
   try {
     // Initialize default settings if table is empty
     await PaymentSettings.initializeDefaults();
@@ -51,7 +52,7 @@ router.get('/settings', authorize(['admin', 'operator']), async (req, res) => {
  * @route   PUT /api/admin/payments/settings
  * @desc    Update payment settings
  */
-router.put('/settings', authorize(['admin']), async (req, res) => {
+router.put('/settings', requirePermission('payments.manage'), async (req, res) => {
   try {
     const { paystack, wallet, features } = req.body;
     
@@ -90,7 +91,7 @@ router.put('/settings', authorize(['admin']), async (req, res) => {
  * @route   GET /api/admin/payments/transactions
  * @desc    Get all payment transactions
  */
-router.get('/transactions', authorize(['admin', 'operator']), async (req, res) => {
+router.get('/transactions', requirePermission('payments.view'), async (req, res) => {
   try {
     const { page = 1, limit = 50, status, userId, type, startDate, endDate, gateway } = req.query;
     
@@ -156,7 +157,7 @@ router.get('/transactions', authorize(['admin', 'operator']), async (req, res) =
  * @route   GET /api/admin/payments/wallets
  * @desc    Get all user wallets
  */
-router.get('/wallets', authorize(['admin', 'operator']), async (req, res) => {
+router.get('/wallets', requirePermission('payments.view'), async (req, res) => {
   try {
     const { page = 1, limit = 50 } = req.query;
     
@@ -205,7 +206,7 @@ router.get('/wallets', authorize(['admin', 'operator']), async (req, res) => {
  * @route   POST /api/admin/payments/verify/:transactionId
  * @desc    Verify a payment transaction against Paystack API
  */
-router.post('/verify/:transactionId', authorize(['admin']), async (req, res) => {
+router.post('/verify/:transactionId', requirePermission('payments.manage'), async (req, res) => {
   try {
     const { transactionId } = req.params;
     
@@ -345,7 +346,7 @@ router.post('/verify/:transactionId', authorize(['admin']), async (req, res) => 
  * @route   POST /api/admin/payments/wallets/:walletId/fund
  * @desc    Admin fund a user's wallet (manual top-up)
  */
-router.post('/wallets/:walletId/fund', authorize(['admin']), async (req, res) => {
+router.post('/wallets/:walletId/fund', requirePermission('payments.manage'), async (req, res) => {
   try {
     const { walletId } = req.params;
     const { amount, description } = req.body;
@@ -420,7 +421,7 @@ router.post('/wallets/:walletId/fund', authorize(['admin']), async (req, res) =>
  * @route   GET /api/admin/payments/users
  * @desc    Get mobile users for filter dropdown
  */
-router.get('/users', authorize(['admin', 'operator']), async (req, res) => {
+router.get('/users', requirePermission('payments.view'), async (req, res) => {
   try {
     const users = await MobileUser.findAll({
       attributes: ['id', 'name', 'phone', 'email'],
@@ -444,7 +445,7 @@ router.get('/users', authorize(['admin', 'operator']), async (req, res) => {
  * @route   GET /api/admin/payments/stats
  * @desc    Get payment statistics
  */
-router.get('/stats', authorize(['admin', 'operator']), async (req, res) => {
+router.get('/stats', requirePermission('payments.view'), async (req, res) => {
   try {
     const { period = '30' } = req.query; // Default to last 30 days
     const daysAgo = new Date();

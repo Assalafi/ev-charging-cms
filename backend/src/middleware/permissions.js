@@ -1,29 +1,7 @@
-const ROLE_PERMISSIONS = {
-  super_admin: ['*'],
-  admin: [
-    'partners.view', 'partners.create', 'partners.update', 'partners.suspend',
-    'partners.delete', 'partners.assign_locations', 'partners.manage_users',
-    'locations.view', 'locations.create', 'locations.update', 'locations.assign_partner',
-    'locations.unassign_partner', 'settlements.view', 'settlements.generate',
-    'settlements.approve', 'settlements.mark_paid', 'settlements.cancel', 'settlements.export',
-    'stations.view', 'stations.create', 'stations.update', 'stations.delete',
-    'stations.remote_control', 'stations.monitor', 'monitor.view'
-  ],
-  finance: [
-    'partners.view', 'settlements.view', 'settlements.generate',
-    'settlements.mark_paid', 'settlements.export', 'monitor.view'
-  ],
-  operations: ['locations.view', 'stations.view', 'stations.monitor', 'stations.remote_control', 'monitor.view'],
-  support: ['locations.view', 'stations.view', 'stations.monitor', 'monitor.view'],
-  viewer: ['partners.view', 'settlements.view', 'locations.view', 'stations.view', 'monitor.view'],
-  partner_owner: ['partner.portal'],
-  partner_manager: ['partner.portal'],
-  partner_finance: ['partner.portal'],
-  partner_viewer: ['partner.portal']
-};
+const { ROLE_PERMISSIONS, getEffectivePermissions } = require('../config/accessControl');
 
 function hasPermission(user, permission) {
-  const permissions = ROLE_PERMISSIONS[user?.role] || [];
+  const permissions = getEffectivePermissions(user);
   return permissions.includes('*') || permissions.includes(permission);
 }
 

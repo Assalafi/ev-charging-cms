@@ -16,10 +16,7 @@ module.exports = (sequelize) => {
         chargePointId: {
             type: DataTypes.STRING,
             allowNull: false,
-            references: {
-                model: 'charging_stations',
-                key: 'chargePointId'
-            }
+            comment: 'Immutable station identifier snapshot retained for protocol history'
         },
         message_type: {
             type: DataTypes.ENUM(

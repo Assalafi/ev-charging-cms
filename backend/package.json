@@ -7,6 +7,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "migrate:partner": "node scripts/migrate-partner-schema.js",
+    "migrate:admin-access": "node scripts/migrate-admin-access-control.js",
     "test": "jest"
   },
   "dependencies": {

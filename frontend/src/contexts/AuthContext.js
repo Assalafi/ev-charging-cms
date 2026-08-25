@@ -87,7 +87,7 @@ export function AuthProvider({ children }) {
       setToken(null);
       return {
         success: false,
-        message: error.response?.data?.message || error.message || 'Login failed'
+        message: error.serverMessage || error.data?.message || error.response?.data?.message || error.message || 'Login failed'
       };
     }
   };
@@ -111,6 +111,15 @@ export function AuthProvider({ children }) {
     return roles.includes(currentUser.role);
   };
 
+  const hasPermission = (permission) => {
+    if (!currentUser || !permission) return false;
+    if (currentUser.role === 'super_admin') return true;
+    const permissions = Array.isArray(currentUser.effectivePermissions)
+      ? currentUser.effectivePermissions
+      : (Array.isArray(currentUser.permissions) ? currentUser.permissions : []);
+    return permissions.includes('*') || permissions.includes(permission);
+  };
+
   const value = {
     currentUser,
     token,
@@ -118,6 +127,7 @@ export function AuthProvider({ children }) {
     login,
     logout,
     hasRole,
+    hasPermission,
     isAuthenticated: !!currentUser
   };
 

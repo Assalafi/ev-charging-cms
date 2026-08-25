@@ -17,10 +17,7 @@ module.exports = (sequelize) => {
         chargePointId: {
             type: DataTypes.STRING,
             allowNull: false,
-            references: {
-                model: 'charging_stations',
-                key: 'chargePointId'
-            }
+            comment: 'Immutable station identifier snapshot retained for historical sessions'
         },
         connectorId: {
             type: DataTypes.INTEGER,

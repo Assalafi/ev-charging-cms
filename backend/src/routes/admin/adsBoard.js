@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { AdsBoard } = require('../../models');
-const { authenticate, authorize } = require('../../middleware/auth');
+const { authenticate } = require('../../middleware/auth');
+const { requirePermission } = require('../../middleware/permissions');
 const logger = require('../../utils/logger');
 const multer = require('multer');
 const path = require('path');
@@ -41,7 +42,7 @@ const upload = multer({
 });
 
 // Get all ads with pagination
-router.get('/', ...authorize('admin'), async (req, res) => {
+router.get('/', authenticate, requirePermission('ads.view'), async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
@@ -75,7 +76,7 @@ router.get('/', ...authorize('admin'), async (req, res) => {
 });
 
 // Get ad by ID
-router.get('/:id', ...authorize('admin'), async (req, res) => {
+router.get('/:id', authenticate, requirePermission('ads.view'), async (req, res) => {
   try {
     const ad = await AdsBoard.findByPk(req.params.id);
     
@@ -100,7 +101,7 @@ router.get('/:id', ...authorize('admin'), async (req, res) => {
 });
 
 // Create new ad
-router.post('/', ...authorize('admin'), upload.single('photo'), async (req, res) => {
+router.post('/', authenticate, requirePermission('ads.manage'), upload.single('photo'), async (req, res) => {
   try {
     const { title, body, order, status } = req.body;
 
@@ -155,7 +156,7 @@ router.post('/', ...authorize('admin'), upload.single('photo'), async (req, res)
 });
 
 // Update ad (JSON and FormData with file)
-router.put('/:id', ...authorize('admin'), upload.single('photo'), async (req, res) => {
+router.put('/:id', authenticate, requirePermission('ads.manage'), upload.single('photo'), async (req, res) => {
   try {
     const ad = await AdsBoard.findByPk(req.params.id);
     
@@ -238,7 +239,7 @@ router.put('/:id', ...authorize('admin'), upload.single('photo'), async (req, re
 });
 
 // Update ad without file upload (FormData only)
-router.put('/:id/no-file', ...authorize('admin'), async (req, res) => {
+router.put('/:id/no-file', authenticate, requirePermission('ads.manage'), async (req, res) => {
   try {
     const ad = await AdsBoard.findByPk(req.params.id);
     
@@ -299,7 +300,7 @@ router.put('/:id/no-file', ...authorize('admin'), async (req, res) => {
 });
 
 // Delete ad
-router.delete('/:id', ...authorize('admin'), async (req, res) => {
+router.delete('/:id', authenticate, requirePermission('ads.manage'), async (req, res) => {
   try {
     const ad = await AdsBoard.findByPk(req.params.id);
     
@@ -334,7 +335,7 @@ router.delete('/:id', ...authorize('admin'), async (req, res) => {
 });
 
 // Update ad status
-router.put('/:id/status', ...authorize('admin'), async (req, res) => {
+router.put('/:id/status', authenticate, requirePermission('ads.manage'), async (req, res) => {
   try {
     const { status } = req.body;
     

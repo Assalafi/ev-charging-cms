@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Typography,
@@ -18,23 +18,27 @@ import {
   Select,
   MenuItem,
   Switch,
-  FormControlLabel,
   List,
   ListItem,
   ListItemText,
   ListItemSecondaryAction,
   Tabs,
-  Tab
+  Tab,
+  Stack
 } from '@mui/material';
 import {
   Save as SaveIcon,
   Refresh as RefreshIcon,
   PowerSettingsNew as PowerIcon,
-  Settings as SettingsIcon
+  Settings as SettingsIcon,
+  CloudUploadRounded,
+  DeleteOutlineRounded,
+  PaletteRounded,
+  ImageRounded
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 import settingsService from '../services/settingsService';
-import pricingService from '../services/pricingService';
+import { defaultBranding, useBranding } from '../contexts/BrandingContext';
 
 // Tab panel component
 function TabPanel({ children, value, index, ...other }) {
@@ -52,14 +56,22 @@ function TabPanel({ children, value, index, ...other }) {
 }
 
 function Settings() {
-  const { currentUser, hasRole } = useAuth();
-  const isAdmin = hasRole('admin');
+  const { hasPermission } = useAuth();
+  const isAdmin = hasPermission('settings.manage');
+  const canView = hasPermission('settings.view');
+  const { branding, assetUrl, refreshBranding } = useBranding();
   
   // State
   const [tabValue, setTabValue] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [brandingSettings, setBrandingSettings] = useState({ ...defaultBranding, ...branding });
+  const [logoFile, setLogoFile] = useState(null);
+  const [faviconFile, setFaviconFile] = useState(null);
+  const [logoPreview, setLogoPreview] = useState(null);
+  const [faviconPreview, setFaviconPreview] = useState(null);
+  const [removedAssets, setRemovedAssets] = useState({ logo: false, favicon: false });
   
   // General settings
   const [generalSettings, setGeneralSettings] = useState({
@@ -101,11 +113,19 @@ function Settings() {
   });
   
   // Fetch settings
-  const fetchSettings = async () => {
-    if (!isAdmin) return;
+  const fetchSettings = useCallback(async () => {
+    if (!canView) return;
     
     setLoading(true);
     try {
+      const brandingResponse = await settingsService.getBrandingSettings();
+      setBrandingSettings({ ...defaultBranding, ...(brandingResponse.settings || {}) });
+      setLogoFile(null);
+      setFaviconFile(null);
+      setLogoPreview(null);
+      setFaviconPreview(null);
+      setRemovedAssets({ logo: false, favicon: false });
+
       // Fetch general settings
       const generalResponse = await settingsService.getGeneralSettings();
       setGeneralSettings(generalResponse.settings);
@@ -118,10 +138,6 @@ function Settings() {
       const notificationResponse = await settingsService.getNotificationSettings();
       setNotificationSettings(notificationResponse.settings);
       
-      // Fetch pricing settings
-      const pricingResponse = await pricingService.getPricingSettings();
-      setPricingSettings(pricingResponse.settings);
-      
       setError(null);
     } catch (error) {
       console.error('Error fetching settings:', error);
@@ -129,12 +145,12 @@ function Settings() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [canView]);
   
   // Load settings on component mount
   useEffect(() => {
     fetchSettings();
-  }, [isAdmin]);
+  }, [fetchSettings]);
   
   // Handle tab change
   const handleTabChange = (event, newValue) => {
@@ -172,6 +188,42 @@ function Settings() {
       [e.target.name]: e.target.type === 'number' ? parseFloat(e.target.value) : e.target.value
     });
   };
+
+  const handleBrandingChange = event => {
+    setBrandingSettings(previous => ({ ...previous, [event.target.name]: event.target.value }));
+  };
+
+  const selectAsset = (type, file) => {
+    if (!file) return;
+    const preview = URL.createObjectURL(file);
+    if (type === 'logo') {
+      if (logoPreview) URL.revokeObjectURL(logoPreview);
+      setLogoFile(file);
+      setLogoPreview(preview);
+      setRemovedAssets(previous => ({ ...previous, logo: false }));
+    } else {
+      if (faviconPreview) URL.revokeObjectURL(faviconPreview);
+      setFaviconFile(file);
+      setFaviconPreview(preview);
+      setRemovedAssets(previous => ({ ...previous, favicon: false }));
+    }
+  };
+
+  const removeAsset = type => {
+    if (type === 'logo') {
+      if (logoPreview) URL.revokeObjectURL(logoPreview);
+      setLogoFile(null);
+      setLogoPreview(null);
+      setBrandingSettings(previous => ({ ...previous, logoUrl: null }));
+      setRemovedAssets(previous => ({ ...previous, logo: true }));
+    } else {
+      if (faviconPreview) URL.revokeObjectURL(faviconPreview);
+      setFaviconFile(null);
+      setFaviconPreview(null);
+      setBrandingSettings(previous => ({ ...previous, faviconUrl: null }));
+      setRemovedAssets(previous => ({ ...previous, favicon: true }));
+    }
+  };
   
   // Save settings
   const handleSaveSettings = async () => {
@@ -186,14 +238,21 @@ function Settings() {
       let response;
       
       switch (tabValue) {
-        case 0: // General
+        case 0: // Branding
+          response = await settingsService.updateBrandingSettings(brandingSettings, logoFile, faviconFile, removedAssets);
+          setBrandingSettings({ ...defaultBranding, ...(response.settings || {}) });
+          setLogoFile(null);
+          setFaviconFile(null);
+          setLogoPreview(null);
+          setFaviconPreview(null);
+          setRemovedAssets({ logo: false, favicon: false });
+          await refreshBranding();
+          break;
+        case 1: // General
           response = await settingsService.updateGeneralSettings(generalSettings);
           break;
-        case 1: // OCPP
+        case 2: // OCPP
           response = await settingsService.updateOcppSettings(ocppSettings);
-          break;
-        case 2: // Pricing
-          response = await pricingService.updatePricingSettings(pricingSettings);
           break;
         case 3: // Notifications
           response = await settingsService.updateNotificationSettings(notificationSettings);
@@ -205,7 +264,7 @@ function Settings() {
       setSuccess('Settings saved successfully');
     } catch (error) {
       console.error('Error saving settings:', error);
-      setError('Failed to save settings');
+      setError(error?.response?.data?.message || error?.serverMessage || 'Failed to save settings');
     } finally {
       setLoading(false);
     }
@@ -213,7 +272,7 @@ function Settings() {
   
   return (
     <Box>
-      <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'center' }, flexDirection: { xs: 'column', sm: 'row' }, gap: 2 }}>
         <Typography variant="h4" component="h1" gutterBottom>
           Settings
         </Typography>
@@ -268,16 +327,63 @@ function Settings() {
           onChange={handleTabChange}
           indicatorColor="primary"
           textColor="primary"
-          variant="fullWidth"
+          variant="scrollable"
+          scrollButtons="auto"
         >
+          <Tab label="Branding & Meta" />
           <Tab label="General" />
           <Tab label="OCPP" />
-          <Tab label="Pricing" />
           <Tab label="Notifications" />
         </Tabs>
         
-        {/* General Settings Tab */}
         <TabPanel value={tabValue} index={0}>
+          <Stack spacing={3}>
+            <Box>
+              <Typography variant="h6">System identity</Typography>
+              <Typography variant="body2" color="text.secondary">These values are used across login, navigation, browser metadata and installed shortcuts.</Typography>
+            </Box>
+            <Grid container spacing={2.5}>
+              <Grid item xs={12} md={6}><TextField fullWidth label="System name" name="systemName" value={brandingSettings.systemName} onChange={handleBrandingChange} disabled={!isAdmin || loading} helperText="Displayed on the login screen" inputProps={{ maxLength: 80 }} /></Grid>
+              <Grid item xs={12} md={6}><TextField fullWidth label="Short name" name="shortName" value={brandingSettings.shortName} onChange={handleBrandingChange} disabled={!isAdmin || loading} helperText="Used in the sidebar and compact layouts" inputProps={{ maxLength: 40 }} /></Grid>
+              <Grid item xs={12}><TextField fullWidth label="Login subtitle" name="loginSubtitle" value={brandingSettings.loginSubtitle} onChange={handleBrandingChange} disabled={!isAdmin || loading} inputProps={{ maxLength: 100 }} /></Grid>
+            </Grid>
+
+            <Grid container spacing={2.5}>
+              <Grid item xs={12} md={7}>
+                <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 3, height: '100%' }}>
+                  <Stack direction="row" spacing={1.2} alignItems="center" sx={{ mb: 2 }}><ImageRounded color="primary" /><Box><Typography fontWeight={750}>System logo</Typography><Typography variant="caption" color="text.secondary">PNG, JPG or WebP · maximum 5 MB</Typography></Box></Stack>
+                  <Box sx={{ minHeight: 150, p: 2, mb: 2, borderRadius: 3, display: 'grid', placeItems: 'center', bgcolor: 'grey.50', border: '1px dashed', borderColor: 'divider' }}>
+                    {(logoPreview || brandingSettings.logoUrl) ? <Box component="img" src={logoPreview || assetUrl(brandingSettings.logoUrl)} alt="Logo preview" sx={{ maxWidth: '100%', maxHeight: 110, objectFit: 'contain' }} /> : <Stack alignItems="center" color="text.disabled"><ImageRounded sx={{ fontSize: 46 }} /><Typography variant="body2">No custom logo</Typography></Stack>}
+                  </Box>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><Button component="label" variant="outlined" startIcon={<CloudUploadRounded />} disabled={!isAdmin || loading}>Choose logo<input hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={event => selectAsset('logo', event.target.files?.[0])} /></Button>{(logoPreview || brandingSettings.logoUrl) && <Button color="error" startIcon={<DeleteOutlineRounded />} onClick={() => removeAsset('logo')} disabled={!isAdmin || loading}>Remove</Button>}</Stack>
+                </Paper>
+              </Grid>
+              <Grid item xs={12} md={5}>
+                <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 3, height: '100%' }}>
+                  <Stack direction="row" spacing={1.2} alignItems="center" sx={{ mb: 2 }}><ImageRounded color="secondary" /><Box><Typography fontWeight={750}>Browser favicon</Typography><Typography variant="caption" color="text.secondary">Square PNG or ICO · maximum 5 MB</Typography></Box></Stack>
+                  <Box sx={{ minHeight: 150, p: 2, mb: 2, borderRadius: 3, display: 'grid', placeItems: 'center', bgcolor: 'grey.50', border: '1px dashed', borderColor: 'divider' }}>
+                    {(faviconPreview || brandingSettings.faviconUrl) ? <Box component="img" src={faviconPreview || assetUrl(brandingSettings.faviconUrl)} alt="Favicon preview" sx={{ width: 72, height: 72, objectFit: 'contain' }} /> : <Stack alignItems="center" color="text.disabled"><ImageRounded sx={{ fontSize: 42 }} /><Typography variant="body2">Default favicon</Typography></Stack>}
+                  </Box>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><Button component="label" variant="outlined" startIcon={<CloudUploadRounded />} disabled={!isAdmin || loading}>Choose favicon<input hidden type="file" accept="image/png,image/x-icon,image/vnd.microsoft.icon,.ico" onChange={event => selectAsset('favicon', event.target.files?.[0])} /></Button>{(faviconPreview || brandingSettings.faviconUrl) && <Button color="error" startIcon={<DeleteOutlineRounded />} onClick={() => removeAsset('favicon')} disabled={!isAdmin || loading}>Remove</Button>}</Stack>
+                </Paper>
+              </Grid>
+            </Grid>
+
+            <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 3 }}>
+              <Stack direction="row" spacing={1.2} alignItems="center" sx={{ mb: 2 }}><PaletteRounded color="primary" /><Box><Typography fontWeight={750}>Brand colors</Typography><Typography variant="caption" color="text.secondary">Applied to buttons, navigation accents, links and interactive controls.</Typography></Box></Stack>
+              <Grid container spacing={2}><Grid item xs={12} sm={6}><TextField fullWidth type="color" label="Primary color" name="primaryColor" value={brandingSettings.primaryColor} onChange={handleBrandingChange} disabled={!isAdmin || loading} InputLabelProps={{ shrink: true }} /></Grid><Grid item xs={12} sm={6}><TextField fullWidth type="color" label="Secondary color" name="secondaryColor" value={brandingSettings.secondaryColor} onChange={handleBrandingChange} disabled={!isAdmin || loading} InputLabelProps={{ shrink: true }} /></Grid></Grid>
+            </Paper>
+
+            <Box>
+              <Typography variant="h6" sx={{ mb: 0.5 }}>Search and browser metadata</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Controls the browser tab title and the description shown by search engines and shared links.</Typography>
+              <Stack spacing={2}><TextField fullWidth label="Meta title" name="metaTitle" value={brandingSettings.metaTitle} onChange={handleBrandingChange} disabled={!isAdmin || loading} helperText={`${brandingSettings.metaTitle.length}/120 characters`} inputProps={{ maxLength: 120 }} /><TextField fullWidth multiline minRows={3} label="Meta description" name="metaDescription" value={brandingSettings.metaDescription} onChange={handleBrandingChange} disabled={!isAdmin || loading} helperText={`${brandingSettings.metaDescription.length}/300 characters`} inputProps={{ maxLength: 300 }} /><TextField fullWidth label="Meta keywords" name="metaKeywords" value={brandingSettings.metaKeywords} onChange={handleBrandingChange} disabled={!isAdmin || loading} helperText="Comma-separated phrases" inputProps={{ maxLength: 300 }} /></Stack>
+            </Box>
+          </Stack>
+        </TabPanel>
+
+        {/* General Settings Tab */}
+        <TabPanel value={tabValue} index={1}>
           <Grid container spacing={3}>
             <Grid item xs={12} md={6}>
               <TextField
@@ -388,7 +494,7 @@ function Settings() {
         </TabPanel>
         
         {/* OCPP Settings Tab */}
-        <TabPanel value={tabValue} index={1}>
+        <TabPanel value={tabValue} index={2}>
           <Grid container spacing={3}>
             <Grid item xs={12} md={6}>
               <TextField
@@ -459,7 +565,7 @@ function Settings() {
         </TabPanel>
         
         {/* Pricing Settings Tab */}
-        <TabPanel value={tabValue} index={2}>
+        <TabPanel value={tabValue} index={99}>
           <Grid container spacing={3}>
             <Grid item xs={12} md={6}>
               <TextField

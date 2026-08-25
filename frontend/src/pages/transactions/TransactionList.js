@@ -419,10 +419,9 @@ function TransactionList() {
   return (
     <Box>
       {/* Header */}
-      <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography variant="h4" component="h1" gutterBottom>
-          Transactions
-        </Typography>
+      <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'center' }, flexDirection: { xs: 'column', sm: 'row' }, gap: 2 }}>
+        <Box><Typography variant="h4" component="h1">Transactions</Typography>
+          <Typography color="text.secondary" sx={{ mt: 0.5 }}>Explore charging sessions, energy delivery, billing and completion status.</Typography></Box>
         <IconButton onClick={fetchData}>
           <RefreshIcon />
         </IconButton>

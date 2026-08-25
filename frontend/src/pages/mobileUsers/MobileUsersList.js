@@ -174,6 +174,7 @@ const MobileUsersList = () => {
       <Typography variant="h4" gutterBottom>
         Mobile Users Management
       </Typography>
+      <Typography color="text.secondary" sx={{ mb: 3 }}>Manage driver accounts, access status, RFID tags and wallet activity.</Typography>
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>

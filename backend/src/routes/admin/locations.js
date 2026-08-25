@@ -1,7 +1,8 @@
 const express = require('express');
 const { Location, ChargingStation } = require('../../models');
-const { authenticate, authorize } = require('../../middleware/auth');
+const { authenticate } = require('../../middleware/auth');
 const { requirePermission } = require('../../middleware/permissions');
+const { applyLocationStateScope, canAccessState } = require('../../middleware/adminScope');
 const logger = require('../../utils/logger');
 
 const router = express.Router();
@@ -13,6 +14,7 @@ const router = express.Router();
 router.get('/', authenticate, requirePermission('locations.view'), async (req, res) => {
   try {
     const locations = await Location.findAll({
+      where: applyLocationStateScope(req.user),
       order: [['name', 'ASC']],
       include: [{
         model: ChargingStation,
@@ -53,6 +55,7 @@ router.get('/:id', authenticate, requirePermission('locations.view'), async (req
     if (!location) {
       return res.status(404).json({ success: false, message: 'Location not found' });
     }
+    if (!canAccessState(req.user, location.state)) return res.status(403).json({ success: false, message: 'This location is outside your assigned state scope' });
     res.json({ success: true, location });
   } catch (error) {
     logger.error('Error fetching location:', error);
@@ -74,6 +77,7 @@ router.post('/', authenticate, requirePermission('locations.create'), async (req
       logger.warn('Location creation failed: Missing required fields', { name, state, city });
       return res.status(400).json({ success: false, message: 'Name, state, and city are required' });
     }
+    if (!canAccessState(req.user, state)) return res.status(403).json({ success: false, message: 'You cannot create a location outside your assigned states' });
 
     const location = await Location.create({
       name, country: country || 'Nigeria', state, city, address, latitude, longitude,
@@ -104,6 +108,7 @@ router.put('/:id', authenticate, requirePermission('locations.update'), async (r
     }
 
     const { name, country, state, city, address, latitude, longitude, description, active, pricePerWh, minimumCharge } = req.body;
+    if (!canAccessState(req.user, location.state) || !canAccessState(req.user, state || location.state)) return res.status(403).json({ success: false, message: 'This location is outside your assigned state scope' });
     await location.update({ name, country, state, city, address, latitude, longitude, description, active, pricePerWh, minimumCharge });
 
     // Also update the location JSON string on all linked stations
@@ -137,6 +142,7 @@ router.delete('/:id', authenticate, requirePermission('locations.update'), async
     if (!location) {
       return res.status(404).json({ success: false, message: 'Location not found' });
     }
+    if (!canAccessState(req.user, location.state)) return res.status(403).json({ success: false, message: 'This location is outside your assigned state scope' });
 
     // Unlink stations
     await ChargingStation.update(
@@ -163,6 +169,7 @@ router.post('/:id/assign-station', authenticate, requirePermission('locations.up
     if (!location) {
       return res.status(404).json({ success: false, message: 'Location not found' });
     }
+    if (!canAccessState(req.user, location.state)) return res.status(403).json({ success: false, message: 'This location is outside your assigned state scope' });
 
     const { stationId } = req.body;
     const station = await ChargingStation.findByPk(stationId);
@@ -187,6 +194,9 @@ router.post('/:id/assign-station', authenticate, requirePermission('locations.up
  */
 router.post('/:id/unassign-station', authenticate, requirePermission('locations.update'), async (req, res) => {
   try {
+    const location = await Location.findByPk(req.params.id);
+    if (!location) return res.status(404).json({ success: false, message: 'Location not found' });
+    if (!canAccessState(req.user, location.state)) return res.status(403).json({ success: false, message: 'This location is outside your assigned state scope' });
     const { stationId } = req.body;
     const station = await ChargingStation.findByPk(stationId);
     if (!station) {

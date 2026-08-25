@@ -207,9 +207,10 @@ const SettlementList = () => {
   };
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4">Partner Settlements</Typography>
+    <Box>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'center' }, flexDirection: { xs: 'column', sm: 'row' }, gap: 2, mb: 3 }}>
+        <Box><Typography variant="h4">Partner Settlements</Typography>
+          <Typography color="text.secondary" sx={{ mt: 0.5 }}>Generate, review, approve and record partner earning payouts.</Typography></Box>
         <Box sx={{ display: 'flex', gap: 2 }}>
           <IconButton onClick={fetchSettlements} disabled={loading}>
             <RefreshIcon />

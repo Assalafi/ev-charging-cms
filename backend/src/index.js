@@ -47,18 +47,60 @@ app.options('*', cors(corsOptions));
 // ======================
 // Rate Limiting
 // ======================
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
-  max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
-  message: process.env.RATE_LIMIT_MESSAGE || 'Too many requests, please try again later'
+const apiPrefix = process.env.API_PREFIX || '/api';
+const isProduction = process.env.NODE_ENV === 'production';
+const positiveInteger = (value, fallback) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const rateLimitWindowMs = positiveInteger(
+  process.env.RATE_LIMIT_WINDOW_MS,
+  15 * 60 * 1000
+);
+
+// Login attempts have their own bucket. This prevents normal authenticated API
+// traffic (especially live dashboard polling) from locking users out of login.
+const loginLimiter = rateLimit({
+  windowMs: positiveInteger(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+  limit: positiveInteger(process.env.AUTH_RATE_LIMIT_MAX, isProduction ? 10 : 50),
+  skipSuccessfulRequests: true,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many unsuccessful login attempts. Please wait a few minutes and try again.'
+  }
 });
 
+const authenticatedRequestLimit = positiveInteger(
+  process.env.AUTHENTICATED_RATE_LIMIT_MAX,
+  6000
+);
+const publicRequestLimit = positiveInteger(process.env.RATE_LIMIT_MAX, 1000);
+const loginPath = `${apiPrefix.replace(/\/$/, '')}/auth/login`;
+
+const limiter = rateLimit({
+  windowMs: rateLimitWindowMs,
+  limit: req => req.headers.authorization ? authenticatedRequestLimit : publicRequestLimit,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: req => req.method === 'OPTIONS' || req.path === loginPath,
+  message: {
+    success: false,
+    message: process.env.RATE_LIMIT_MESSAGE || 'Too many requests, please try again later'
+  }
+});
+
+app.use(loginPath, loginLimiter);
 app.use(limiter);
 
 // ======================
 // Static Files
 // ======================
-app.use('/public', express.static(process.env.UPLOADS_DIR || './uploads'));
+app.use('/public', express.static(process.env.UPLOADS_DIR || './uploads', {
+  setHeaders: res => res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+}));
 app.use('/firmware', express.static(process.env.FIRMWARE_DIR || './uploads/firmware'));
 
 // ======================
@@ -76,7 +118,7 @@ app.use(pricingValidationMiddleware);
 // ======================
 // API Routes
 // ======================
-app.use(process.env.API_PREFIX || '/api', routes);
+app.use(apiPrefix, routes);
 
 // ======================
 // Health Check

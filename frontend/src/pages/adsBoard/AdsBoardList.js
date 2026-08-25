@@ -80,8 +80,9 @@ const AdsBoardList = () => {
       const response = await adsBoardService.getAds(page + 1, rowsPerPage);
       setAds(response.data.ads);
       setTotalAds(response.data.pagination.totalAds);
+      setError(null);
     } catch (err) {
-      setError('Failed to fetch ads');
+      setError(err.message || 'Failed to fetch ads');
       console.error('Error fetching ads:', err);
     } finally {
       setLoading(false);
@@ -219,7 +220,7 @@ const AdsBoardList = () => {
 
   return (
     <Box>
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
+      <Box display="flex" justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} flexDirection={{ xs: 'column', sm: 'row' }} gap={2} mb={3}>
         <Typography variant="h4" component="h1">
           Ads Board Management
         </Typography>

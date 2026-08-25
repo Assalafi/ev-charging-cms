@@ -47,6 +47,7 @@ export default function FullscreenMap({
   height = 600,
   children,
   overlay,
+  panel,
   ariaLabel = 'Charging network map'
 }) {
   const frameRef = useRef(null);
@@ -87,7 +88,8 @@ export default function FullscreenMap({
       <MapContainer ref={mapRef} center={center} zoom={zoom} style={{ height: '100%', width: '100%' }}>
         {children}
       </MapContainer>
-      {overlay}
+      {typeof overlay === 'function' ? overlay({ isFullscreen }) : overlay}
+      {typeof panel === 'function' ? panel({ isFullscreen }) : panel}
       <IconButton
         onClick={toggleFullscreen}
         aria-label={isFullscreen ? 'Exit full-screen map' : 'Open full-screen map'}

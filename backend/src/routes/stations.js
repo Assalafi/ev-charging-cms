@@ -6,16 +6,111 @@ const {
     sequelize
 } = require('../models');
 const { Op } = require('sequelize');
-const {
-    authenticate,
-    authorize
-} = require('../middleware/auth');
+const { authenticate } = require('../middleware/auth');
 const ocppServer = require('../ocpp/server');
 const mqttClient = require('../mqtt/client');
 const logger = require('../utils/logger');
 const { requirePermission } = require('../middleware/permissions');
+const { scopedStationWhere, scopedTransactionWhere, accessibleLocationIds } = require('../middleware/adminScope');
 
 const router = express.Router();
+
+function requireStationStateAccess(param = 'id') {
+    return async (req, res, next) => {
+        try {
+            const locationIds = await accessibleLocationIds(req.user);
+            if (locationIds === null) return next();
+            const value = req.params[param];
+            const station = await ChargingStation.findOne({
+                where: {
+                    [Op.or]: [
+                        { chargePointId: value },
+                        ...(Number.isInteger(Number(value)) ? [{ id: Number(value) }] : [])
+                    ]
+                },
+                attributes: ['locationId']
+            });
+            if (station && locationIds.includes(station.locationId)) {
+                if (req.body?.locationId && !locationIds.includes(Number(req.body.locationId))) {
+                    return res.status(403).json({ success: false, message: 'The target location is outside your assigned state scope' });
+                }
+                return next();
+            }
+            return res.status(403).json({ success: false, message: 'This station is outside your assigned state scope' });
+        } catch (error) {
+            next(error);
+        }
+    };
+}
+
+async function requireBulkStationStateAccess(req, res, next) {
+    try {
+        const locationIds = await accessibleLocationIds(req.user);
+        if (locationIds === null) return next();
+        const stationIds = Array.isArray(req.body.stationIds) ? req.body.stationIds : [];
+        const count = await ChargingStation.count({ where: { chargePointId: { [Op.in]: stationIds }, locationId: { [Op.in]: locationIds } } });
+        if (count !== stationIds.length) return res.status(403).json({ success: false, message: 'One or more selected stations are outside your assigned state scope' });
+        next();
+    } catch (error) {
+        next(error);
+    }
+}
+
+async function requireNewStationStateAccess(req, res, next) {
+    try {
+        const locationIds = await accessibleLocationIds(req.user);
+        if (locationIds === null) return next();
+        if (!locationIds.includes(Number(req.body.locationId))) return res.status(403).json({ success: false, message: 'Choose a location within your assigned states' });
+        next();
+    } catch (error) {
+        next(error);
+    }
+}
+
+async function removeStationById(chargePointId) {
+    return sequelize.transaction(async databaseTransaction => {
+        const station = await ChargingStation.findOne({
+            where: { chargePointId },
+            transaction: databaseTransaction,
+            lock: databaseTransaction.LOCK.UPDATE
+        });
+
+        if (!station) {
+            const error = new Error('Charging station not found');
+            error.status = 404;
+            error.code = 'STATION_NOT_FOUND';
+            throw error;
+        }
+
+        const activeTransactions = await Transaction.count({
+            where: { chargePointId, status: 'InProgress' },
+            transaction: databaseTransaction
+        });
+
+        if (activeTransactions > 0) {
+            const error = new Error('Stop active charging sessions before deleting this station');
+            error.status = 409;
+            error.code = 'ACTIVE_TRANSACTIONS';
+            throw error;
+        }
+
+        const historicalTransactions = await Transaction.count({
+            where: { chargePointId },
+            transaction: databaseTransaction
+        });
+        // Numeric relationships use ON DELETE SET NULL, so PostgreSQL performs
+        // the unlink atomically. The immutable chargePointId snapshot remains on
+        // billing and OCPP audit records without rewriting thousands of rows.
+        // Connector and reservation relationships use ON DELETE CASCADE.
+        await station.destroy({ transaction: databaseTransaction });
+
+        return {
+            chargePointId,
+            name: station.name,
+            preservedTransactions: historicalTransactions
+        };
+    });
+}
 
 /**
  * @route   GET /api/stations/diagnostic
@@ -57,7 +152,7 @@ router.get('/diagnostic', authenticate, requirePermission('stations.monitor'), a
  * @desc    Get a single charging station for diagnostic purposes (no auth required)
  * @access  Public
  */
-router.get('/diagnostic/:id', authenticate, requirePermission('stations.monitor'), async (req, res) => {
+router.get('/diagnostic/:id', authenticate, requirePermission('stations.monitor'), requireStationStateAccess(), async (req, res) => {
     try {
         const station = await ChargingStation.findOne({
             where: {
@@ -96,7 +191,7 @@ router.get('/diagnostic/:id', authenticate, requirePermission('stations.monitor'
  * @desc    Get connectors for a charging station (no auth required)
  * @access  Public
  */
-router.get('/diagnostic/:id/connectors', authenticate, requirePermission('stations.monitor'), async (req, res) => {
+router.get('/diagnostic/:id/connectors', authenticate, requirePermission('stations.monitor'), requireStationStateAccess(), async (req, res) => {
     try {
         const {
             Connector
@@ -135,7 +230,7 @@ router.get('/diagnostic/:id/connectors', authenticate, requirePermission('statio
  * @desc    Get connectors for a charging station with authentication
  * @access  Private
  */
-router.get('/:id/connectors', authenticate, async (req, res) => {
+router.get('/:id/connectors', authenticate, requireStationStateAccess(), async (req, res) => {
     try {
         const {
             Connector
@@ -197,7 +292,7 @@ router.get('/:id/connectors', authenticate, async (req, res) => {
  * @desc    Get transactions for a charging station (no auth required)
  * @access  Public
  */
-router.get('/diagnostic/:id/transactions', authenticate, requirePermission('stations.monitor'), async (req, res) => {
+router.get('/diagnostic/:id/transactions', authenticate, requirePermission('stations.monitor'), requireStationStateAccess(), async (req, res) => {
     try {
         const status = req.query.status || 'InProgress';
 
@@ -229,7 +324,7 @@ router.get('/diagnostic/:id/transactions', authenticate, requirePermission('stat
  * @desc    Start a transaction remotely for diagnostic purposes (no auth required)
  * @access  Public
  */
-router.post('/diagnostic/:id/remote-start', authenticate, requirePermission('stations.remote_control'), async (req, res) => {
+router.post('/diagnostic/:id/remote-start', authenticate, requirePermission('stations.remote_control'), requireStationStateAccess(), async (req, res) => {
     try {
         const {
             connectorId = 1, idTag = 'TEST_TAG'
@@ -282,7 +377,7 @@ router.post('/diagnostic/:id/remote-start', authenticate, requirePermission('sta
  * @desc    Stop a transaction remotely for diagnostic purposes (no auth required)
  * @access  Public
  */
-router.post('/diagnostic/:id/remote-stop', authenticate, requirePermission('stations.remote_control'), async (req, res) => {
+router.post('/diagnostic/:id/remote-stop', authenticate, requirePermission('stations.remote_control'), requireStationStateAccess(), async (req, res) => {
     try {
         let {
             transactionId
@@ -344,7 +439,9 @@ router.post('/diagnostic/:id/remote-stop', authenticate, requirePermission('stat
  */
 router.get('/', authenticate, async (req, res) => {
     try {
+        const where = await scopedStationWhere(req.user);
         const stations = await ChargingStation.findAll({
+            where,
             order: [
                 ['lastHeartbeat', 'DESC NULLS LAST']
             ]
@@ -377,7 +474,7 @@ router.get('/', authenticate, async (req, res) => {
  * @desc    Get a single charging station
  * @access  Private
  */
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', authenticate, requireStationStateAccess(), async (req, res) => {
     try {
         const station = await ChargingStation.findOne({
             where: {
@@ -391,7 +488,6 @@ router.get('/:id', authenticate, async (req, res) => {
                 message: 'Charging station not found'
             });
         }
-
         // Add connection status
         const isConnected = ocppServer.isConnected(station.chargePointId);
 
@@ -428,7 +524,7 @@ router.get('/:id', authenticate, async (req, res) => {
  * @desc    Get the real-time connection status of a charging station
  * @access  Private
  */
-router.get('/:id/connection', authenticate, async (req, res) => {
+router.get('/:id/connection', authenticate, requireStationStateAccess(), async (req, res) => {
     try {
         const stationId = req.params.id;
 
@@ -493,7 +589,7 @@ router.get('/:id/connection', authenticate, async (req, res) => {
  * @desc    Get real-time status of a charging station (lightweight endpoint)
  * @access  Private
  */
-router.get('/:id/status', authenticate, async (req, res) => {
+router.get('/:id/status', authenticate, requireStationStateAccess(), async (req, res) => {
     try {
         logger.info(`Fetching station status for: ${req.params.id}`);
         
@@ -654,7 +750,7 @@ router.get('/:id/status', authenticate, async (req, res) => {
  * @desc    Get transactions for a charging station
  * @access  Private
  */
-router.get('/:id/transactions', authenticate, async (req, res) => {
+router.get('/:id/transactions', authenticate, requireStationStateAccess(), async (req, res) => {
     try {
         const {
             limit = 20, offset = 0, status
@@ -695,7 +791,7 @@ router.get('/:id/transactions', authenticate, async (req, res) => {
  * @desc    Get OCPP message logs for a charging station
  * @access  Private
  */
-router.get('/:id/logs', authenticate, async (req, res) => {
+router.get('/:id/logs', authenticate, requireStationStateAccess(), async (req, res) => {
     try {
         const {
             limit = 50, offset = 0, message_type
@@ -767,7 +863,7 @@ router.get('/:id/logs', authenticate, async (req, res) => {
  * @desc    Send RemoteStartTransaction command
  * @access  Private/Operator
  */
-router.post('/:id/remote-start', authorize(['admin', 'operator']), async (req, res) => {
+router.post('/:id/remote-start', authenticate, requirePermission('stations.remote_control'), requireStationStateAccess(), async (req, res) => {
     try {
         const {
             idTag,
@@ -827,7 +923,7 @@ router.post('/:id/remote-start', authorize(['admin', 'operator']), async (req, r
  * @desc    Send RemoteStopTransaction command
  * @access  Private/Operator
  */
-router.post('/:id/remote-stop', authorize(['admin', 'operator']), async (req, res) => {
+router.post('/:id/remote-stop', authenticate, requirePermission('stations.remote_control'), requireStationStateAccess(), async (req, res) => {
     try {
         const {
             transactionId
@@ -952,7 +1048,7 @@ router.post('/:id/remote-stop', authorize(['admin', 'operator']), async (req, re
  * @desc    Send Reset command
  * @access  Private/Admin
  */
-router.post('/:id/reset', authorize('admin'), async (req, res) => {
+router.post('/:id/reset', authenticate, requirePermission('stations.remote_control'), requireStationStateAccess(), async (req, res) => {
     try {
         const {
             type = 'Soft'
@@ -1007,7 +1103,7 @@ router.post('/:id/reset', authorize('admin'), async (req, res) => {
  * @desc    Manually trigger a boot notification for a station
  * @access  Private/Admin
  */
-router.post('/:id/trigger-boot', authorize(['admin', 'operator']), async (req, res) => {
+router.post('/:id/trigger-boot', authenticate, requirePermission('stations.remote_control'), requireStationStateAccess(), async (req, res) => {
     try {
         const {
             id
@@ -1077,93 +1173,80 @@ router.post('/:id/trigger-boot', authorize(['admin', 'operator']), async (req, r
 });
 
 /**
- * @route   DELETE /api/stations/:id
- * @desc    Delete a charging station
+ * @route   POST /api/stations/bulk-delete
+ * @desc    Delete multiple stations while retaining billing and OCPP history
  * @access  Private/Admin
  */
-router.delete('/:id', authorize(['admin', 'operator']), async (req, res) => {
+router.post('/bulk-delete', authenticate, requirePermission('stations.delete'), requireBulkStationStateAccess, async (req, res) => {
+    const stationIds = [...new Set(
+        (Array.isArray(req.body?.stationIds) ? req.body.stationIds : [])
+            .map(value => String(value).trim())
+            .filter(Boolean)
+    )];
+
+    if (!stationIds.length || stationIds.length > 100) {
+        return res.status(400).json({
+            success: false,
+            message: 'Select between 1 and 100 charging stations'
+        });
+    }
+
+    const outcomes = await Promise.all(stationIds.map(async stationId => {
+        try {
+            const station = await removeStationById(stationId);
+            logger.info(`Station deleted through bulk action: ${stationId}`);
+            return { success: true, station };
+        } catch (error) {
+            if (error.code === 'STATION_NOT_FOUND') {
+                return {
+                    success: true,
+                    station: { chargePointId: stationId, alreadyDeleted: true }
+                };
+            }
+            const failure = {
+                chargePointId: stationId,
+                code: error.code || 'DELETE_FAILED',
+                message: error.status ? error.message : 'Could not delete this station'
+            };
+            logger.error(`Bulk station deletion failed for ${stationId}: ${error.message}`);
+            return { success: false, failure };
+        }
+    }));
+    const deleted = outcomes.filter(outcome => outcome.success).map(outcome => outcome.station);
+    const failed = outcomes.filter(outcome => !outcome.success).map(outcome => outcome.failure);
+
+    res.json({
+        success: failed.length === 0,
+        message: failed.length
+            ? `${deleted.length} station${deleted.length === 1 ? '' : 's'} deleted; ${failed.length} could not be deleted`
+            : `${deleted.length} station${deleted.length === 1 ? '' : 's'} deleted successfully`,
+        deleted,
+        failed
+    });
+});
+
+/**
+ * @route   DELETE /api/stations/:id
+ * @desc    Delete a charging station while retaining billing and OCPP history
+ * @access  Private/Admin
+ */
+router.delete('/:id', authenticate, requirePermission('stations.delete'), requireStationStateAccess(), async (req, res) => {
     try {
-        const {
-            id
-        } = req.params;
-
-        logger.info(`DELETE station request received for: ${id}`);
-
-        // Find the station
-        const station = await ChargingStation.findOne({
-            where: {
-                chargePointId: id
-            }
-        });
-
-        if (!station) {
-            return res.status(404).json({
-                success: false,
-                message: 'Charging station not found'
-            });
-        }
-
-        // Check if station has active transactions
-        const activeTransactions = await Transaction.count({
-            where: {
-                chargePointId: id,
-                status: 'InProgress'
-            }
-        });
-
-        if (activeTransactions > 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'Cannot delete station with active transactions'
-            });
-        }
-
-        // Delete related records first (foreign key constraints)
-        const stationDbId = station.id;
-        logger.info(`Deleting related records for station ${id} (db id: ${stationDbId})`);
-        
-        try {
-            await sequelize.query(`DELETE FROM connectors WHERE "chargePointId" = :id`, { replacements: { id: stationDbId } });
-            logger.info(`Deleted connectors for station ${id}`);
-        } catch (e) { logger.warn(`connectors cleanup: ${e.message}`); }
-        
-        try {
-            await sequelize.query(`DELETE FROM ocpp_messages WHERE "chargePointId" = :cpId OR "chargingStationId" = :id`, { replacements: { cpId: id, id: stationDbId } });
-            logger.info(`Deleted ocpp_messages for station ${id}`);
-        } catch (e) { logger.warn(`ocpp_messages cleanup: ${e.message}`); }
-        
-        try {
-            await sequelize.query(`DELETE FROM firmware_update_histories WHERE "ChargingStationId" = :id OR "chargingStationId" = :id`, { replacements: { id: stationDbId } });
-            logger.info(`Deleted firmware_update_histories for station ${id}`);
-        } catch (e) { logger.warn(`firmware_update_histories cleanup: ${e.message}`); }
-        
-        try {
-            await sequelize.query(`DELETE FROM reservations WHERE "chargingStationId" = :id`, { replacements: { id: stationDbId } });
-            logger.info(`Deleted reservations for station ${id}`);
-        } catch (e) { logger.warn(`reservations cleanup: ${e.message}`); }
-        
-        try {
-            // Set transactions to null reference instead of deleting them (preserve history)
-            await sequelize.query(`UPDATE transactions SET "chargePointId" = NULL, "chargingStationId" = NULL WHERE "chargePointId" = :cpId OR "chargingStationId" = :id`, { replacements: { cpId: id, id: stationDbId } });
-            logger.info(`Unlinked transactions for station ${id}`);
-        } catch (e) { logger.warn(`transactions cleanup: ${e.message}`); }
-
-        // Delete the station
-        await station.destroy();
-
-        logger.info(`Station deleted: ${id}`);
+        logger.info(`DELETE station request received for: ${req.params.id}`);
+        const result = await removeStationById(req.params.id);
+        logger.info(`Station deleted: ${req.params.id}`);
 
         res.json({
             success: true,
-            message: 'Charging station deleted successfully'
+            message: 'Charging station deleted successfully; historical sessions were preserved',
+            station: result
         });
     } catch (error) {
-        logger.error(`Error deleting station ${req.params.id}:`, error.message);
-        logger.error('Error details:', error);
-        res.status(500).json({
+        logger.error(`Error deleting station ${req.params.id}: ${error.message}`);
+        res.status(error.status || 500).json({
             success: false,
-            message: 'Server error',
-            error: error.message
+            code: error.code || 'DELETE_FAILED',
+            message: error.status ? error.message : 'Could not delete the charging station safely'
         });
     }
 });
@@ -1173,7 +1256,7 @@ router.delete('/:id', authorize(['admin', 'operator']), async (req, res) => {
  * @desc    Create a new charging station
  * @access  Private/Admin
  */
-router.post('/', authorize(['admin', 'operator']), async (req, res) => {
+router.post('/', authenticate, requirePermission('stations.create'), requireNewStationStateAccess, async (req, res) => {
     try {
         const {
             chargePointId,
@@ -1259,7 +1342,7 @@ router.post('/', authorize(['admin', 'operator']), async (req, res) => {
  * @desc    Update a charging station
  * @access  Private/Admin
  */
-router.put('/:id', authorize('admin'), async (req, res) => {
+router.put('/:id', authenticate, requirePermission('stations.update'), requireStationStateAccess(), async (req, res) => {
     try {
         const {
             id
@@ -1327,19 +1410,15 @@ router.put('/:id', authorize('admin'), async (req, res) => {
  */
 router.get('/stats/summary', authenticate, async (req, res) => {
     try {
+        const stationWhere = await scopedStationWhere(req.user);
+        const scopedStations = await ChargingStation.findAll({ where: stationWhere, attributes: ['chargePointId'], raw: true });
         // Get count of all stations (with error handling)
-        let totalStations = 0;
-        try {
-            totalStations = await ChargingStation.count();
-        } catch (error) {
-            logger.error('Error counting stations:', error);
-        }
+        const totalStations = scopedStations.length;
 
         // Get count of connected stations (with null check)
         let connectedStations = 0;
         try {
-            const connectedList = ocppServer.getConnectedStations();
-            connectedStations = Array.isArray(connectedList) ? connectedList.length : 0;
+            connectedStations = scopedStations.filter(station => ocppServer.isConnected(station.chargePointId)).length;
         } catch (error) {
             logger.error('Error getting connected stations:', error);
         }
@@ -1348,9 +1427,7 @@ router.get('/stats/summary', authenticate, async (req, res) => {
         let activeTransactions = 0;
         try {
             activeTransactions = await Transaction.count({
-                where: {
-                    status: 'InProgress'
-                }
+                where: await scopedTransactionWhere(req.user, { status: 'InProgress' })
             });
         } catch (error) {
             logger.error('Error counting active transactions:', error);
@@ -1362,8 +1439,7 @@ router.get('/stats/summary', authenticate, async (req, res) => {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
 
-            const energy = await Transaction.sum('energyDelivered', {
-                where: {
+            const energyWhere = await scopedTransactionWhere(req.user, {
                     [Op.or]: [{
                             startTime: {
                                 [Op.gte]: today
@@ -1375,8 +1451,8 @@ router.get('/stats/summary', authenticate, async (req, res) => {
                             }
                         }
                     ]
-                }
-            });
+                });
+            const energy = await Transaction.sum('energyDelivered', { where: energyWhere });
 
             energyToday = energy || 0;
         } catch (error) {

@@ -172,11 +172,9 @@ function LocationsList() {
 
   return (
     <Box>
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
-        <Typography variant="h4" fontWeight={700}>
-          <LocationIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
-          Locations
-        </Typography>
+      <Box display="flex" justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} flexDirection={{ xs: 'column', sm: 'row' }} gap={2} mb={3}>
+        <Box><Typography variant="h4" fontWeight={700}><LocationIcon sx={{ mr: 1, verticalAlign: 'middle' }} />Locations</Typography>
+          <Typography color="text.secondary" sx={{ mt: 0.5 }}>Organize charging sites, pricing and assigned infrastructure.</Typography></Box>
         <Box>
           <Button startIcon={<RefreshIcon />} onClick={fetchLocations} sx={{ mr: 1 }}>
             Refresh

@@ -1227,13 +1227,8 @@ router.get('/app-version', async (req, res) => {
  * @route   PUT /api/mobile/app-version
  * @desc    Update app version settings (admin only via CMS auth)
  */
-router.put('/app-version', require('../middleware/auth').authenticate, async (req, res) => {
+router.put('/app-version', require('../middleware/auth').authenticate, require('../middleware/permissions').requirePermission('app_updates.manage'), async (req, res) => {
   try {
-    // Check admin role
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Admin access required' });
-    }
-
     const { minVersion, latestVersion, forceUpdate, updateUrl, message } = req.body;
     const { Settings } = require('../models');
 

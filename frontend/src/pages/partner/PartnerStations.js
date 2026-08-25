@@ -7,6 +7,7 @@ import EvStationIcon from '@mui/icons-material/EvStation';
 import BoltIcon from '@mui/icons-material/Bolt';
 import partnerService from '../../services/partnerService';
 import { formatEnergy, formatNaira, statusColor } from '../../utils/partnerFormatters';
+import PageHeader from '../../components/ui/PageHeader';
 
 export default function PartnerStations() {
   const [stations, setStations] = useState([]);
@@ -38,18 +39,14 @@ export default function PartnerStations() {
 
   return (
     <Box>
-      <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2} mb={3}>
-        <Box>
-          <Typography variant="h4">Stations</Typography>
-          <Typography color="text.secondary">Live operational status for your charging network.</Typography>
-        </Box>
-        <Select size="small" value={status} onChange={event => setStatus(event.target.value)} sx={{ minWidth: 180 }}>
+      <PageHeader eyebrow="My network" title="Charging stations" description="Live operational status, energy and earnings across your assigned chargers." live actions={[
+        <Select key="status" size="small" value={status} onChange={event => setStatus(event.target.value)} sx={{ minWidth: 180 }}>
           <MenuItem value="all">All statuses</MenuItem>
           {[...new Set(stations.map(station => station.status))].map(value =>
             <MenuItem key={value} value={value}>{value}</MenuItem>
           )}
         </Select>
-      </Stack>
+      ]} />
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       <Grid container spacing={2} mb={3}>
         {[

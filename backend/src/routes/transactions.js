@@ -5,6 +5,7 @@ const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const logger = require('../utils/logger');
 const { completeTransaction } = require('../services/completeTransactionService');
+const { scopedTransactionWhere } = require('../middleware/adminScope');
 
 const router = express.Router();
 
@@ -156,7 +157,7 @@ router.get('/', authenticate, async (req, res) => {
     } = req.query;
     
     // Build where clause
-    const where = {};
+    let where = {};
     if (status) where.status = status;
     if (chargePointId) where.chargePointId = chargePointId;
     if (idTag) where.idTag = idTag;
@@ -201,6 +202,8 @@ router.get('/', authenticate, async (req, res) => {
       }
     }
     
+    where = await scopedTransactionWhere(req.user, where);
+
     // Log the complete where clause
     logger.debug('Final query where clause:', JSON.stringify(where, null, 2));
     
@@ -296,12 +299,12 @@ router.post('/complete/:id', authenticate, requirePermission('stations.remote_co
     
     // Try to find by transactionId first (which may be a numeric ID)
     let transaction = await Transaction.findOne({
-      where: { transactionId: parseInt(transactionId) || transactionId }
+      where: await scopedTransactionWhere(req.user, { transactionId: parseInt(transactionId) || transactionId })
     });
     
     // If not found, try looking up by the database ID
     if (!transaction) {
-      transaction = await Transaction.findByPk(transactionId);
+      transaction = await Transaction.findOne({ where: await scopedTransactionWhere(req.user, { id: transactionId }) });
     }
     
     if (!transaction) {
@@ -349,7 +352,7 @@ router.post('/complete/:id', authenticate, requirePermission('stations.remote_co
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const transaction = await Transaction.findOne({
-      where: { transactionId: req.params.id },
+      where: await scopedTransactionWhere(req.user, { transactionId: req.params.id }),
       include: [
         {
           model: ChargingStation,
@@ -424,13 +427,17 @@ router.get('/stats/energy', authenticate, async (req, res) => {
     let transactions = [];
     try {
       // Build where clause
-      const where = {
-        stopTime: { [Op.gte]: startDate }
+      let where = {
+        [Op.or]: [
+          { stopTime: { [Op.gte]: startDate } },
+          { status: 'InProgress', startTime: { [Op.gte]: startDate } }
+        ]
       };
       
       if (chargePointId) {
         where.chargePointId = chargePointId;
       }
+      where = await scopedTransactionWhere(req.user, where);
       
       // Get completed transactions with error handling
       transactions = await Transaction.findAll({
@@ -552,10 +559,9 @@ router.get('/stats/usage', authenticate, async (req, res) => {
     // Get transaction count per station with error handling
     let stationUsage = [];
     try {
+      const usageWhere = await scopedTransactionWhere(req.user, { startTime: { [Op.gte]: startDate } });
       stationUsage = await Transaction.findAll({
-        where: {
-          startTime: { [Op.gte]: startDate }
-        },
+        where: usageWhere,
         attributes: [
           'chargePointId',
           [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
@@ -578,9 +584,7 @@ router.get('/stats/usage', authenticate, async (req, res) => {
       // Try a simplified query if the complex one fails
       try {
         stationUsage = await Transaction.findAll({
-          where: {
-            startTime: { [Op.gte]: startDate }
-          },
+          where: usageWhere,
           attributes: [
             'chargePointId',
             [sequelize.fn('COUNT', sequelize.col('id')), 'count']
@@ -621,11 +625,12 @@ router.get('/stats/today', authenticate, async (req, res) => {
     const endOfDay = new Date(now);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const transactions = await Transaction.findAll({
-      where: {
+    const todayWhere = await scopedTransactionWhere(req.user, {
         startTime: { [Op.gte]: startOfDay, [Op.lte]: endOfDay },
-        status: 'Completed'
-      },
+        status: { [Op.in]: ['Completed', 'InProgress'] }
+      });
+    const transactions = await Transaction.findAll({
+      where: todayWhere,
       attributes: ['energyDelivered', 'stopMeterValue', 'startMeterValue'],
       raw: true
     });
@@ -670,14 +675,14 @@ router.post('/complete', authenticate, requirePermission('stations.remote_contro
     
     // Try to find by transactionId first (which may be a numeric ID)
     let transaction = await Transaction.findOne({
-      where: { 
-        transactionId: parseInt(transactionId) || transactionId 
-      }
+      where: await scopedTransactionWhere(req.user, {
+        transactionId: parseInt(transactionId) || transactionId
+      })
     });
     
     // If not found, try looking up by the database ID
     if (!transaction) {
-      transaction = await Transaction.findByPk(transactionId);
+      transaction = await Transaction.findOne({ where: await scopedTransactionWhere(req.user, { id: transactionId }) });
     }
     
     if (!transaction) {
@@ -722,7 +727,7 @@ router.post('/complete', authenticate, requirePermission('stations.remote_contro
  * @desc    Reconcile a transaction using location-based pricing (fixes Wh to kWh errors)
  * @access  Private
  */
-router.post('/:id/reconcile', authenticate, async (req, res) => {
+router.post('/:id/reconcile', authenticate, requirePermission('transactions.manage'), async (req, res) => {
   const t = await sequelize.transaction();
   
   try {
@@ -730,7 +735,7 @@ router.post('/:id/reconcile', authenticate, async (req, res) => {
     
     // Find transaction
     let transaction = await Transaction.findOne({
-      where: { transactionId: parseInt(transactionId) || transactionId },
+      where: await scopedTransactionWhere(req.user, { transactionId: parseInt(transactionId) || transactionId }),
       transaction: t
     });
     

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -30,24 +30,33 @@ import {
   DialogTitle,
   DialogContent,
   DialogContentText,
-  DialogActions
+  DialogActions,
+  Checkbox,
+  FormControl,
+  InputLabel,
+  Select,
+  Tooltip,
+  Stack
 } from '@mui/material';
 import {
   Search as SearchIcon,
-  FilterList as FilterIcon,
   Add as AddIcon,
   PlayArrow as StartIcon,
   Stop as StopIcon,
   Refresh as RefreshIcon,
   MoreVert as MoreIcon,
-  Settings as SettingsIcon,
   History as HistoryIcon,
   Update as UpdateIcon,
   Sync as SyncIcon,
-  BatteryChargingFull as ChargingIcon,
   Description as LogsIcon,
   Delete as DeleteIcon,
-  Visibility as VisibilityIcon
+  Visibility as VisibilityIcon,
+  DeleteSweep as DeleteSweepIcon,
+  FilterAltOff as ClearFiltersIcon,
+  EvStation as StationIcon,
+  Wifi as OnlineIcon,
+  WifiOff as OfflineIcon,
+  WarningAmber as AttentionIcon
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import api from '../../services/api';
@@ -65,6 +74,8 @@ function StationList() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [filters, setFilters] = useState({ status: 'all', connection: 'all', vendor: 'all', firmware: 'all' });
+  const [selectedStationIds, setSelectedStationIds] = useState([]);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [anchorEl, setAnchorEl] = useState(null);
@@ -80,6 +91,8 @@ function StationList() {
   
   // Delete station dialog
   const [openDeleteDialog, setOpenDeleteDialog] = useState(false);
+  const [openBulkDeleteDialog, setOpenBulkDeleteDialog] = useState(false);
+  const [bulkDeleteLoading, setBulkDeleteLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   
   // Add station dialog
@@ -380,6 +393,7 @@ function StationList() {
   
   // Handle delete station
   const handleDeleteStation = async () => {
+    if (!selectedStation) return;
     setDeleteLoading(true);
     setError(null);
     
@@ -388,16 +402,42 @@ function StationList() {
       
       // Remove the station from the list
       setStations(prev => prev.filter(station => station.chargePointId !== selectedStation.chargePointId));
-      setSuccess(`Station ${selectedStation.name} deleted successfully`);
+      setSelectedStationIds(current => current.filter(id => id !== selectedStation.chargePointId));
+      setSuccess(`Station ${selectedStation.name} deleted successfully. Historical sessions were preserved.`);
       handleCloseDeleteDialog();
       
       // Clear success message after 5 seconds
       setTimeout(() => setSuccess(null), 5000);
     } catch (error) {
       console.error('Error deleting station:', error);
-      const msg = error.response?.data?.message || error.response?.data?.error || error.message || 'Unknown error';
+      const msg = error.serverMessage || error.data?.message || error.response?.data?.message || error.message || 'Unknown error';
       setError(`Failed to delete charging station: ${msg}`);
       setDeleteLoading(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!selectedStationIds.length) return;
+    setBulkDeleteLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await stationService.bulkDelete(selectedStationIds);
+      const deletedIds = (result.deleted || []).map(item => item.chargePointId);
+      setStations(current => current.filter(station => !deletedIds.includes(station.chargePointId)));
+      setSelectedStationIds((result.failed || []).map(item => item.chargePointId));
+      setOpenBulkDeleteDialog(false);
+
+      if (result.failed?.length) {
+        setError(`${result.message}. ${result.failed.map(item => `${item.chargePointId}: ${item.message}`).join(' • ')}`);
+      } else {
+        setSuccess(`${result.message}. Historical sessions and protocol records were preserved.`);
+        setTimeout(() => setSuccess(null), 5000);
+      }
+    } catch (requestError) {
+      setError(requestError.serverMessage || requestError.data?.message || requestError.message || 'Bulk delete failed');
+    } finally {
+      setBulkDeleteLoading(false);
     }
   };
   
@@ -411,14 +451,6 @@ function StationList() {
     setRowsPerPage(parseInt(event.target.value, 10));
     setPage(0);
   };
-  
-  // Filter stations by search term
-  const filteredStations = stations.filter(station => 
-    station.chargePointId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    station.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (station.model && station.model.toLowerCase().includes(searchTerm.toLowerCase())) ||
-    (station.vendor && station.vendor.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
   
   // Get status color
   const getStatusColor = (status) => {
@@ -434,17 +466,6 @@ function StationList() {
     }
   };
   
-  
-  // Get connection status
-  const getConnectionStatus = (station) => {
-    // Check if we have MQTT status for this station - if so, it's definitely connected
-    if (stationStatus && stationStatus[station.chargePointId]) {
-      return 'Connected';
-    }
-    
-    // Fall back to the stored connection status
-    return station.isConnected ? 'Connected' : 'Disconnected';
-  };
   
   // Check if station is connected
   const isStationConnected = (station) => {
@@ -479,66 +500,129 @@ function StationList() {
       (station.status && station.status.toLowerCase().includes('charging'))
     );
   };
+
+  const vendorOptions = useMemo(() => [...new Set(stations.map(station => station.vendor).filter(Boolean))].sort(), [stations]);
+  const firmwareOptions = useMemo(() => [...new Set(stations.map(station => station.firmwareVersion).filter(Boolean))].sort(), [stations]);
+  const statusOptions = useMemo(() => [...new Set(stations.map(station => {
+    const live = stationStatus?.[station.chargePointId];
+    return (typeof live === 'object' ? live?.status : live) || station.status;
+  }).filter(Boolean))].sort(), [stationStatus, stations]);
+
+  const filteredStations = useMemo(() => {
+    const search = searchTerm.trim().toLowerCase();
+    return stations.filter(station => {
+      const live = stationStatus?.[station.chargePointId];
+      const status = (typeof live === 'object' ? live?.status : live) || station.status || 'Unknown';
+      const connected = Boolean(live) || Boolean(station.isConnected);
+      const searchable = [station.chargePointId, station.name, station.model, station.vendor, station.firmwareVersion, station.location]
+        .filter(Boolean).join(' ').toLowerCase();
+
+      return (!search || searchable.includes(search))
+        && (filters.status === 'all' || status === filters.status)
+        && (filters.connection === 'all' || (filters.connection === 'online' ? connected : !connected))
+        && (filters.vendor === 'all' || station.vendor === filters.vendor)
+        && (filters.firmware === 'all' || station.firmwareVersion === filters.firmware);
+    });
+  }, [filters, searchTerm, stationStatus, stations]);
+
+  const stationSummary = useMemo(() => stations.reduce((summary, station) => {
+    const live = stationStatus?.[station.chargePointId];
+    const status = String((typeof live === 'object' ? live?.status : live) || station.status || '').toLowerCase();
+    const connected = Boolean(live) || Boolean(station.isConnected);
+    summary.total += 1;
+    summary.online += connected ? 1 : 0;
+    summary.offline += connected ? 0 : 1;
+    summary.attention += ['faulted', 'unavailable'].includes(status) ? 1 : 0;
+    return summary;
+  }, { total: 0, online: 0, offline: 0, attention: 0 }), [stationStatus, stations]);
+
+  const visibleStations = filteredStations.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+  const visibleIds = visibleStations.map(station => station.chargePointId);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedStationIds.includes(id));
+  const someVisibleSelected = visibleIds.some(id => selectedStationIds.includes(id)) && !allVisibleSelected;
+  const hasFilters = Boolean(searchTerm.trim()) || Object.values(filters).some(value => value !== 'all');
+
+  const toggleStationSelection = stationId => {
+    setSelectedStationIds(current => current.includes(stationId)
+      ? current.filter(id => id !== stationId)
+      : [...current, stationId]);
+  };
+
+  const toggleVisibleSelection = () => {
+    setSelectedStationIds(current => allVisibleSelected
+      ? current.filter(id => !visibleIds.includes(id))
+      : [...new Set([...current, ...visibleIds])]);
+  };
+
+  const clearFilters = () => {
+    setSearchTerm('');
+    setFilters({ status: 'all', connection: 'all', vendor: 'all', firmware: 'all' });
+    setPage(0);
+  };
   
   return (
     <Box>
-      <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography variant="h4" component="h1" gutterBottom>
-          Charging Stations
-        </Typography>
+      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ md: 'center' }} gap={2} mb={3}>
         <Box>
-          <Button 
-            variant="outlined" 
-            startIcon={<UpdateIcon />} 
-            sx={{ mr: 1 }}
-            onClick={() => navigate('/stations/firmware')}
-          >
-            Firmware
-          </Button>
-          <Button 
-            variant="outlined" 
-            startIcon={<LogsIcon />} 
-            sx={{ mr: 1 }}
-            onClick={() => navigate('/stations/diagnostics')}
-          >
-            Diagnostics
-          </Button>
-          <IconButton onClick={fetchStations}>
-            <RefreshIcon />
-          </IconButton>
+          <Typography variant="h4" component="h1">Charging station fleet</Typography>
+          <Typography color="text.secondary" sx={{ mt: 0.5 }}>Search, filter and operate every charger from one responsive workspace.</Typography>
         </Box>
-      </Box>
-      
-      {/* Toolbar */}
-      <Paper sx={{ p: 2, mb: 3, borderRadius: 2 }}>
-        <Grid container spacing={2} alignItems="center">
-          <Grid item xs={12} sm={6} md={4}>
-            <TextField
-              fullWidth
-              placeholder="Search stations..."
-              variant="outlined"
-              size="small"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon />
-                  </InputAdornment>
-                )
-              }}
-            />
+        <Stack direction="row" flexWrap="wrap" gap={1}>
+          <Button variant="outlined" startIcon={<UpdateIcon />} onClick={() => navigate('/stations/firmware')}>Firmware</Button>
+          <Button variant="outlined" startIcon={<LogsIcon />} onClick={() => navigate('/stations/diagnostics')}>Diagnostics</Button>
+          <Tooltip title="Refresh live station data"><span><IconButton onClick={fetchStations} disabled={loading} color="primary"><RefreshIcon /></IconButton></span></Tooltip>
+          <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenAddDialog}>Add station</Button>
+        </Stack>
+      </Stack>
+
+      <Grid container spacing={1.5} mb={2.5}>
+        {[
+          { label: 'Total stations', value: stationSummary.total, icon: <StationIcon />, color: '#0E9F6E', tint: '#ECFDF5' },
+          { label: 'Connected now', value: stationSummary.online, icon: <OnlineIcon />, color: '#16803C', tint: '#F0FDF4' },
+          { label: 'Disconnected', value: stationSummary.offline, icon: <OfflineIcon />, color: '#64748B', tint: '#F8FAFC' },
+          { label: 'Needs attention', value: stationSummary.attention, icon: <AttentionIcon />, color: '#DC2626', tint: '#FEF2F2' }
+        ].map(metric => (
+          <Grid item xs={6} lg={3} key={metric.label}>
+            <Card sx={{ height: '100%', border: '1px solid', borderColor: 'divider', boxShadow: '0 8px 24px rgba(15,23,42,.05)' }}>
+              <CardContent sx={{ p: { xs: 1.6, sm: 2.25 }, '&:last-child': { pb: { xs: 1.6, sm: 2.25 } } }}>
+                <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
+                  <Box><Typography variant="caption" color="text.secondary">{metric.label}</Typography><Typography variant="h4" sx={{ mt: 0.3 }}>{metric.value}</Typography></Box>
+                  <Box sx={{ display: 'grid', placeItems: 'center', width: 42, height: 42, borderRadius: 2.5, bgcolor: metric.tint, color: metric.color }}>{metric.icon}</Box>
+                </Stack>
+              </CardContent>
+            </Card>
           </Grid>
-          <Grid item xs={12} sm={6} md={8} sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              onClick={handleOpenAddDialog}
-            >
-              Add Station
-            </Button>
-          </Grid>
-        </Grid>
+        ))}
+      </Grid>
+
+      <Paper sx={{ p: { xs: 1.5, md: 2 }, mb: 2, borderRadius: 3, border: '1px solid', borderColor: 'divider', boxShadow: '0 8px 30px rgba(15,23,42,.04)' }}>
+        <Stack direction={{ xs: 'column', lg: 'row' }} gap={1.25} alignItems={{ lg: 'center' }}>
+          <TextField
+            fullWidth placeholder="Search ID, name, vendor, model or location" size="small"
+            value={searchTerm} onChange={event => { setSearchTerm(event.target.value); setPage(0); }}
+            InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+            sx={{ minWidth: { lg: 320 }, flex: 1.4 }}
+          />
+          {[
+            ['Status', 'status', statusOptions],
+            ['Connection', 'connection', ['online', 'offline']],
+            ['Vendor', 'vendor', vendorOptions],
+            ['Firmware', 'firmware', firmwareOptions]
+          ].map(([label, key, options]) => (
+            <FormControl key={key} size="small" sx={{ minWidth: { xs: '100%', sm: 150 }, flex: 1 }}>
+              <InputLabel>{label}</InputLabel>
+              <Select label={label} value={filters[key]} onChange={event => { setFilters(current => ({ ...current, [key]: event.target.value })); setPage(0); }}>
+                <MenuItem value="all">All {label.toLowerCase()}</MenuItem>
+                {options.map(option => <MenuItem key={option} value={option}>{option === 'online' ? 'Connected' : option === 'offline' ? 'Disconnected' : option}</MenuItem>)}
+              </Select>
+            </FormControl>
+          ))}
+          <Tooltip title="Clear all filters"><span><IconButton onClick={clearFilters} disabled={!hasFilters} color="primary"><ClearFiltersIcon /></IconButton></span></Tooltip>
+        </Stack>
+        <Stack direction="row" justifyContent="space-between" alignItems="center" mt={1.25}>
+          <Typography variant="caption" color="text.secondary">Showing {filteredStations.length} of {stations.length} stations</Typography>
+          {hasFilters && <Chip size="small" color="primary" variant="outlined" label="Filters active" />}
+        </Stack>
       </Paper>
       
       {/* Success message */}
@@ -555,12 +639,52 @@ function StationList() {
         </Alert>
       )}
       
+      {selectedStationIds.length > 0 && (
+        <Paper sx={{ px: 2, py: 1.25, mb: 2, borderRadius: 3, bgcolor: '#0B2B24', color: 'white' }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ sm: 'center' }} justifyContent="space-between" gap={1}>
+            <Typography fontWeight={700}>{selectedStationIds.length} station{selectedStationIds.length === 1 ? '' : 's'} selected</Typography>
+            <Stack direction="row" gap={1}>
+              <Button size="small" sx={{ color: 'white' }} onClick={() => setSelectedStationIds([])}>Clear</Button>
+              <Button size="small" variant="contained" color="error" startIcon={<DeleteSweepIcon />} onClick={() => setOpenBulkDeleteDialog(true)}>Delete selected</Button>
+            </Stack>
+          </Stack>
+        </Paper>
+      )}
+
+      <Stack spacing={1.25} sx={{ display: { xs: 'flex', md: 'none' } }}>
+        {loading && <Paper sx={{ p: 4, textAlign: 'center', borderRadius: 3 }}><CircularProgress size={26} /></Paper>}
+        {!loading && visibleStations.map(station => {
+          const realtimeStatus = getRealtimeStatus(station.chargePointId);
+          const displayStatus = realtimeStatus || station.status || 'Unknown';
+          const connected = isStationConnected(station);
+          return (
+            <Card key={station.chargePointId} variant="outlined" sx={{ borderRadius: 3, borderColor: selectedStationIds.includes(station.chargePointId) ? 'primary.main' : 'divider' }}>
+              <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                <Stack direction="row" alignItems="flex-start" gap={1}>
+                  <Checkbox checked={selectedStationIds.includes(station.chargePointId)} onChange={() => toggleStationSelection(station.chargePointId)} sx={{ p: 0.5 }} />
+                  <Box minWidth={0} flex={1} onClick={() => handleViewStation(station.chargePointId)} sx={{ cursor: 'pointer' }}>
+                    <Typography fontWeight={750} noWrap>{station.name || station.chargePointId}</Typography>
+                    <Typography variant="caption" color="text.secondary">{station.chargePointId} • {station.vendor || 'Unknown vendor'} {station.model || ''}</Typography>
+                    <Stack direction="row" gap={0.75} mt={1} flexWrap="wrap"><Chip size="small" label={displayStatus} color={getStatusColor(displayStatus)} /><Chip size="small" variant="outlined" color={connected ? 'success' : 'default'} label={connected ? 'Connected' : 'Disconnected'} /></Stack>
+                  </Box>
+                  <IconButton size="small" onClick={event => handleMenuOpen(event, station)}><MoreIcon /></IconButton>
+                </Stack>
+              </CardContent>
+            </Card>
+          );
+        })}
+        {!loading && !visibleStations.length && <Paper sx={{ p: 4, textAlign: 'center', borderRadius: 3 }}><StationIcon color="disabled" sx={{ fontSize: 42 }} /><Typography fontWeight={700}>No matching stations</Typography><Typography variant="body2" color="text.secondary">Adjust or clear the current filters.</Typography></Paper>}
+      </Stack>
+
       {/* Stations table */}
-      <Paper sx={{ borderRadius: 2 }}>
+      <Paper sx={{ borderRadius: 3, overflow: 'hidden', border: '1px solid', borderColor: 'divider', boxShadow: '0 10px 32px rgba(15,23,42,.05)', display: { xs: 'none', md: 'block' } }}>
         <TableContainer>
-          <Table>
+          <Table stickyHeader>
             <TableHead>
               <TableRow>
+                <TableCell padding="checkbox">
+                  <Checkbox checked={allVisibleSelected} indeterminate={someVisibleSelected} onChange={toggleVisibleSelection} inputProps={{ 'aria-label': 'Select visible stations' }} />
+                </TableCell>
                 <TableCell>ID</TableCell>
                 <TableCell>Name</TableCell>
                 <TableCell>Status</TableCell>
@@ -573,30 +697,31 @@ function StationList() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={7} align="center">
+                  <TableCell colSpan={8} align="center">
                     <CircularProgress size={24} sx={{ my: 2 }} />
                   </TableCell>
                 </TableRow>
               ) : filteredStations.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} align="center">
-                    No charging stations found
+                  <TableCell colSpan={8} align="center" sx={{ py: 6 }}>
+                    <StationIcon color="disabled" sx={{ fontSize: 42 }} />
+                    <Typography fontWeight={700}>No matching stations</Typography>
+                    <Typography variant="body2" color="text.secondary">Adjust or clear the current filters.</Typography>
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredStations
-                  .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-                  .map((station) => {
+                visibleStations.map((station) => {
                     const realtimeStatus = getRealtimeStatus(station.chargePointId);
                     const displayStatus = realtimeStatus || station.status;
                     
                     return (
-                      <TableRow key={station.chargePointId} hover>
-                        <TableCell>{station.chargePointId}</TableCell>
+                      <TableRow key={station.chargePointId} hover selected={selectedStationIds.includes(station.chargePointId)} sx={{ '& td': { py: 1.4 } }}>
+                        <TableCell padding="checkbox"><Checkbox checked={selectedStationIds.includes(station.chargePointId)} onChange={() => toggleStationSelection(station.chargePointId)} /></TableCell>
+                        <TableCell><Typography variant="body2" fontWeight={700}>{station.chargePointId}</Typography></TableCell>
                         <TableCell>
                           <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                            {station.name}
-                            {station.isConnected && (
+                            <Typography variant="body2" fontWeight={650}>{station.name}</Typography>
+                            {isStationConnected(station) && (
                               <Chip 
                                 label="Online" 
                                 color="success" 
@@ -650,7 +775,7 @@ function StationList() {
         
         {/* Pagination */}
         <TablePagination
-          rowsPerPageOptions={[5, 10, 25]}
+          rowsPerPageOptions={[5, 10, 25, 50]}
           component="div"
           count={filteredStations.length}
           rowsPerPage={rowsPerPage}
@@ -659,6 +784,16 @@ function StationList() {
           onRowsPerPageChange={handleChangeRowsPerPage}
         />
       </Paper>
+      <TablePagination
+        rowsPerPageOptions={[5, 10, 25, 50]}
+        component="div"
+        count={filteredStations.length}
+        rowsPerPage={rowsPerPage}
+        page={page}
+        onPageChange={handleChangePage}
+        onRowsPerPageChange={handleChangeRowsPerPage}
+        sx={{ display: { xs: 'block', md: 'none' }, '.MuiTablePagination-toolbar': { px: 0 } }}
+      />
       
       {/* Action menu */}
       <Menu
@@ -964,6 +1099,20 @@ function StationList() {
         </DialogActions>
       </Dialog>
       
+      <Dialog open={openBulkDeleteDialog} onClose={() => !bulkDeleteLoading && setOpenBulkDeleteDialog(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Delete {selectedStationIds.length} selected station{selectedStationIds.length === 1 ? '' : 's'}?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Stations without active charging sessions will be removed. Completed transaction, billing and OCPP history will remain available for reporting and audit.
+          </DialogContentText>
+          <Alert severity="info" sx={{ mt: 2 }}>{selectedStationIds.join(', ')}</Alert>
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => setOpenBulkDeleteDialog(false)} disabled={bulkDeleteLoading}>Cancel</Button>
+          <Button onClick={handleBulkDelete} color="error" variant="contained" disabled={bulkDeleteLoading} startIcon={bulkDeleteLoading ? <CircularProgress size={18} color="inherit" /> : <DeleteSweepIcon />}>Delete selected</Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Delete Station Dialog */}
       <Dialog
         open={openDeleteDialog}
@@ -975,7 +1124,7 @@ function StationList() {
         </DialogTitle>
         <DialogContent>
           <DialogContentText>
-            Are you sure you want to delete this charging station? This action cannot be undone.
+            The station will be removed, while completed transaction, billing and OCPP history remain available for reporting and audit.
             {selectedStation?.isConnected && (
               <Alert severity="warning" sx={{ mt: 2 }}>
                 Warning: This station is currently connected. Deleting it may cause issues if it reconnects.

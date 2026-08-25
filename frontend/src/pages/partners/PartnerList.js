@@ -131,9 +131,10 @@ const PartnerList = () => {
   };
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4">Partner Companies</Typography>
+    <Box>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'center' }, flexDirection: { xs: 'column', sm: 'row' }, gap: 2, mb: 3 }}>
+        <Box><Typography variant="h4">Partner Companies</Typography>
+          <Typography color="text.secondary" sx={{ mt: 0.5 }}>Manage partner organizations, assigned locations, earnings and account status.</Typography></Box>
         <Box sx={{ display: 'flex', gap: 2 }}>
           <IconButton onClick={fetchPartners} disabled={loading}>
             <RefreshIcon />

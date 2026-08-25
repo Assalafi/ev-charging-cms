@@ -32,6 +32,7 @@ const Wallet = require('./Wallet')(sequelize);
 const PaymentTransaction = require('./PaymentTransaction')(sequelize);
 const PaymentSettings = require('./PaymentSettings')(sequelize);
 const Reservation = require('./Reservation')(sequelize);
+const AdsBoard = require('./AdsBoard')(sequelize);
 
 // Partnership models
 const PartnerCompany = require('./PartnerCompany')(sequelize);
@@ -140,6 +141,7 @@ module.exports = {
   PaymentTransaction,
   PaymentSettings,
   Reservation,
+  AdsBoard,
   PartnerCompany,
   PartnerSettlement,
   PartnerSettlementItem

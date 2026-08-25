@@ -10,6 +10,7 @@ import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import partnerService from '../../services/partnerService';
 import { formatDate, formatEnergy, formatNaira, statusColor } from '../../utils/partnerFormatters';
+import PageHeader from '../../components/ui/PageHeader';
 
 export default function PartnerSettlements() {
   const [settlements, setSettlements] = useState([]);
@@ -47,15 +48,13 @@ export default function PartnerSettlements() {
 
   return (
     <Box>
-      <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2} mb={3}>
-        <Box><Typography variant="h4">Settlements</Typography>
-          <Typography color="text.secondary">Statements and payment history for your partner earnings.</Typography></Box>
-        <Select size="small" displayEmpty value={status} onChange={event => setStatus(event.target.value)}>
+      <PageHeader eyebrow="Payouts" title="Settlements" description="Statements and payment history for your partner earnings." actions={[
+        <Select key="status" size="small" displayEmpty value={status} onChange={event => setStatus(event.target.value)}>
           <MenuItem value="">All statuses</MenuItem><MenuItem value="draft">Draft</MenuItem>
           <MenuItem value="approved">Approved</MenuItem><MenuItem value="paid">Paid</MenuItem>
           <MenuItem value="cancelled">Cancelled</MenuItem>
         </Select>
-      </Stack>
+      ]} />
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       <Grid container spacing={2} mb={3}>
         {[

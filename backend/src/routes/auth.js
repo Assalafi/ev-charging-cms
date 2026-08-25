@@ -5,8 +5,16 @@ const { authenticate } = require('../middleware/auth');
 const logger = require('../utils/logger');
 const config = require('../../../config/backend').backend;
 const { Op } = require('sequelize');
+const { getEffectivePermissions } = require('../config/accessControl');
+const { requirePermission } = require('../middleware/permissions');
 
 const router = express.Router();
+
+function publicUser(user) {
+  const data = typeof user.toJSON === 'function' ? user.toJSON() : user;
+  const { password, ...safe } = data;
+  return { ...safe, effectivePermissions: getEffectivePermissions(data) };
+}
 
 /**
  * @route   POST /api/auth/login
@@ -65,7 +73,10 @@ router.post('/login', async (req, res) => {
         username: user.username,
         email: user.email,
         role: user.role,
-        partnerId: user.partnerId
+        partnerId: user.partnerId,
+        permissions: user.permissions,
+        scopeType: user.scopeType,
+        managedStates: user.managedStates
       },
       secret,
       { expiresIn: '24h' }
@@ -74,13 +85,7 @@ router.post('/login', async (req, res) => {
     res.json({
       success: true,
       token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        role: user.role,
-        partnerId: user.partnerId
-      }
+      user: publicUser(user)
     });
   } catch (error) {
     logger.error('Login error:', error);
@@ -96,7 +101,7 @@ router.post('/login', async (req, res) => {
  * @desc    Register new user (admin only)
  * @access  Private/Admin
  */
-router.post('/register', authenticate, async (req, res) => {
+router.post('/register', authenticate, requirePermission('admin_users.manage'), async (req, res) => {
   try {
     // Check if requester is admin
     if (!['super_admin', 'admin'].includes(req.user.role)) {
@@ -192,7 +197,7 @@ router.get('/me', authenticate, async (req, res) => {
     
     res.json({
       success: true,
-      user
+      user: publicUser(user)
     });
   } catch (error) {
     logger.error('Get user error:', error);

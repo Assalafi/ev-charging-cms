@@ -18,7 +18,8 @@ router.get('/summary', authenticate, partnerOnly, async (req, res) => {
     logger.info('Partner dashboard summary - partnerId:', partnerId, 'user:', req.user);
     const { range = 'monthly' } = req.query;
 
-    const period = getPartnerDateRange({ range });
+    const allTime = range === 'all';
+    const period = allTime ? { range: 'all', start: null, end: new Date() } : getPartnerDateRange({ range });
     const startDate = period.start;
 
     // Get partner's locations and stations
@@ -41,12 +42,34 @@ router.get('/summary', authenticate, partnerOnly, async (req, res) => {
     const stats = await sequelize.query(`
       SELECT
         COUNT(*) as total_transactions,
-        COALESCE(SUM("energyDelivered"), 0) as total_energy_wh,
-        COALESCE(SUM("partnerEarning"), 0) as partner_earning
-      FROM transactions
-      WHERE "partnerId" = :partnerId
-        AND status = 'Completed'
-        AND "stopTime" >= :startDate
+        COALESCE(SUM(t."energyDelivered"), 0) as total_energy_wh,
+        COALESCE(SUM(
+          CASE
+            WHEN t.status = 'Completed' THEN t."partnerEarning"
+            ELSE GREATEST(
+              COALESCE(NULLIF(t.amount, 0), t."energyDelivered" * COALESCE(l."pricePerWh", 0), 0)
+              - (t."energyDelivered" * COALESCE(l."productionCostPerWh", 0)),
+              0
+            ) * (COALESCE(l."partnerSharePercent", 0) / 100.0)
+          END
+        ), 0) as partner_earning,
+        COUNT(*) FILTER (WHERE t.status = 'InProgress') as active_transactions,
+        COALESCE(SUM(t."energyDelivered") FILTER (WHERE t.status = 'InProgress'), 0) as active_energy_wh,
+        COALESCE(SUM(
+          GREATEST(
+            COALESCE(NULLIF(t.amount, 0), t."energyDelivered" * COALESCE(l."pricePerWh", 0), 0)
+            - (t."energyDelivered" * COALESCE(l."productionCostPerWh", 0)),
+            0
+          ) * (COALESCE(l."partnerSharePercent", 0) / 100.0)
+        ) FILTER (WHERE t.status = 'InProgress'), 0) as active_partner_earning
+      FROM transactions t
+      LEFT JOIN charging_stations c ON c."chargePointId" = t."chargePointId"
+      LEFT JOIN locations l ON l.id = c."locationId"
+      WHERE (
+        (t.status = 'Completed' AND t."partnerId" = :partnerId)
+        OR (t.status = 'InProgress' AND l."partnerId" = :partnerId)
+      )
+        ${allTime ? '' : 'AND COALESCE(t."stopTime", t."startTime") >= :startDate'}
     `, {
       replacements: { partnerId, startDate },
       type: sequelize.QueryTypes.SELECT
@@ -86,6 +109,9 @@ router.get('/summary', authenticate, partnerOnly, async (req, res) => {
         totalTransactions: parseInt(stats[0].total_transactions || 0, 10),
         totalEnergyWh: parseFloat(stats[0].total_energy_wh || 0),
         partnerEarning: parseFloat(stats[0].partner_earning || 0),
+        activeTransactions: parseInt(stats[0].active_transactions || 0, 10),
+        activeEnergyWh: parseFloat(stats[0].active_energy_wh || 0),
+        activePartnerEarning: parseFloat(stats[0].active_partner_earning || 0),
         pendingSettlement: parseFloat(pendingSettlement[0].pending_amount || 0),
         paidSettlement: parseFloat(paidSettlement[0].paid_amount || 0)
       },
@@ -161,12 +187,23 @@ router.get('/performance-by-location', authenticate, partnerOnly, async (req, re
         l.state,
         COUNT(t.id) as transaction_count,
         COALESCE(SUM(t."energyDelivered"), 0) as total_energy_wh,
-        COALESCE(SUM(t."partnerEarning"), 0) as total_partner_earning
+        COALESCE(SUM(
+          CASE
+            WHEN t.status = 'Completed' THEN t."partnerEarning"
+            ELSE GREATEST(
+              COALESCE(NULLIF(t.amount, 0), t."energyDelivered" * COALESCE(l."pricePerWh", 0), 0)
+              - (t."energyDelivered" * COALESCE(l."productionCostPerWh", 0)),
+              0
+            ) * (COALESCE(l."partnerSharePercent", 0) / 100.0)
+          END
+        ), 0) as total_partner_earning
       FROM locations l
       LEFT JOIN charging_stations c ON l.id = c."locationId"
       LEFT JOIN transactions t ON c."chargePointId" = t."chargePointId"
-        AND t.status = 'Completed'
-        AND t."partnerId" = :partnerId
+        AND (
+          (t.status = 'Completed' AND t."partnerId" = :partnerId)
+          OR t.status = 'InProgress'
+        )
       WHERE l."partnerId" = :partnerId
       GROUP BY l.id, l.name, l.city, l.state
       ORDER BY total_partner_earning DESC
@@ -206,15 +243,28 @@ router.get('/revenue-trend', authenticate, partnerOnly, async (req, res) => {
 
     const trends = await sequelize.query(`
       SELECT
-        ("stopTime" AT TIME ZONE 'Africa/Lagos')::date as date,
+        (COALESCE(t."stopTime", t."startTime") AT TIME ZONE 'Africa/Lagos')::date as date,
         COUNT(*) as transactions,
-        COALESCE(SUM("energyDelivered"), 0) as energy_wh,
-        COALESCE(SUM("partnerEarning"), 0) as revenue
-      FROM transactions
-      WHERE "partnerId" = :partnerId
-        AND status = 'Completed'
-        AND "stopTime" >= :startDate
-      GROUP BY ("stopTime" AT TIME ZONE 'Africa/Lagos')::date
+        COALESCE(SUM(t."energyDelivered"), 0) as energy_wh,
+        COALESCE(SUM(
+          CASE
+            WHEN t.status = 'Completed' THEN t."partnerEarning"
+            ELSE GREATEST(
+              COALESCE(NULLIF(t.amount, 0), t."energyDelivered" * COALESCE(l."pricePerWh", 0), 0)
+              - (t."energyDelivered" * COALESCE(l."productionCostPerWh", 0)),
+              0
+            ) * (COALESCE(l."partnerSharePercent", 0) / 100.0)
+          END
+        ), 0) as revenue
+      FROM transactions t
+      LEFT JOIN charging_stations c ON c."chargePointId" = t."chargePointId"
+      LEFT JOIN locations l ON l.id = c."locationId"
+      WHERE (
+        (t.status = 'Completed' AND t."partnerId" = :partnerId)
+        OR (t.status = 'InProgress' AND l."partnerId" = :partnerId)
+      )
+        AND COALESCE(t."stopTime", t."startTime") >= :startDate
+      GROUP BY (COALESCE(t."stopTime", t."startTime") AT TIME ZONE 'Africa/Lagos')::date
       ORDER BY date ASC
     `, {
       replacements: { partnerId, startDate },

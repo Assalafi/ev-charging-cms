@@ -14,6 +14,7 @@ import {
 import { Bar, Line } from 'react-chartjs-2';
 import partnerService from '../../services/partnerService';
 import { formatEnergy, formatNaira } from '../../utils/partnerFormatters';
+import PageHeader from '../../components/ui/PageHeader';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend, Filler);
 
@@ -73,13 +74,11 @@ export default function PartnerPerformance() {
 
   return (
     <Box>
-      <Stack direction={{ xs: 'column', lg: 'row' }} justifyContent="space-between" gap={2} mb={3}>
-        <Box><Typography variant="h4">Performance</Typography>
-          <Typography color="text.secondary">Energy, earnings and utilization across your network.</Typography></Box>
-        <Button variant="outlined" startIcon={<DownloadIcon />} onClick={() => partnerService.exportPerformance(applied)}>
+      <PageHeader eyebrow="Analytics" title="Performance" description="Energy, your earnings and utilization across your charging network." actions={[
+        <Button key="export" variant="outlined" startIcon={<DownloadIcon />} onClick={() => partnerService.exportPerformance(applied)}>
           Export CSV
         </Button>
-      </Stack>
+      ]} />
       <Card sx={{ mb: 3 }}><CardContent>
         <Stack direction={{ xs: 'column', md: 'row' }} gap={2} alignItems={{ md: 'center' }}>
           <Select size="small" value={filters.range} onChange={event => setFilters({

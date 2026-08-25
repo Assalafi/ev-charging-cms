@@ -5,6 +5,7 @@ import {
 } from '@mui/material';
 import BusinessIcon from '@mui/icons-material/Business';
 import partnerService from '../../services/partnerService';
+import PageHeader from '../../components/ui/PageHeader';
 
 export default function PartnerProfile() {
   const [profile, setProfile] = useState(null);
@@ -50,8 +51,7 @@ export default function PartnerProfile() {
 
   return (
     <Box>
-      <Typography variant="h4">Profile</Typography>
-      <Typography color="text.secondary" mb={3}>Your account and partner company information.</Typography>
+      <PageHeader eyebrow="Account" title="Profile & company" description="Manage your account security and review partner company information." />
       {message.text && <Alert severity={message.type} sx={{ mb: 2 }}>{message.text}</Alert>}
       <Grid container spacing={3}>
         <Grid item xs={12} md={7}>

@@ -308,10 +308,11 @@ function PaymentManagement() {
   };
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box>
       <Typography variant="h4" gutterBottom>
         Payment Management
       </Typography>
+      <Typography color="text.secondary" sx={{ mb: 3 }}>Review payment flows, customer wallets, financial statistics and gateway settings.</Typography>
 
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {success && <Alert severity="success" sx={{ mb: 2 }}>{success}</Alert>}

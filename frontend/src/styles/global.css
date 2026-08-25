@@ -1,0 +1,46 @@
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #f4f7fb;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a { color: inherit; }
+
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+.leaflet-container { font-family: inherit; background: #e8eef6; }
+.leaflet-control-zoom,
+.leaflet-control-layers { border: 0 !important; box-shadow: 0 8px 24px rgba(16, 24, 40, 0.14) !important; }
+.leaflet-control-zoom a { border: 0 !important; color: #344054 !important; }
+.leaflet-popup-content-wrapper { border-radius: 14px; box-shadow: 0 14px 32px rgba(16, 24, 40, 0.18); }
+
+@keyframes livePulse {
+  0% { box-shadow: 0 0 0 0 rgba(18, 183, 106, 0.4); }
+  70% { box-shadow: 0 0 0 7px rgba(18, 183, 106, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(18, 183, 106, 0); }
+}
+
+@keyframes pageEnter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.page-enter { animation: pageEnter 280ms ease-out both; }
+
+@media (max-width: 700px) {
+  .MuiTableContainer-root { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .MuiTableContainer-root .MuiTable-root { min-width: 680px; }
+  .MuiDialog-paper { margin: 16px !important; width: calc(100% - 32px) !important; }
+  .MuiCardContent-root { padding: 18px !important; }
+  .dashboard-metric-tile .MuiCardContent-root { padding: 12px !important; }
+  .dashboard-metric-tile { border-radius: 14px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

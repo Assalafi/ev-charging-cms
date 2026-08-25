@@ -21,7 +21,8 @@ async function getPartnerLocations(partnerId) {
     where: { partnerId, active: { [Op.ne]: false } },
     attributes: [
       'id', 'name', 'address', 'city', 'state', 'country',
-      'latitude', 'longitude'
+      'latitude', 'longitude', 'pricePerWh', 'productionCostPerWh',
+      'partnerSharePercent'
     ],
     order: [['name', 'ASC']]
   });
@@ -48,27 +49,38 @@ async function getPartnerLocations(partnerId) {
   const todayTransactions = stationIds.length
     ? await Transaction.findAll({
       where: {
-        partnerId,
         chargePointId: { [Op.in]: stationIds },
-        status: 'Completed',
-        stopTime: { [Op.between]: [todayStart, todayEnd] }
+        [Op.or]: [
+          { partnerId, status: 'Completed', stopTime: { [Op.between]: [todayStart, todayEnd] } },
+          { status: 'InProgress', startTime: { [Op.between]: [todayStart, todayEnd] } }
+        ]
       },
       attributes: [
-        'chargePointId', 'energyDelivered', 'partnerEarning'
+        'chargePointId', 'energyDelivered', 'partnerEarning', 'amount', 'status'
       ]
     })
     : [];
 
   const stationStats = new Map();
   todayTransactions.forEach(transaction => {
+    const station = stations.find(item => item.chargePointId === transaction.chargePointId);
+    const location = locations.find(item => item.id === station?.locationId);
+    const energyWh = Number(transaction.energyDelivered) || 0;
+    const activePartnerEarning = transaction.status === 'InProgress'
+      ? Math.max(
+        (Number(transaction.amount) || energyWh * (Number(location?.pricePerWh) || 0))
+          - energyWh * (Number(location?.productionCostPerWh) || 0),
+        0
+      ) * ((Number(location?.partnerSharePercent) || 0) / 100)
+      : Number(transaction.partnerEarning) || 0;
     const current = stationStats.get(transaction.chargePointId) || {
       transactions: 0,
       energyWh: 0,
       partnerEarning: 0
     };
     current.transactions += 1;
-    current.energyWh += Number(transaction.energyDelivered) || 0;
-    current.partnerEarning += Number(transaction.partnerEarning) || 0;
+    current.energyWh += energyWh;
+    current.partnerEarning += activePartnerEarning;
     stationStats.set(transaction.chargePointId, current);
   });
 

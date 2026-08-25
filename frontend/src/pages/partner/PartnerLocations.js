@@ -6,6 +6,7 @@ import {
 import LocationOnIcon from '@mui/icons-material/LocationOn';
 import partnerService from '../../services/partnerService';
 import { formatEnergy, formatNaira, statusColor } from '../../utils/partnerFormatters';
+import PageHeader from '../../components/ui/PageHeader';
 
 export default function PartnerLocations() {
   const [locations, setLocations] = useState([]);
@@ -23,8 +24,7 @@ export default function PartnerLocations() {
 
   return (
     <Box>
-      <Typography variant="h4">Locations</Typography>
-      <Typography color="text.secondary" mb={3}>Assigned sites, availability and today’s performance.</Typography>
+      <PageHeader eyebrow="My network" title="Locations" description="Assigned sites, availability and today's earning performance." />
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       <Grid container spacing={3}>
         {locations.map(location => {

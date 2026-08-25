@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { MobileUser, AuthorizedTag, Transaction } = require('../../models');
-const { authenticate, authorize } = require('../../middleware/auth');
+const { authenticate } = require('../../middleware/auth');
+const { requirePermission } = require('../../middleware/permissions');
 const logger = require('../../utils/logger');
 
 // Get all mobile users with pagination and search
-router.get('/', ...authorize('admin'), async (req, res) => {
+router.get('/', authenticate, requirePermission('mobile_users.view'), async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
@@ -70,7 +71,7 @@ router.get('/', ...authorize('admin'), async (req, res) => {
 });
 
 // Get mobile user statistics
-router.get('/stats', ...authorize('admin'), async (req, res) => {
+router.get('/stats', authenticate, requirePermission('mobile_users.view'), async (req, res) => {
   try {
     const now = new Date();
     const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -109,7 +110,7 @@ router.get('/stats', ...authorize('admin'), async (req, res) => {
 });
 
 // Get mobile user details by ID
-router.get('/:id', ...authorize('admin'), async (req, res) => {
+router.get('/:id', authenticate, requirePermission('mobile_users.view'), async (req, res) => {
   try {
     const user = await MobileUser.findByPk(req.params.id, {
       include: [
@@ -146,7 +147,7 @@ router.get('/:id', ...authorize('admin'), async (req, res) => {
 });
 
 // Update mobile user status
-router.put('/:id/status', ...authorize('admin'), async (req, res) => {
+router.put('/:id/status', authenticate, requirePermission('mobile_users.manage'), async (req, res) => {
   try {
     const { status } = req.body;
     

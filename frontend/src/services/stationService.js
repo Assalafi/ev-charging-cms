@@ -105,6 +105,20 @@ const stationService = {
     }
   },
 
+  /** Delete multiple stations while preserving their historical records. */
+  bulkDelete: async (stationIds, config = {}) => {
+    try {
+      const response = await api.post('/stations/bulk-delete', { stationIds }, {
+        timeout: 120000,
+        ...config
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error deleting charging stations in bulk:', error);
+      throw error;
+    }
+  },
+
   /**
    * Get station transactions with pagination
    * @param {string} stationId - Station ID

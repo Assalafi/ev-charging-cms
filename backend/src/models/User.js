@@ -21,18 +21,39 @@ module.exports = (sequelize) => {
         isEmail: true
       }
     },
+    fullName: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
     password: {
       type: DataTypes.STRING,
       allowNull: false
     },
     role: {
-      type: DataTypes.ENUM('super_admin', 'admin', 'finance', 'operations', 'support', 'viewer', 'partner_owner', 'partner_manager', 'partner_finance', 'partner_viewer'),
+      type: DataTypes.ENUM('super_admin', 'admin', 'manager', 'operator', 'customer', 'technician', 'finance', 'operations', 'support', 'viewer', 'partner_owner', 'partner_manager', 'partner_finance', 'partner_viewer'),
       defaultValue: 'viewer'
     },
     partnerId: {
       type: DataTypes.INTEGER,
       allowNull: true,
       comment: 'Reference to partner company (NULL for main company users)'
+    },
+    permissions: {
+      type: DataTypes.JSONB,
+      allowNull: true,
+      defaultValue: null,
+      comment: 'NULL uses the role preset; an array is an explicit per-user permission set'
+    },
+    scopeType: {
+      type: DataTypes.STRING(20),
+      allowNull: false,
+      defaultValue: 'all',
+      validate: { isIn: [['all', 'states']] }
+    },
+    managedStates: {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: []
     },
     lastLogin: {
       type: DataTypes.DATE

@@ -7,6 +7,7 @@ import {
 import DownloadIcon from '@mui/icons-material/Download';
 import partnerService from '../../services/partnerService';
 import { formatDate, formatEnergy, formatNaira, statusColor } from '../../utils/partnerFormatters';
+import PageHeader from '../../components/ui/PageHeader';
 
 export default function PartnerTransactions() {
   const [transactions, setTransactions] = useState([]);
@@ -35,10 +36,8 @@ export default function PartnerTransactions() {
 
   return (
     <Box>
-      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" gap={2} mb={3}>
-        <Box><Typography variant="h4">Transactions</Typography>
-          <Typography color="text.secondary">{pagination.total} partner charging sessions.</Typography></Box>
-        <Stack direction="row" gap={1}>
+      <PageHeader eyebrow="Charging activity" title="Transactions" description={`${pagination.total} charging sessions contributing to your partner earnings.`} actions={[
+        <Stack key="filters" direction={{ xs: 'column', sm: 'row' }} gap={1} sx={{ width: { xs: '100%', md: 'auto' } }}>
           <Select size="small" value={range} onChange={event => {
             setRange(event.target.value); setPagination(current => ({ ...current, page: 1 }));
           }}>
@@ -54,7 +53,7 @@ export default function PartnerTransactions() {
           <Button variant="outlined" startIcon={<DownloadIcon />}
             onClick={() => partnerService.exportTransactions({ range, ...(status && { status }) })}>CSV</Button>
         </Stack>
-      </Stack>
+      ]} />
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       <Card>
         {loading ? <Box textAlign="center" py={8}><CircularProgress /></Box> : (

@@ -2,6 +2,24 @@ import api from './api';
 
 // Settings service for handling settings-related API calls
 const settingsService = {
+  getBrandingSettings: async () => {
+    const response = await api.get('/settings/branding');
+    return response.data;
+  },
+
+  updateBrandingSettings: async (settings, logo, favicon, removals = {}) => {
+    const form = new FormData();
+    Object.entries(settings).forEach(([key, value]) => {
+      if (!['logoUrl', 'faviconUrl', 'revision'].includes(key) && value !== undefined && value !== null) form.append(key, value);
+    });
+    if (logo) form.append('logo', logo);
+    if (favicon) form.append('favicon', favicon);
+    if (removals.logo) form.append('removeLogo', 'true');
+    if (removals.favicon) form.append('removeFavicon', 'true');
+    const response = await api.put('/settings/branding', form, { headers: { 'Content-Type': 'multipart/form-data' } });
+    return response.data;
+  },
+
   // Get general settings
   getGeneralSettings: async () => {
     const response = await api.get('/settings/general');
