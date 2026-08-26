@@ -1,113 +1,101 @@
 import api from './api';
 
+const errorMessage = (error, fallback) => (
+  error?.response?.data?.message
+  || error?.serverMessage
+  || error?.data?.message
+  || error?.message
+  || fallback
+);
+
+export const resolveAdPhotoUrl = value => {
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value) || /^data:/i.test(value) || /^blob:/i.test(value)) return value;
+  try {
+    const origin = new URL(api.defaults.baseURL, window.location.origin).origin;
+    return new URL(value, `${origin}/`).toString();
+  } catch (_) {
+    return value;
+  }
+};
+
+const appendAdFields = (form, adData) => {
+  Object.entries(adData || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) form.append(key, value);
+  });
+};
+
 const adsBoardService = {
-  // Get all ads
-  getAds: async (page = 1, limit = 20) => {
+  getAds: async ({ page = 1, limit = 20, search = '', status = 'all' } = {}) => {
     try {
-      const response = await api.get('/admin/ads-board', {
-        params: { page, limit }
-      });
+      const response = await api.get('/admin/ads-board', { params: { page, limit, search, status } });
       return response.data;
     } catch (error) {
-      throw new Error(error.serverMessage || error.data?.message || error.response?.data?.message || 'Failed to fetch ads');
+      throw new Error(errorMessage(error, 'Failed to fetch ads'));
     }
   },
 
-  // Get ad by ID
-  getAdById: async (id) => {
+  getAdById: async id => {
     try {
       const response = await api.get(`/admin/ads-board/${id}`);
       return response.data;
     } catch (error) {
-      throw error.response?.data || { message: 'Failed to fetch ad' };
+      throw new Error(errorMessage(error, 'Failed to fetch ad'));
     }
   },
 
-  // Create new ad
   createAd: async (adData, imageFile) => {
     try {
-      const formData = new FormData();
-      
-      // Add text fields
-      Object.keys(adData).forEach(key => {
-        if (adData[key] !== undefined && adData[key] !== null) {
-          formData.append(key, adData[key]);
-        }
-      });
-      
-      // Add image file if provided
-      if (imageFile) {
-        formData.append('photo', imageFile);
-      }
-      
-      const response = await api.post('/admin/ads-board', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        }
-      });
+      const form = new FormData();
+      appendAdFields(form, adData);
+      if (imageFile) form.append('photo', imageFile);
+      const response = await api.post('/admin/ads-board', form);
       return response.data;
     } catch (error) {
-      throw error.response?.data || { message: 'Failed to create ad' };
+      throw new Error(errorMessage(error, 'Failed to create ad'));
     }
   },
 
-  // Update ad
-  updateAd: async (id, adData, imageFile) => {
+  updateAd: async (id, adData, imageFile, { removePhoto = false } = {}) => {
     try {
-      console.log('updateAd called with:', { id, adData, imageFile: imageFile?.name });
-      
       if (imageFile) {
-        // Update with image file
-        const formData = new FormData();
-        
-        // Add text fields
-        Object.keys(adData).forEach(key => {
-          if (adData[key] !== undefined && adData[key] !== null) {
-            formData.append(key, adData[key]);
-          }
-        });
-        
-        // Add image file
-        formData.append('photo', imageFile);
-        
-        console.log('Making PUT request to:', `/admin/ads-board/${id} with FormData`);
-        const response = await api.put(`/admin/ads-board/${id}`, formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data'
-          }
-        });
-        console.log('Update response:', response.data);
-        return response.data;
-      } else {
-        // Update without image file - use JSON
-        console.log('Making PUT request to:', `/admin/ads-board/${id}/no-file with JSON`);
-        const response = await api.put(`/admin/ads-board/${id}/no-file`, adData);
-        console.log('Update response:', response.data);
+        const form = new FormData();
+        appendAdFields(form, adData);
+        form.append('photo', imageFile);
+        const response = await api.put(`/admin/ads-board/${id}`, form);
         return response.data;
       }
+      const response = await api.put(`/admin/ads-board/${id}`, { ...adData, removePhoto });
+      return response.data;
     } catch (error) {
-      console.error('Update error:', error);
-      throw error.response?.data || { message: 'Failed to update ad' };
+      throw new Error(errorMessage(error, 'Failed to update ad'));
     }
   },
 
-  // Delete ad
-  deleteAd: async (id) => {
+  deleteAd: async id => {
     try {
       const response = await api.delete(`/admin/ads-board/${id}`);
       return response.data;
     } catch (error) {
-      throw error.response?.data || { message: 'Failed to delete ad' };
+      throw new Error(errorMessage(error, 'Failed to delete ad'));
     }
   },
 
-  // Update ad status
   updateAdStatus: async (id, status) => {
     try {
       const response = await api.put(`/admin/ads-board/${id}/status`, { status });
       return response.data;
     } catch (error) {
-      throw error.response?.data || { message: 'Failed to update ad status' };
+      throw new Error(errorMessage(error, 'Failed to update ad status'));
+    }
+  },
+
+  getMobileAds: async () => {
+    try {
+      const response = await api.get('/mobile/ads-board');
+      return response.data;
+    } catch (error) {
+      throw new Error(errorMessage(error, 'Failed to fetch mobile ads'));
     }
   }
 };

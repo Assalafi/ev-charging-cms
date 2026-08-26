@@ -30,12 +30,20 @@ module.exports = (sequelize) => {
       type: DataTypes.INTEGER,
       allowNull: false,
       defaultValue: 0,
-      comment: 'Display order (ascending)'
+      comment: 'Display order (ascending)',
+      validate: {
+        min: 0,
+        max: 100000,
+        isInt: true
+      }
     },
     status: {
       type: DataTypes.ENUM('active', 'inactive'),
       defaultValue: 'active',
-      allowNull: false
+      allowNull: false,
+      validate: {
+        isIn: [['active', 'inactive']]
+      }
     }
   }, {
     tableName: 'ads_board',

@@ -64,6 +64,7 @@ import tagService from '../../services/tagService';
 import stationService from '../../services/stationService';
 import remoteCommandService from '../../services/remoteCommandService';
 import { useMQTT } from '../../contexts/MQTTContext';
+import { isStationConnected as hasLiveConnection, stationDisplayStatus } from '../../utils/stationConnection';
 
 function StationList() {
   const navigate = useNavigate();
@@ -469,15 +470,7 @@ function StationList() {
   
   // Check if station is connected
   const isStationConnected = (station) => {
-    if (!station) return false;
-    
-    // Check for MQTT status first (most up-to-date)
-    if (stationStatus && station.chargePointId && stationStatus[station.chargePointId]) {
-      return true;
-    }
-    
-    // Fall back to the station's stored connection status
-    return !!station.isConnected;
+    return hasLiveConnection(station, stationStatus);
   };
   
   // Get realtime status from MQTT context
@@ -511,9 +504,8 @@ function StationList() {
   const filteredStations = useMemo(() => {
     const search = searchTerm.trim().toLowerCase();
     return stations.filter(station => {
-      const live = stationStatus?.[station.chargePointId];
-      const status = (typeof live === 'object' ? live?.status : live) || station.status || 'Unknown';
-      const connected = Boolean(live) || Boolean(station.isConnected);
+      const status = stationDisplayStatus(station, stationStatus);
+      const connected = hasLiveConnection(station, stationStatus);
       const searchable = [station.chargePointId, station.name, station.model, station.vendor, station.firmwareVersion, station.location]
         .filter(Boolean).join(' ').toLowerCase();
 
@@ -526,9 +518,8 @@ function StationList() {
   }, [filters, searchTerm, stationStatus, stations]);
 
   const stationSummary = useMemo(() => stations.reduce((summary, station) => {
-    const live = stationStatus?.[station.chargePointId];
-    const status = String((typeof live === 'object' ? live?.status : live) || station.status || '').toLowerCase();
-    const connected = Boolean(live) || Boolean(station.isConnected);
+    const status = String(stationDisplayStatus(station, stationStatus)).toLowerCase();
+    const connected = hasLiveConnection(station, stationStatus);
     summary.total += 1;
     summary.online += connected ? 1 : 0;
     summary.offline += connected ? 0 : 1;

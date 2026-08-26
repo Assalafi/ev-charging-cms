@@ -1,59 +1,111 @@
 const express = require('express');
-const router = express.Router();
+const multer = require('multer');
+const fs = require('fs');
+const { Op } = require('sequelize');
 const { AdsBoard } = require('../../models');
 const { authenticate } = require('../../middleware/auth');
 const { requirePermission } = require('../../middleware/permissions');
 const logger = require('../../utils/logger');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const {
+  AD_IMAGE_MAX_BYTES,
+  AD_PHOTO_PREFIX,
+  IMAGE_EXTENSIONS,
+  adsDirectory,
+  imageExtension,
+  isRecognizedImage,
+  removeOwnedAdPhoto,
+  validateAdInput
+} = require('../../utils/adsBoard');
 
-// Configure multer for image uploads
+const router = express.Router();
+
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadDir = path.join(__dirname, '../../../uploads/ads');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
+  destination: (req, file, callback) => {
+    const directory = adsDirectory();
+    fs.mkdirSync(directory, { recursive: true });
+    callback(null, directory);
   },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'ad-' + uniqueSuffix + path.extname(file.originalname));
+  filename: (req, file, callback) => {
+    const suffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    callback(null, `ad-${suffix}${imageExtension(file.mimetype) || '.img'}`);
   }
 });
 
 const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB limit
-  },
-  fileFilter: function (req, file, cb) {
-    const allowedTypes = /jpeg|jpg|png|gif|webp/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-
-    if (mimetype && extname) {
-      return cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed (jpeg, jpg, png, gif, webp)'));
+  storage,
+  limits: { fileSize: AD_IMAGE_MAX_BYTES, files: 1 },
+  fileFilter: (req, file, callback) => {
+    if (!Object.prototype.hasOwnProperty.call(IMAGE_EXTENSIONS, String(file.mimetype || '').toLowerCase())) {
+      return callback(new Error('Image must be a JPG, PNG, GIF or WebP file'));
     }
+    callback(null, true);
   }
 });
 
-// Get all ads with pagination
+function parsePhoto(req, res, next) {
+  upload.single('photo')(req, res, error => {
+    if (!error) return next();
+    const message = error.code === 'LIMIT_FILE_SIZE'
+      ? 'Image must not exceed 5 MB'
+      : error.message || 'Invalid image upload';
+    return res.status(400).json({ success: false, message });
+  });
+}
+
+function cleanupUploadedFile(file) {
+  if (!file?.path) return;
+  try {
+    if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+  } catch (error) {
+    logger.warn(`Unable to clean up rejected ad image ${file.filename}: ${error.message}`);
+  }
+}
+
+function removePreviousPhoto(photo) {
+  try {
+    removeOwnedAdPhoto(photo);
+  } catch (error) {
+    logger.warn(`Unable to remove replaced ad image: ${error.message}`);
+  }
+}
+
+function validateUploadedPhoto(req, res) {
+  if (!req.file) return true;
+  if (isRecognizedImage(req.file.path, req.file.mimetype)) return true;
+  cleanupUploadedFile(req.file);
+  res.status(400).json({ success: false, message: 'The uploaded file content is not a valid image' });
+  return false;
+}
+
+function parseRecordId(value) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
 router.get('/', authenticate, requirePermission('ads.view'), async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const offset = (page - 1) * limit;
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
+    const status = String(req.query.status || 'all').toLowerCase();
+    const search = String(req.query.search || '').trim().slice(0, 100);
+    const where = {};
+
+    if (['active', 'inactive'].includes(status)) where.status = status;
+    if (search) {
+      where[Op.or] = [
+        { title: { [Op.iLike]: `%${search}%` } },
+        { body: { [Op.iLike]: `%${search}%` } }
+      ];
+    }
 
     const { count, rows: ads } = await AdsBoard.findAndCountAll({
-      order: [['order', 'ASC'], ['createdat', 'DESC']],
+      where,
+      order: [['order', 'ASC'], ['createdat', 'DESC'], ['id', 'DESC']],
       limit,
-      offset
+      offset: (page - 1) * limit
     });
 
+    res.set('Cache-Control', 'no-store');
     res.json({
       success: true,
       data: {
@@ -68,305 +120,124 @@ router.get('/', authenticate, requirePermission('ads.view'), async (req, res) =>
     });
   } catch (error) {
     logger.error('Error fetching ads:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch ads'
-    });
+    res.status(500).json({ success: false, message: 'Failed to fetch ads' });
   }
 });
 
-// Get ad by ID
 router.get('/:id', authenticate, requirePermission('ads.view'), async (req, res) => {
   try {
-    const ad = await AdsBoard.findByPk(req.params.id);
-    
-    if (!ad) {
-      return res.status(404).json({
-        success: false,
-        message: 'Ad not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      data: ad
-    });
+    const id = parseRecordId(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: 'Invalid ad ID' });
+    const ad = await AdsBoard.findByPk(id);
+    if (!ad) return res.status(404).json({ success: false, message: 'Ad not found' });
+    res.set('Cache-Control', 'no-store');
+    return res.json({ success: true, data: ad });
   } catch (error) {
     logger.error('Error fetching ad:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch ad'
-    });
+    return res.status(500).json({ success: false, message: 'Failed to fetch ad' });
   }
 });
 
-// Create new ad
-router.post('/', authenticate, requirePermission('ads.manage'), upload.single('photo'), async (req, res) => {
+router.post('/', authenticate, requirePermission('ads.manage'), parsePhoto, async (req, res) => {
   try {
-    const { title, body, order, status } = req.body;
-
-    // Validate input
-    if (!title || !body) {
-      return res.status(400).json({
-        success: false,
-        message: 'Title and body are required'
-      });
+    if (!validateUploadedPhoto(req, res)) return;
+    const { data, errors } = validateAdInput(req.body);
+    if (errors.length) {
+      cleanupUploadedFile(req.file);
+      return res.status(400).json({ success: false, message: errors[0], errors });
     }
+    if (req.file) data.photo = `${AD_PHOTO_PREFIX}${req.file.filename}`;
 
-    if (title.length > 50) {
-      return res.status(400).json({
-        success: false,
-        message: 'Title must be 50 characters or less'
-      });
-    }
-
-    if (body.length > 50) {
-      return res.status(400).json({
-        success: false,
-        message: 'Body must be 50 characters or less'
-      });
-    }
-
-    const adData = {
-      title,
-      body,
-      order: parseInt(order) || 0,
-      status: status || 'active'
-    };
-
-    // Add photo URL if uploaded
-    if (req.file) {
-      adData.photo = `/uploads/ads/${req.file.filename}`;
-    }
-
-    const ad = await AdsBoard.create(adData);
-
-    res.status(201).json({
-      success: true,
-      message: 'Ad created successfully',
-      data: ad
-    });
+    const ad = await AdsBoard.create(data);
+    return res.status(201).json({ success: true, message: 'Ad created successfully', data: ad });
   } catch (error) {
+    cleanupUploadedFile(req.file);
     logger.error('Error creating ad:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create ad'
-    });
+    return res.status(500).json({ success: false, message: 'Failed to create ad' });
   }
 });
 
-// Update ad (JSON and FormData with file)
-router.put('/:id', authenticate, requirePermission('ads.manage'), upload.single('photo'), async (req, res) => {
+async function updateAd(req, res) {
+  let newPhoto = null;
   try {
-    const ad = await AdsBoard.findByPk(req.params.id);
-    
+    if (!validateUploadedPhoto(req, res)) return;
+    const id = parseRecordId(req.params.id);
+    if (!id) {
+      cleanupUploadedFile(req.file);
+      return res.status(400).json({ success: false, message: 'Invalid ad ID' });
+    }
+
+    const ad = await AdsBoard.findByPk(id);
     if (!ad) {
-      return res.status(404).json({
-        success: false,
-        message: 'Ad not found'
-      });
+      cleanupUploadedFile(req.file);
+      return res.status(404).json({ success: false, message: 'Ad not found' });
     }
 
-    // Handle both JSON and FormData
-    let title, body, order, status;
-    if (req.headers['content-type'] && req.headers['content-type'].includes('multipart/form-data')) {
-      // FormData case
-      title = req.body.title;
-      body = req.body.body;
-      order = req.body.order;
-      status = req.body.status;
-    } else {
-      // JSON case
-      ({ title, body, order, status } = req.body);
-    }
-    const updateData = {};
-
-    // Validate and update fields
-    if (title !== undefined) {
-      if (title.length > 50) {
-        return res.status(400).json({
-          success: false,
-          message: 'Title must be 50 characters or less'
-        });
-      }
-      updateData.title = title;
+    const { data, errors, removePhoto } = validateAdInput(req.body, { partial: true });
+    if (errors.length) {
+      cleanupUploadedFile(req.file);
+      return res.status(400).json({ success: false, message: errors[0], errors });
     }
 
-    if (body !== undefined) {
-      if (body.length > 50) {
-        return res.status(400).json({
-          success: false,
-          message: 'Body must be 50 characters or less'
-        });
-      }
-      updateData.body = body;
-    }
-
-    if (order !== undefined) {
-      updateData.order = parseInt(order);
-    }
-
-    if (status !== undefined) {
-      updateData.status = status;
-    }
-
-    // Update photo if new one uploaded
+    const previousPhoto = ad.photo;
     if (req.file) {
-      // Delete old photo if exists
-      if (ad.photo) {
-        const oldPhotoPath = path.join(__dirname, '../../../..', ad.photo);
-        if (fs.existsSync(oldPhotoPath)) {
-          fs.unlinkSync(oldPhotoPath);
-        }
-      }
-      updateData.photo = `/uploads/ads/${req.file.filename}`;
+      newPhoto = `${AD_PHOTO_PREFIX}${req.file.filename}`;
+      data.photo = newPhoto;
+    } else if (removePhoto) {
+      data.photo = null;
     }
 
-    await ad.update(updateData);
+    if (!Object.keys(data).length) {
+      return res.status(400).json({ success: false, message: 'No changes were provided' });
+    }
 
-    res.json({
-      success: true,
-      message: 'Ad updated successfully',
-      data: ad
-    });
+    await ad.update(data);
+    if (previousPhoto && previousPhoto !== ad.photo) removePreviousPhoto(previousPhoto);
+    return res.json({ success: true, message: 'Ad updated successfully', data: ad });
   } catch (error) {
-    logger.error('Error updating ad:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update ad'
-    });
+    if (newPhoto) cleanupUploadedFile(req.file);
+    logger.error(`Error updating ad ${req.params.id}:`, error);
+    return res.status(500).json({ success: false, message: 'Failed to update ad' });
   }
-});
+}
 
-// Update ad without file upload (FormData only)
-router.put('/:id/no-file', authenticate, requirePermission('ads.manage'), async (req, res) => {
-  try {
-    const ad = await AdsBoard.findByPk(req.params.id);
-    
-    if (!ad) {
-      return res.status(404).json({
-        success: false,
-        message: 'Ad not found'
-      });
-    }
+router.put('/:id', authenticate, requirePermission('ads.manage'), parsePhoto, updateAd);
+// Backward-compatible alias for older admin clients.
+router.put('/:id/no-file', authenticate, requirePermission('ads.manage'), updateAd);
 
-    // Handle FormData without file
-    const { title, body, order, status } = req.body;
-    const updateData = {};
-
-    // Validate and update fields
-    if (title !== undefined) {
-      if (title.length > 50) {
-        return res.status(400).json({
-          success: false,
-          message: 'Title must be 50 characters or less'
-        });
-      }
-      updateData.title = title;
-    }
-
-    if (body !== undefined) {
-      if (body.length > 50) {
-        return res.status(400).json({
-          success: false,
-          message: 'Body must be 50 characters or less'
-        });
-      }
-      updateData.body = body;
-    }
-
-    if (order !== undefined) {
-      updateData.order = parseInt(order);
-    }
-
-    if (status !== undefined) {
-      updateData.status = status;
-    }
-
-    await ad.update(updateData);
-
-    res.json({
-      success: true,
-      message: 'Ad updated successfully',
-      data: ad
-    });
-  } catch (error) {
-    logger.error('Error updating ad:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update ad'
-    });
-  }
-});
-
-// Delete ad
 router.delete('/:id', authenticate, requirePermission('ads.manage'), async (req, res) => {
   try {
-    const ad = await AdsBoard.findByPk(req.params.id);
-    
-    if (!ad) {
-      return res.status(404).json({
-        success: false,
-        message: 'Ad not found'
-      });
-    }
+    const id = parseRecordId(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: 'Invalid ad ID' });
+    const ad = await AdsBoard.findByPk(id);
+    if (!ad) return res.status(404).json({ success: false, message: 'Ad not found' });
 
-    // Delete photo file if exists
-    if (ad.photo) {
-      const photoPath = path.join(__dirname, '../../../..', ad.photo);
-      if (fs.existsSync(photoPath)) {
-        fs.unlinkSync(photoPath);
-      }
-    }
-
+    const previousPhoto = ad.photo;
     await ad.destroy();
-
-    res.json({
-      success: true,
-      message: 'Ad deleted successfully'
-    });
+    if (previousPhoto) removePreviousPhoto(previousPhoto);
+    return res.json({ success: true, message: 'Ad deleted successfully' });
   } catch (error) {
-    logger.error('Error deleting ad:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete ad'
-    });
+    logger.error(`Error deleting ad ${req.params.id}:`, error);
+    return res.status(500).json({ success: false, message: 'Failed to delete ad' });
   }
 });
 
-// Update ad status
 router.put('/:id/status', authenticate, requirePermission('ads.manage'), async (req, res) => {
   try {
-    const { status } = req.body;
-    
+    const id = parseRecordId(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: 'Invalid ad ID' });
+    const status = String(req.body.status || '').toLowerCase();
     if (!['active', 'inactive'].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid status'
-      });
+      return res.status(400).json({ success: false, message: 'Status must be active or inactive' });
     }
 
-    const ad = await AdsBoard.findByPk(req.params.id);
-    if (!ad) {
-      return res.status(404).json({
-        success: false,
-        message: 'Ad not found'
-      });
-    }
-
+    const ad = await AdsBoard.findByPk(id);
+    if (!ad) return res.status(404).json({ success: false, message: 'Ad not found' });
     await ad.update({ status });
-
-    res.json({
-      success: true,
-      message: 'Ad status updated successfully',
-      data: ad
-    });
+    return res.json({ success: true, message: 'Ad status updated successfully', data: ad });
   } catch (error) {
-    logger.error('Error updating ad status:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update ad status'
-    });
+    logger.error(`Error updating ad status ${req.params.id}:`, error);
+    return res.status(500).json({ success: false, message: 'Failed to update ad status' });
   }
 });
 

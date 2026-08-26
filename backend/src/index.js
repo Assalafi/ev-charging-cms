@@ -98,9 +98,13 @@ app.use(limiter);
 // ======================
 // Static Files
 // ======================
-app.use('/public', express.static(process.env.UPLOADS_DIR || './uploads', {
+const uploadsDirectory = process.env.UPLOADS_DIR || './uploads';
+const publicAssetOptions = {
   setHeaders: res => res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
-}));
+};
+app.use('/public', express.static(uploadsDirectory, publicAssetOptions));
+// Legacy/mobile ad URLs use /uploads; keep them served from the same canonical directory.
+app.use('/uploads', express.static(uploadsDirectory, publicAssetOptions));
 app.use('/firmware', express.static(process.env.FIRMWARE_DIR || './uploads/firmware'));
 
 // ======================

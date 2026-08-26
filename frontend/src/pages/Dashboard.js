@@ -34,10 +34,9 @@ import DashboardSkeleton from '../components/ui/DashboardSkeleton';
 import SectionCard from '../components/ui/SectionCard';
 import { useAuth } from '../contexts/AuthContext';
 import { useBranding } from '../contexts/BrandingContext';
+import { isStationConnected, stationDisplayStatus } from '../utils/stationConnection';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ChartTooltip, Legend, Filler);
-
-const ONLINE_STATUSES = new Set(['available', 'preparing', 'charging', 'finishing', 'reserved']);
 
 const formatNaira = value => new Intl.NumberFormat('en-NG', {
   style: 'currency', currency: 'NGN', minimumFractionDigits: 0, maximumFractionDigits: 0
@@ -61,7 +60,7 @@ const statusColor = status => {
 
 function Dashboard() {
   const navigate = useNavigate();
-  const { stationStatus, isConnected: mqttConnected, lastMessageAt } = useMQTT();
+  const { stationStatus, lastMessageAt } = useMQTT();
   const { hasPermission } = useAuth();
   const { branding } = useBranding();
   const canViewPayments = hasPermission('payments.view');
@@ -114,7 +113,7 @@ function Dashboard() {
       const apiStats = stationStats.data?.stats || {};
       const paymentRows = payments.data?.transactions || [];
       const totals = dashboardSummary.data?.summary || {};
-      const onlineCount = stationRows.filter(station => ONLINE_STATUSES.has(String(station.status || '').toLowerCase())).length;
+      const onlineCount = stationRows.filter(station => Boolean(station.isConnected)).length;
       const completed = recentRows.filter(transaction => String(transaction.status).toLowerCase() === 'completed' && !transaction.errorCode).length;
       const totalStations = Number(apiStats.totalStations ?? stationRows.length) || 0;
 
@@ -194,7 +193,8 @@ function Dashboard() {
 
   const liveStations = useMemo(() => stations.map(station => ({
     ...station,
-    liveStatus: stationStatus[station.chargePointId]?.status || station.status || 'Unknown'
+    liveStatus: stationDisplayStatus(station, stationStatus),
+    isConnected: isStationConnected(station, stationStatus)
   })), [stations, stationStatus]);
 
   const network = useMemo(() => {
@@ -203,13 +203,13 @@ function Dashboard() {
       const status = String(station.liveStatus).toLowerCase();
       if (status === 'charging') result.charging += 1;
       if (status === 'faulted' || status === 'fault') result.faulted += 1;
-      if (ONLINE_STATUSES.has(status)) result.online += 1;
+      if (station.isConnected) result.online += 1;
       else result.offline += 1;
     });
     return result;
   }, [liveStations]);
 
-  const effectiveConnected = mqttConnected || Object.keys(stationStatus).length ? network.online : summary.connectedStations;
+  const effectiveConnected = network.online;
   const uptime = summary.totalStations ? (effectiveConnected / summary.totalStations) * 100 : 0;
 
   const chartOptions = {

@@ -21,6 +21,7 @@ const adminPartnersRoutes = require('./admin/partners');
 const adminSettlementsRoutes = require('./admin/settlements');
 const adminMonitorRoutes = require('./admin/monitor');
 const adminUsersRoutes = require('./admin/users');
+const adsBoardRoutes = require('./adsBoard');
 const partnerDashboardRoutes = require('./partner/dashboard');
 const partnerMonitorRoutes = require('./partner/monitor');
 const partnerPerformanceRoutes = require('./partner/performance');
@@ -60,6 +61,9 @@ router.use('/admin/partners', adminPartnersRoutes);
 router.use('/admin/settlements', adminSettlementsRoutes);
 router.use('/admin/monitor', adminMonitorRoutes);
 router.use('/admin/users', adminUsersRoutes);
+// Public campaign endpoints retained at both paths for mobile-client compatibility.
+router.use('/ads-board', adsBoardRoutes);
+router.use('/mobile/ads-board', adsBoardRoutes);
 router.use('/partner/dashboard', partnerDashboardRoutes);
 router.use('/partner/monitor', partnerMonitorRoutes);
 router.use('/partner/performance', partnerPerformanceRoutes);
