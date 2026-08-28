@@ -29,6 +29,17 @@ api.interceptors.request.use(
       config.headers.Authorization = `Bearer ${token}`;
     }
 
+    // Let the browser add the multipart boundary for file uploads. Keeping the
+    // instance's JSON content type here can turn FormData into a JSON payload,
+    // which means Multer never receives the selected file.
+    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      if (typeof config.headers?.setContentType === 'function') {
+        config.headers.setContentType(undefined);
+      } else if (config.headers) {
+        delete config.headers['Content-Type'];
+      }
+    }
+
     // Add request ID for tracking
     config.headers['X-Request-ID'] = crypto.randomUUID();
 

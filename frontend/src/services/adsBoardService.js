@@ -1,12 +1,15 @@
 import api from './api';
 
-const errorMessage = (error, fallback) => (
-  error?.response?.data?.message
-  || error?.serverMessage
-  || error?.data?.message
-  || error?.message
-  || fallback
-);
+const errorMessage = (error, fallback) => {
+  if (error?.status === 413 || error?.response?.status === 413) {
+    return 'Image upload is too large. Choose an image smaller than 5 MB.';
+  }
+  return error?.response?.data?.message
+    || error?.serverMessage
+    || error?.data?.message
+    || error?.message
+    || fallback;
+};
 
 export const resolveAdPhotoUrl = value => {
   if (!value) return '';

@@ -342,6 +342,7 @@ function AdsBoardList() {
                 <Button component="label" variant="outlined" startIcon={<UploadIcon />} fullWidth>Choose image<input hidden type="file" accept={ACCEPTED_IMAGE_TYPES.join(',')} onChange={selectImage} /></Button>
                 {imagePreview && <Button color="error" variant="text" onClick={clearImage}>Remove image</Button>}
               </Stack>
+              {imageFile && <Chip size="small" color="primary" variant="outlined" icon={<ImageIcon />} label={`${imageFile.name} · ${(imageFile.size / (1024 * 1024)).toFixed(2)} MB`} sx={{ mt: 1.25, maxWidth: '100%' }} />}
               <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>JPG, PNG, GIF or WebP; maximum 5 MB.</Typography>
             </Box>
           </Stack>

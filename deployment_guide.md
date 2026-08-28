@@ -137,6 +137,9 @@ Paste the following configuration:
 server {
     listen 80;
     server_name evcharging.eride.ng 167.71.240.212;
+    # The application validates ad and branding images at 5 MB. Leave room
+    # for multipart request overhead so Nginx does not reject them first.
+    client_max_body_size 6M;
 
     location / {
         root /var/www/evcharging/frontend/build;
