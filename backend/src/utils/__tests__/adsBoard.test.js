@@ -71,4 +71,18 @@ describe('ads board utilities', () => {
     expect(utilities.publicAssetUrl({}, '/uploads/ads/example.png')).toBe('https://evcharging.eride.ng/uploads/ads/example.png');
     delete process.env.CORS_ORIGIN;
   });
+
+  test('keeps the released mobile photo field relative and exposes an absolute alternative', () => {
+    process.env.CORS_ORIGIN = 'https://evcharging.eride.ng';
+    expect(utilities.mobileAdPayload({}, {
+      id: 8,
+      title: 'Welcome',
+      photo: '/uploads/ads/example.png'
+    })).toMatchObject({
+      photo: '/uploads/ads/example.png',
+      photoPath: '/uploads/ads/example.png',
+      photoUrl: 'https://evcharging.eride.ng/uploads/ads/example.png'
+    });
+    delete process.env.CORS_ORIGIN;
+  });
 });

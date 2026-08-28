@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { AdsBoard } = require('../models');
 const logger = require('../utils/logger');
-const { publicAssetUrl } = require('../utils/adsBoard');
+const { mobileAdPayload } = require('../utils/adsBoard');
 
 // Get active ads for mobile app (public endpoint)
 router.get('/', async (req, res) => {
@@ -17,11 +17,7 @@ router.get('/', async (req, res) => {
 
     const data = ads.map(ad => {
       const item = ad.toJSON();
-      return {
-        ...item,
-        photoPath: item.photo,
-        photo: publicAssetUrl(req, item.photo)
-      };
+      return mobileAdPayload(req, item);
     });
 
     res.set('Cache-Control', 'no-store');

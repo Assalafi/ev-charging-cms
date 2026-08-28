@@ -118,6 +118,19 @@ function publicAssetUrl(req, value) {
   return new URL(value, `${origin.replace(/\/$/, '')}/`).toString();
 }
 
+function mobileAdPayload(req, item) {
+  const photoPath = item.photo || null;
+  return {
+    ...item,
+    // Keep the established mobile contract: the currently released Flutter
+    // app prefixes this relative path with the EV Charge origin.
+    photo: photoPath,
+    photoPath,
+    // Newer clients can consume the ready-to-use absolute URL instead.
+    photoUrl: publicAssetUrl(req, photoPath)
+  };
+}
+
 module.exports = {
   AD_TITLE_MAX_LENGTH,
   AD_BODY_MAX_LENGTH,
@@ -132,5 +145,6 @@ module.exports = {
   isRecognizedImage,
   ownedAdPhotoPath,
   removeOwnedAdPhoto,
-  publicAssetUrl
+  publicAssetUrl,
+  mobileAdPayload
 };
