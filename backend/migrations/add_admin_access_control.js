@@ -1,6 +1,13 @@
 module.exports = {
   async up(queryInterface, Sequelize) {
-    await queryInterface.sequelize.query(`ALTER TYPE "enum_users_role" ADD VALUE IF NOT EXISTS 'manager'`);
+    // Keep the database enum aligned with every administrative role exposed by
+    // accessControl.js. PostgreSQL rejects an entire IN query when even one
+    // supplied enum value is missing, which makes the admin-users list fail.
+    for (const role of ['super_admin', 'manager', 'finance', 'operations', 'support']) {
+      await queryInterface.sequelize.query(
+        `ALTER TYPE "enum_users_role" ADD VALUE IF NOT EXISTS '${role}'`
+      );
+    }
 
     const table = await queryInterface.describeTable('users');
     if (!table.fullName) await queryInterface.addColumn('users', 'fullName', { type: Sequelize.STRING, allowNull: true });

@@ -1,744 +1,266 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  Alert,
   Box,
-  Typography,
-  Paper,
-  Grid,
-  TextField,
-  InputAdornment,
   Button,
   Chip,
+  CircularProgress,
+  Divider,
+  FormControl,
   IconButton,
+  InputAdornment,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
-  TableRow,
   TablePagination,
-  CircularProgress,
-  Alert,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Tooltip
+  TableRow,
+  TextField,
+  Tooltip,
+  Typography,
+  useMediaQuery,
+  useTheme
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import {
-  Search as SearchIcon,
-  FilterList as FilterIcon,
-  Refresh as RefreshIcon,
-  ExpandMore as ExpandMoreIcon,
-  DateRange as DateRangeIcon,
-  Visibility as ViewIcon,
-  EvStation as StationIcon,
-  Error as ErrorIcon,
-  ReceiptLong as ReceiptLongIcon,
-  Info as InfoIcon
+  BoltRounded,
+  CalendarMonthRounded,
+  CheckCircleRounded,
+  CloseRounded,
+  EvStationRounded,
+  FilterAltOffRounded,
+  LocalOfferRounded,
+  PaymentsRounded,
+  ReceiptLongRounded,
+  RefreshRounded,
+  SearchRounded,
+  TimelapseRounded,
+  VisibilityRounded
 } from '@mui/icons-material';
-import { format, subDays } from 'date-fns';
-import { DateRangePicker } from 'react-date-range';
-import transactionService from '../../services/transactionService';
-import stationService from '../../services/stationService';
+import { format, formatDistanceStrict } from 'date-fns';
 import api from '../../services/api';
-import { formatCurrency, calculatePrice } from '../../utils/currencyFormatter';
+import PageHeader from '../../components/ui/PageHeader';
+import MetricCard from '../../components/ui/MetricCard';
+
+const defaultFilters = { stationId: '', status: '', idTag: '', startDate: '', endDate: '' };
+const errorMessage = error => error?.response?.data?.message || error?.serverMessage || error?.message || 'Failed to load transactions';
+const formatMoney = value => new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(Number(value) || 0);
+const energyKwh = transaction => Math.max(Number(transaction.energyDelivered) || 0, 0) / 1000;
+
+function safeDate(value, pattern = 'd MMM yyyy, HH:mm') {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : format(date, pattern);
+}
+
+function duration(transaction, now) {
+  if (!transaction.startTime) return '—';
+  const start = new Date(transaction.startTime);
+  const end = transaction.stopTime ? new Date(transaction.stopTime) : now;
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return '—';
+  return formatDistanceStrict(end, start, { roundingMethod: 'floor' });
+}
+
+function statusColor(status) {
+  if (status === 'Completed') return 'success';
+  if (status === 'InProgress') return 'primary';
+  if (status === 'Stopped') return 'warning';
+  return 'default';
+}
 
 function TransactionList() {
   const navigate = useNavigate();
-  
-  // State
+  const theme = useTheme();
+  const mobile = useMediaQuery(theme.breakpoints.down('md'));
   const [transactions, setTransactions] = useState([]);
   const [stations, setStations] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [errorState, setErrorState] = useState({
-    hasError: false,
-    type: '',
-    message: ''
-  });
-  const [searchTerm, setSearchTerm] = useState('');
-  
-  // Pagination
+  const [error, setError] = useState('');
   const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [rowsPerPage, setRowsPerPage] = useState(20);
   const [totalCount, setTotalCount] = useState(0);
-  
-  // Filters
-  const [showFilters, setShowFilters] = useState(false);
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [filters, setFilters] = useState({
-    stationId: '',
-    status: '',
-    idTag: '',
-    dateRange: {
-      startDate: subDays(new Date(), 7),
-      endDate: new Date(),
-      key: 'selection'
-    }
-  });
-  
-  // Define fetchTransactions function
-  const fetchTransactions = async () => {
+  const [search, setSearch] = useState('');
+  const [filters, setFilters] = useState(defaultFilters);
+  const [appliedFilters, setAppliedFilters] = useState(defaultFilters);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    api.get('/stations').then(response => {
+      const data = response.data;
+      setStations(data?.stations || data?.data || (Array.isArray(data) ? data : []));
+    }).catch(() => setStations([]));
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
     try {
-      // First, try without any date filters to see if we can get any data
-      const baseParams = {
+      const params = {
         limit: rowsPerPage,
         offset: page * rowsPerPage,
         sort: 'startTime',
         order: 'DESC',
-        ...(filters.stationId && { chargePointId: filters.stationId }),
-        ...(filters.status && { status: filters.status }),
-        ...(filters.idTag && { idTag: filters.idTag }),
+        ...(appliedFilters.stationId && { chargePointId: appliedFilters.stationId }),
+        ...(appliedFilters.status && { status: appliedFilters.status }),
+        ...(appliedFilters.idTag.trim() && { idTag: appliedFilters.idTag.trim() }),
+        ...(appliedFilters.startDate && { startDate: appliedFilters.startDate }),
+        ...(appliedFilters.endDate && { endDate: appliedFilters.endDate })
       };
-      
-      console.log('Trying initial fetch without date filters...');
-      const initialResponse = await api.get('/transactions', { params: baseParams });
-      
-      if (initialResponse.data?.transactions?.length > 0) {
-        console.log('Successfully fetched transactions without date filters');
-        return initialResponse.data.transactions;
-      }
-      
-      // If no results, try with date filters if they exist
-      if (filters.dateRange?.startDate || filters.dateRange?.endDate) {
-        console.log('No results without date filters, trying with date range...');
-        const params = {
-          ...baseParams,
-          ...(filters.dateRange?.startDate && { startDate: filters.dateRange.startDate.toISOString() }),
-          ...(filters.dateRange?.endDate && { endDate: filters.dateRange.endDate.toISOString() })
-        };
-        
-        console.log('Fetching transactions with date filters:', params);
-        const response = await api.get('/transactions', { params });
-        return response.data?.transactions || [];
-      }
-      
-      // If we get here, return empty array
-      return [];
-    } catch (error) {
-      console.error('Error in fetchTransactions:', {
-        message: error.message,
-        response: error.response?.data,
-        config: error.config
-      });
-      throw error;
-    }
-  };
-  
-  // Fetch data from the database with separate API calls
-  const fetchData = async () => {
-    setLoading(true);
-    console.log('Starting to fetch data...');
-    
-    // First, let's get the stations
-    try {
-      console.log('Fetching stations...');
-      const token = localStorage.getItem('token');
-      console.log('Using token for stations:', token ? 'Token exists' : 'No token found');
-      
-      const stationsResponse = await api.get('/stations', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      console.log('Stations API response status:', stationsResponse.status);
-      console.log('Stations API response data:', stationsResponse.data);
-      
-      // Handle stations response
-      if (stationsResponse.data) {
-        if (Array.isArray(stationsResponse.data)) {
-          console.log('Setting stations from direct array');
-          setStations(stationsResponse.data);
-        } else if (stationsResponse.data.stations) {
-          console.log('Setting stations from response.data.stations');
-          setStations(stationsResponse.data.stations);
-        } else if (stationsResponse.data.data) {
-          console.log('Setting stations from response.data.data');
-          setStations(stationsResponse.data.data);
-        } else {
-          console.warn('Unexpected stations response format:', stationsResponse.data);
-        }
-      } else {
-        console.warn('Empty stations response');
-      }
-    } catch (stationsError) {
-      console.error('Error fetching stations:', {
-        message: stationsError.message,
-        response: stationsError.response ? {
-          status: stationsError.response.status,
-          statusText: stationsError.response.statusText,
-          data: stationsError.response.data
-        } : 'No response'
-      });
-      
-      setErrorState({
-        hasError: true,
-        type: 'error',
-        message: 'Failed to load charging stations.'
-      });
-    }
-    
-    // Then fetch transactions
-    try {
-      console.log('Fetching transactions...');
-      const response = await api.get('/transactions', {
-        params: {
-          limit: rowsPerPage,
-          offset: page * rowsPerPage,
-          sort: 'startTime',
-          order: 'DESC',
-          ...(filters.stationId && { chargePointId: filters.stationId }),
-          ...(filters.status && { status: filters.status }),
-          ...(filters.idTag && { idTag: filters.idTag }),
-          ...(filters.dateRange?.startDate && { startDate: filters.dateRange.startDate.toISOString() }),
-          ...(filters.dateRange?.endDate && { endDate: filters.dateRange.endDate.toISOString() })
-        }
-      });
-      
-      const transactions = response.data?.transactions || [];
-      const count = response.data?.count || 0;
-      setTotalCount(count);
-      
-      console.log('Raw transactions from fetchTransactions:', transactions);
-      
-      if (transactions && transactions.length > 0) {
-        console.log(`Processing ${transactions.length} transactions`);
-        const processedTransactions = transactions.map(tx => {
-          // Debug log for each transaction
-          console.log('Processing transaction:', {
-            id: tx.id,
-            transactionId: tx.transactionId,
-            chargePointId: tx.chargePointId,
-            status: tx.status,
-            startTime: tx.startTime,
-            stopTime: tx.stopTime,
-            charging_station: tx.charging_station
-          });
-          
-          return {
-            ...tx,
-            transactionId: tx.transactionId || tx.id, // Handle both formats
-            chargePointId: tx.chargePointId || (tx.charging_station ? tx.charging_station.chargePointId : null),
-            startTime: tx.startTime ? new Date(tx.startTime) : null,
-            stopTime: tx.stopTime ? new Date(tx.stopTime) : null,
-            energyDelivered: typeof tx.energyDelivered === 'number' 
-              ? tx.energyDelivered 
-              : (tx.stopMeterValue && tx.startMeterValue 
-                  ? parseFloat((tx.stopMeterValue - tx.startMeterValue).toFixed(2))
-                  : 0),
-            status: tx.status || 'Completed',
-            charging_station: tx.charging_station || {
-              name: tx.chargePointId ? `Station ${tx.chargePointId}` : 'Unknown Station',
-              model: 'N/A',
-              vendor: 'N/A',
-              chargePointId: tx.chargePointId || 'N/A'
-            }
-          };
-        });
-        
-        console.log('Processed transactions:', processedTransactions);
-        setTransactions(processedTransactions);
-        setErrorState({
-          hasError: false,
-          type: '',
-          message: ''
-        });
-      } else {
-        // No transactions found in the database
-        console.log('No transactions found in the database');
-        setTransactions([]);
-        setErrorState({
-          hasError: count === 0,
-          type: 'info',
-          message: 'No transactions found in the database.'
-        });
-      }
-    } catch (error) {
-      console.error('Failed to fetch transactions:', {
-        message: error.message,
-        response: error.response ? {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          data: error.response.data
-        } : 'No response',
-        stack: error.stack
-      });
-      
-      // Set a more specific error message based on the response status
-      let errorMessage = 'Failed to load transactions from the server. Please try again later.';
-      
-      if (error.response) {
-        if (error.response.status === 401) {
-          errorMessage = 'Authentication failed. Please log in again.';
-        } else if (error.response.status === 403) {
-          errorMessage = 'You do not have permission to view transactions.';
-        } else if (error.response.status === 404) {
-          errorMessage = 'The transactions endpoint was not found.';
-        } else if (error.response.status >= 500) {
-          errorMessage = 'Server error. Please try again later.';
-        }
-      } else if (error.message === 'Network Error') {
-        errorMessage = 'Unable to connect to the server. Please check your internet connection.';
-      }
-      
+      const response = await api.get('/transactions', { params });
+      setTransactions(response.data?.transactions || []);
+      setTotalCount(Number(response.data?.count) || 0);
+    } catch (requestError) {
       setTransactions([]);
-      setErrorState({
-        hasError: true,
-        type: 'error',
-        message: errorMessage
-      });
+      setTotalCount(0);
+      setError(errorMessage(requestError));
     } finally {
-      console.log('Finished loading data');
       setLoading(false);
     }
+  }, [appliedFilters, page, rowsPerPage]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const stationName = useCallback(transaction => {
+    const station = stations.find(item => item.chargePointId === transaction.chargePointId);
+    return station?.name || transaction.charging_station?.name || transaction.chargePointId || 'Unknown station';
+  }, [stations]);
+
+  const visibleTransactions = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return transactions;
+    return transactions.filter(transaction => [transaction.transactionId, transaction.idTag, transaction.chargePointId, stationName(transaction)].some(value => String(value || '').toLowerCase().includes(term)));
+  }, [search, transactions, stationName]);
+
+  const pageEnergy = useMemo(() => transactions.reduce((sum, transaction) => sum + energyKwh(transaction), 0), [transactions]);
+  const pageValue = useMemo(() => transactions.reduce((sum, transaction) => sum + (Number(transaction.amount) || 0), 0), [transactions]);
+  const activeCount = useMemo(() => transactions.filter(transaction => transaction.status === 'InProgress').length, [transactions]);
+
+  const filterCount = Object.values(appliedFilters).filter(Boolean).length;
+  const filtersChanged = JSON.stringify(filters) !== JSON.stringify(appliedFilters);
+  const applyFilters = () => { setPage(0); setAppliedFilters(filters); };
+  const clearFilters = () => { setFilters(defaultFilters); setAppliedFilters(defaultFilters); setPage(0); };
+
+  const openTransaction = transaction => navigate(`/transactions/${transaction.transactionId || transaction.id}`);
+  const openStation = (event, transaction) => {
+    event.stopPropagation();
+    if (transaction.chargePointId) navigate(`/stations/${transaction.chargePointId}`);
   };
-  
-  // Initial data fetch
-  useEffect(() => {
-    console.log('Component mounted, calling fetchData');
-    fetchData();
-    
-    // For debugging, let's directly test the API call
-    transactionService.getAll().then(response => {
-      console.log('Direct API call response:', response);
-    }).catch(error => {
-      console.error('Direct API call error:', error);
-    });
-  }, []);
-  
-  // Handle filter change
-  const handleFilterChange = (e) => {
-    setFilters({
-      ...filters,
-      [e.target.name]: e.target.value
-    });
-  };
-  
-  // Handle date range change
-  const handleDateRangeChange = (ranges) => {
-    setFilters(prev => ({
-      ...prev,
-      dateRange: ranges.selection
-    }));
-  };
-  
-  // Apply filters
-  const handleApplyFilters = () => {
-    setPage(0);
-    fetchData();
-  };
-  
-  // Reset filters
-  const handleResetFilters = () => {
-    setFilters({
-      stationId: '',
-      status: '',
-      idTag: '',
-      dateRange: {
-        startDate: subDays(new Date(), 7),
-        endDate: new Date(),
-        key: 'selection'
-      }
-    });
-    setPage(0);
-  };
-  
-  // Handle pagination change
-  const handleChangePage = (event, newValue) => {
-    setPage(newValue);
-    fetchData();
-  };
-  
-  // Handle rows per page change
-  const handleChangeRowsPerPage = (event) => {
-    setRowsPerPage(parseInt(event.target.value, 10));
-    setPage(0);
-    fetchData();
-  };
-  
-  // Filter transactions by search term
-  console.log('Original transactions array length:', transactions.length);
-  console.log('Search term:', searchTerm);
-  // Safely log transactions
-  console.log('All transactions:', transactions && transactions.length ? transactions.length : 0);
-  
-  const filteredTransactions = transactions.filter(transaction => 
-    // Add empty search term condition to show all when no search
-    searchTerm === '' || 
-    (transaction.transactionId && transaction.transactionId.toString().includes(searchTerm)) ||
-    (transaction.idTag && transaction.idTag.toLowerCase().includes(searchTerm.toLowerCase())) ||
-    (transaction.chargePointId && transaction.chargePointId.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
-  
-  console.log('Filtered transactions array length:', filteredTransactions.length);
-  if (filteredTransactions.length > 0) {
-    console.log('First filtered transaction:', filteredTransactions[0]);
-  }
-  
-  // View transaction detail
-  const handleViewTransaction = (transactionId) => {
-    navigate(`/transactions/${transactionId}`);
-  };
-  
-  // View station detail
-  const handleViewStation = (stationId) => {
-    navigate(`/stations/${stationId}`);
-  };
-  
-  // Get status color
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'Completed': return 'success';
-      case 'InProgress': return 'primary';
-      case 'Stopped': return 'warning';
-      case 'Expired': return 'error';
-      default: return 'default';
-    }
-  };
-  
-  // Format duration
-  const formatDuration = (startTime, stopTime) => {
-    if (!startTime || !stopTime) return 'In progress';
-    
-    const start = new Date(startTime);
-    const stop = new Date(stopTime);
-    const diffMs = stop - start;
-    
-    const hours = Math.floor(diffMs / (1000 * 60 * 60));
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-    
-    return `${hours}h ${minutes}m`;
-  };
-  
+
   return (
-    <Box>
-      {/* Header */}
-      <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'center' }, flexDirection: { xs: 'column', sm: 'row' }, gap: 2 }}>
-        <Box><Typography variant="h4" component="h1">Transactions</Typography>
-          <Typography color="text.secondary" sx={{ mt: 0.5 }}>Explore charging sessions, energy delivery, billing and completion status.</Typography></Box>
-        <IconButton onClick={fetchData}>
-          <RefreshIcon />
-        </IconButton>
+    <Stack spacing={{ xs: 2, md: 3 }}>
+      <PageHeader
+        eyebrow="Charging activity"
+        title="Transactions"
+        description="Review charging sessions, live energy delivery, billing values and completion status."
+        actions={<Button variant="outlined" startIcon={<RefreshRounded />} onClick={load} disabled={loading}>Refresh</Button>}
+      />
+
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', xl: 'repeat(4, minmax(0, 1fr))' }, gap: { xs: 1.25, md: 2 } }}>
+        <MetricCard label="Matching sessions" value={totalCount.toLocaleString()} helper={`${transactions.length} loaded on this page`} icon={<ReceiptLongRounded />} color="primary" />
+        <MetricCard label="Active on page" value={activeCount} helper="Sessions currently in progress" icon={<TimelapseRounded />} color="secondary" />
+        <MetricCard label="Energy on page" value={`${pageEnergy.toFixed(2)} kWh`} helper="Delivered by loaded sessions" icon={<BoltRounded />} color="success" />
+        <MetricCard label="Value on page" value={formatMoney(pageValue)} helper="Recorded session amounts" icon={<PaymentsRounded />} color="warning" />
       </Box>
-      
-      {/* Error message */}
-      {errorState.hasError && errorState.type === 'error' && (
-        <Alert severity="error" sx={{ mb: 3 }}>
-          {errorState.message}
-        </Alert>
-      )}
-      
-      {/* Filters */}
-      <Paper sx={{ mb: 3, borderRadius: 2 }}>
-        <Box sx={{ p: 2 }}>
-          <Grid container spacing={2} alignItems="center">
-            <Grid item xs={12} sm={6} md={4}>
-              <TextField
-                fullWidth
-                placeholder="Search transactions..."
-                variant="outlined"
-                size="small"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <SearchIcon />
-                    </InputAdornment>
-                  )
-                }}
-              />
-            </Grid>
-            <Grid item xs={12} sm={6} md={8} sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button 
-                variant="outlined" 
-                startIcon={<FilterIcon />}
-                onClick={() => setShowFilters(!showFilters)}
-                sx={{ mr: 1 }}
-              >
-                {showFilters ? 'Hide Filters' : 'Show Filters'}
-              </Button>
-              {showFilters && (
-                <>
-                  <Button 
-                    variant="outlined" 
-                    onClick={handleApplyFilters}
-                    sx={{ mr: 1 }}
-                  >
-                    Apply Filters
-                  </Button>
-                  <Button 
-                    variant="outlined" 
-                    color="error"
-                    onClick={handleResetFilters}
-                  >
-                    Reset
-                  </Button>
-                </>
-              )}
-            </Grid>
-          </Grid>
-          
-          {showFilters && (
-            <Box sx={{ mt: 3 }}>
-              <Grid container spacing={2}>
-                <Grid item xs={12} sm={6} md={3}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel id="station-filter-label">Station</InputLabel>
-                    <Select
-                      labelId="station-filter-label"
-                      name="stationId"
-                      value={filters.stationId}
-                      onChange={handleFilterChange}
-                      label="Station"
-                    >
-                      <MenuItem value="">
-                        <em>All Stations</em>
-                      </MenuItem>
-                      {stations.map((station) => (
-                        <MenuItem key={station.chargePointId} value={station.chargePointId}>
-                          {station.name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Grid>
-                
-                <Grid item xs={12} sm={6} md={3}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel id="status-filter-label">Status</InputLabel>
-                    <Select
-                      labelId="status-filter-label"
-                      name="status"
-                      value={filters.status}
-                      onChange={handleFilterChange}
-                      label="Status"
-                    >
-                      <MenuItem value="">
-                        <em>All Statuses</em>
-                      </MenuItem>
-                      <MenuItem value="InProgress">In Progress</MenuItem>
-                      <MenuItem value="Completed">Completed</MenuItem>
-                      <MenuItem value="Stopped">Stopped</MenuItem>
-                      <MenuItem value="Expired">Expired</MenuItem>
-                    </Select>
-                  </FormControl>
-                </Grid>
-                
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    label="ID Tag"
-                    variant="outlined"
-                    size="small"
-                    name="idTag"
-                    value={filters.idTag}
-                    onChange={handleFilterChange}
-                  />
-                </Grid>
-                
-                <Grid item xs={12} sm={6} md={3}>
-                  <Button
-                    fullWidth
-                    variant="outlined"
-                    startIcon={<DateRangeIcon />}
-                    onClick={() => setShowDatePicker(!showDatePicker)}
-                    size="medium"
-                  >
-                    Date Range
-                  </Button>
-                  {showDatePicker && (
-                    <Paper sx={{ position: 'absolute', zIndex: 1000, mt: 1 }}>
-                      <Box sx={{ p: 2 }}>
-                        <DateRangePicker
-                          ranges={[filters.dateRange]}
-                          onChange={handleDateRangeChange}
-                        />
-                        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 1 }}>
-                          <Button 
-                            variant="contained" 
-                            size="small"
-                            onClick={() => setShowDatePicker(false)}
-                          >
-                            Apply
-                          </Button>
-                        </Box>
-                      </Box>
-                    </Paper>
-                  )}
-                </Grid>
-              </Grid>
+
+      <Paper variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}>
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} alignItems={{ md: 'center' }} sx={{ p: { xs: 1.5, md: 2 } }}>
+          <TextField
+            size="small" value={search} onChange={event => setSearch(event.target.value)}
+            placeholder="Search loaded sessions, stations or ID tags" sx={{ flex: 1, minWidth: { md: 320 } }}
+            InputProps={{ startAdornment: <InputAdornment position="start"><SearchRounded fontSize="small" /></InputAdornment>, endAdornment: search ? <InputAdornment position="end"><IconButton size="small" onClick={() => setSearch('')}><CloseRounded fontSize="small" /></IconButton></InputAdornment> : null }}
+          />
+          <Button variant={filtersOpen || filterCount ? 'contained' : 'outlined'} color={filterCount ? 'primary' : 'inherit'} startIcon={<CalendarMonthRounded />} onClick={() => setFiltersOpen(previous => !previous)}>{filterCount ? `Filters (${filterCount})` : 'Filters'}</Button>
+          {filterCount > 0 && <Button color="inherit" startIcon={<FilterAltOffRounded />} onClick={clearFilters}>Clear</Button>}
+        </Stack>
+
+        {filtersOpen && <>
+          <Divider />
+          <Box sx={{ p: { xs: 1.5, md: 2 }, bgcolor: 'action.hover' }}>
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', xl: 'repeat(5, 1fr)' }, gap: 1.5 }}>
+              <FormControl size="small"><InputLabel>Station</InputLabel><Select label="Station" value={filters.stationId} onChange={event => setFilters(previous => ({ ...previous, stationId: event.target.value }))}><MenuItem value="">All stations</MenuItem>{stations.map(station => <MenuItem key={station.chargePointId} value={station.chargePointId}>{station.name || station.chargePointId}</MenuItem>)}</Select></FormControl>
+              <FormControl size="small"><InputLabel>Status</InputLabel><Select label="Status" value={filters.status} onChange={event => setFilters(previous => ({ ...previous, status: event.target.value }))}><MenuItem value="">All statuses</MenuItem><MenuItem value="InProgress">In progress</MenuItem><MenuItem value="Completed">Completed</MenuItem><MenuItem value="Stopped">Stopped</MenuItem></Select></FormControl>
+              <TextField size="small" label="Exact ID tag" value={filters.idTag} onChange={event => setFilters(previous => ({ ...previous, idTag: event.target.value }))} />
+              <TextField size="small" label="From date" type="date" value={filters.startDate} onChange={event => setFilters(previous => ({ ...previous, startDate: event.target.value }))} InputLabelProps={{ shrink: true }} inputProps={{ max: filters.endDate || undefined }} />
+              <TextField size="small" label="To date" type="date" value={filters.endDate} onChange={event => setFilters(previous => ({ ...previous, endDate: event.target.value }))} InputLabelProps={{ shrink: true }} inputProps={{ min: filters.startDate || undefined }} />
             </Box>
-          )}
-        </Box>
+            <Stack direction="row" justifyContent="flex-end" spacing={1} sx={{ mt: 1.5 }}><Button onClick={clearFilters}>Reset</Button><Button variant="contained" onClick={applyFilters} disabled={!filtersChanged}>Apply filters</Button></Stack>
+          </Box>
+        </>}
       </Paper>
-      
-      {/* Transactions table */}
-      <TableContainer component={Paper} sx={{ borderRadius: 2 }}>
-        <Table>
-          <TableHead>
-            <TableRow>
-              <TableCell>ID</TableCell>
-              <TableCell>Station</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>Start Time</TableCell>
-              <TableCell>End Time</TableCell>
-              <TableCell>Duration</TableCell>
-              <TableCell>ID Tag</TableCell>
-              <TableCell>Energy (kWh)</TableCell>
-              <TableCell>Cost (₦) <Tooltip title="Nigerian pricing with peak/off-peak rates"><InfoIcon fontSize="small" sx={{ ml: 0.5, verticalAlign: 'middle', color: 'text.secondary' }} /></Tooltip></TableCell>
-              <TableCell>Actions</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {console.log('Rendering table body, loading:', loading, 'errorState:', errorState.hasError ? errorState.type : 'none', 'filteredTransactions.length:', filteredTransactions.length)}
-            {loading ? (
-              <TableRow>
-                <TableCell colSpan={10} align="center">
-                  <CircularProgress size={24} sx={{ my: 2 }} />
-                  <Typography variant="body2" sx={{ ml: 1 }} display="inline">
-                    Loading transactions...
-                  </Typography>
-                </TableCell>
-              </TableRow>
-            ) : errorState.hasError ? (
-              <TableRow>
-                <TableCell colSpan={10} align="center">
-                  <Box sx={{ py: 3, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    {errorState.type === 'error' ? (
-                      <ErrorIcon sx={{ fontSize: 64, color: 'error.main', mb: 2 }} />
-                    ) : (
-                      <InfoIcon sx={{ fontSize: 64, color: 'info.main', mb: 2 }} />
-                    )}
-                    <Typography variant="h6" color={errorState.type === 'error' ? 'error' : 'info.main'} gutterBottom>
-                      {errorState.type === 'error' ? 'Error Loading Transactions' : 'No Transactions Found'}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" align="center" sx={{ maxWidth: 450, mb: 2 }}>
-                      {errorState.message}
-                    </Typography>
-                    <Button 
-                      variant="outlined" 
-                      color="primary"
-                      startIcon={<RefreshIcon />}
-                      onClick={() => fetchData()}
-                    >
-                      Refresh Transactions
-                    </Button>
-                  </Box>
-                </TableCell>
-              </TableRow>
-            ) : filteredTransactions.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={10} align="center">
-                  <Box sx={{ py: 3, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    <ReceiptLongIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
-                    <Typography variant="h6" color="text.secondary" gutterBottom>
-                      No Charging Transactions Yet
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" align="center" sx={{ maxWidth: 450, mb: 2 }}>
-                      When EV charging sessions begin, they will appear here with Nigerian Naira (₦) pricing.
-                    </Typography>
-                    <Button 
-                      variant="outlined" 
-                      color="primary"
-                      startIcon={<RefreshIcon />}
-                      onClick={() => fetchData()}
-                    >
-                      Refresh Transactions
-                    </Button>
-                  </Box>
-                </TableCell>
-              </TableRow>
-            ) : (
-              transactions.map((transaction, index) => {
-                  console.log(`Rendering transaction ${index}:`, transaction);
-                  // Get station info if available
-                  const station = stations.find(s => s.chargePointId === transaction.chargePointId);
-                  // Make sure we're checking charging_station property if needed
-                  const stationName = station ? station.name : 
-                    (transaction.charging_station ? transaction.charging_station.name : transaction.chargePointId);
-                  
-                  return (
-                    <TableRow key={transaction.id} hover>
-                      <TableCell>{transaction.transactionId}</TableCell>
-                      <TableCell>
-                        <Box 
-                          sx={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            cursor: 'pointer',
-                            '&:hover': { textDecoration: 'underline' }
-                          }}
-                          onClick={() => handleViewStation(transaction.chargePointId)}
-                        >
-                          <StationIcon fontSize="small" sx={{ mr: 0.5 }} />
-                          {stationName}
-                        </Box>
-                      </TableCell>
-                      <TableCell>
-                        <Chip 
-                          label={transaction.status}
-                          size="small"
-                          color={getStatusColor(transaction.status)}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        {format(new Date(transaction.startTime), 'dd MMM yyyy HH:mm')}
-                      </TableCell>
-                      <TableCell>
-                        {transaction.stopTime 
-                          ? format(new Date(transaction.stopTime), 'dd MMM yyyy HH:mm') 
-                          : '-'}
-                      </TableCell>
-                      <TableCell>
-                        {formatDuration(transaction.startTime, transaction.stopTime)}
-                      </TableCell>
-                      <TableCell>{transaction.idTag}</TableCell>
-                      <TableCell>{transaction.energyDelivered?.toFixed(2) || '0.00'}</TableCell>
-                      <TableCell>
-                        {transaction.amount ? formatCurrency(transaction.amount) : 
-                          formatCurrency(
-                            calculatePrice(
-                              transaction.energyDelivered,
-                              transaction.idTag && transaction.idTag.includes('MEMBER') // Check if member
-                            )
-                          )
-                        }
-                      </TableCell>
-                      <TableCell>
-                        <IconButton
-                          size="small"
-                          onClick={() => handleViewTransaction(transaction.transactionId)}
-                          color="primary"
-                        >
-                          <ViewIcon fontSize="small" />
-                        </IconButton>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
-            )}
-          </TableBody>
-        </Table>
-        
-        {/* Pagination */}
+
+      {error && <Alert severity="error" action={<Button color="inherit" size="small" onClick={load}>Retry</Button>}>{error}</Alert>}
+
+      <Paper variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}>
+        {loading ? (
+          <Box sx={{ minHeight: 320, display: 'grid', placeItems: 'center' }}><Stack alignItems="center" spacing={1.5}><CircularProgress size={30} /><Typography variant="body2" color="text.secondary">Loading transactions…</Typography></Stack></Box>
+        ) : visibleTransactions.length === 0 ? (
+          <Stack alignItems="center" spacing={1.25} sx={{ py: 8, px: 2, textAlign: 'center' }}>
+            <ReceiptLongRounded sx={{ fontSize: 54, color: 'text.disabled' }} />
+            <Typography variant="h6" fontWeight={750}>{search ? 'No loaded session matches your search' : 'No transactions match these filters'}</Typography>
+            <Typography color="text.secondary">{search ? 'Try a different transaction ID, station or ID tag.' : 'Adjust the date, station or status filters and try again.'}</Typography>
+            {(search || filterCount > 0) && <Button onClick={() => { setSearch(''); clearFilters(); }}>Clear filters</Button>}
+          </Stack>
+        ) : mobile ? (
+          <Stack spacing={1.25} sx={{ p: 1.5 }}>
+            {visibleTransactions.map(transaction => (
+              <Paper key={transaction.id} variant="outlined" onClick={() => openTransaction(transaction)} sx={{ p: 2, borderRadius: 3, cursor: 'pointer', transition: 'border-color 180ms, transform 180ms', '&:active': { transform: 'scale(.995)' } }}>
+                <Stack direction="row" alignItems="flex-start" spacing={1.25}>
+                  <Box sx={{ width: 42, height: 42, borderRadius: 2.5, bgcolor: theme => alpha(theme.palette.primary.main, 0.1), color: 'primary.main', display: 'grid', placeItems: 'center', flexShrink: 0 }}><BoltRounded /></Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}><Typography fontWeight={780}>TX {transaction.transactionId || transaction.id}</Typography><Button variant="text" size="small" startIcon={<EvStationRounded />} onClick={event => openStation(event, transaction)} sx={{ px: 0, minWidth: 0, maxWidth: '100%', justifyContent: 'flex-start' }}><Typography variant="body2" noWrap>{stationName(transaction)}</Typography></Button></Box>
+                  <Chip size="small" label={transaction.status || 'Unknown'} color={statusColor(transaction.status)} />
+                </Stack>
+                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1.25, mt: 2 }}>
+                  <Box><Typography variant="caption" color="text.secondary">Started</Typography><Typography variant="body2" fontWeight={680}>{safeDate(transaction.startTime, 'd MMM, HH:mm')}</Typography></Box>
+                  <Box><Typography variant="caption" color="text.secondary">Duration</Typography><Typography variant="body2" fontWeight={680}>{duration(transaction, now)}</Typography></Box>
+                  <Box><Typography variant="caption" color="text.secondary">Energy</Typography><Typography variant="body2" fontWeight={680}>{energyKwh(transaction).toFixed(2)} kWh</Typography></Box>
+                  <Box><Typography variant="caption" color="text.secondary">Amount</Typography><Typography variant="body2" fontWeight={780} color="primary.main">{formatMoney(transaction.amount)}</Typography></Box>
+                </Box>
+                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mt: 1.75, pt: 1.25, borderTop: '1px solid', borderColor: 'divider' }}><Chip size="small" variant="outlined" icon={<LocalOfferRounded />} label={transaction.idTag || 'No ID tag'} /><Button size="small" endIcon={<VisibilityRounded />}>Details</Button></Stack>
+              </Paper>
+            ))}
+          </Stack>
+        ) : (
+          <TableContainer>
+            <Table>
+              <TableHead><TableRow><TableCell>Session</TableCell><TableCell>Station</TableCell><TableCell>Status</TableCell><TableCell>Started</TableCell><TableCell>Duration</TableCell><TableCell>ID tag</TableCell><TableCell align="right">Energy</TableCell><TableCell align="right">Amount</TableCell><TableCell align="right">View</TableCell></TableRow></TableHead>
+              <TableBody>{visibleTransactions.map(transaction => (
+                <TableRow key={transaction.id} hover onClick={() => openTransaction(transaction)} sx={{ cursor: 'pointer' }}>
+                  <TableCell><Typography variant="body2" fontWeight={750}>TX {transaction.transactionId || transaction.id}</Typography><Typography variant="caption" color="text.secondary">Connector {transaction.connectorId || '—'}</Typography></TableCell>
+                  <TableCell><Button color="inherit" size="small" startIcon={<EvStationRounded color="primary" />} onClick={event => openStation(event, transaction)} sx={{ textTransform: 'none', justifyContent: 'flex-start', px: 0 }}><Box sx={{ textAlign: 'left' }}><Typography variant="body2" fontWeight={680}>{stationName(transaction)}</Typography><Typography variant="caption" color="text.secondary">{transaction.chargePointId}</Typography></Box></Button></TableCell>
+                  <TableCell><Chip size="small" label={transaction.status || 'Unknown'} color={statusColor(transaction.status)} icon={transaction.status === 'Completed' ? <CheckCircleRounded /> : undefined} /></TableCell>
+                  <TableCell><Typography variant="body2">{safeDate(transaction.startTime)}</Typography><Typography variant="caption" color="text.secondary">{transaction.stopTime ? `Ended ${safeDate(transaction.stopTime, 'd MMM, HH:mm')}` : 'Still running'}</Typography></TableCell>
+                  <TableCell>{duration(transaction, now)}</TableCell>
+                  <TableCell><Chip size="small" variant="outlined" label={transaction.idTag || '—'} /></TableCell>
+                  <TableCell align="right"><Typography fontWeight={720}>{energyKwh(transaction).toFixed(2)} kWh</Typography></TableCell>
+                  <TableCell align="right"><Typography fontWeight={780}>{formatMoney(transaction.amount)}</Typography></TableCell>
+                  <TableCell align="right"><Tooltip title="View transaction"><IconButton size="small" color="primary" onClick={event => { event.stopPropagation(); openTransaction(transaction); }}><VisibilityRounded fontSize="small" /></IconButton></Tooltip></TableCell>
+                </TableRow>
+              ))}</TableBody>
+            </Table>
+          </TableContainer>
+        )}
+        <Divider />
         <TablePagination
-          rowsPerPageOptions={[5, 10, 25, 50]}
-          component="div"
-          count={totalCount}
-          rowsPerPage={rowsPerPage}
-          page={page}
-          onPageChange={handleChangePage}
-          onRowsPerPageChange={handleChangeRowsPerPage}
+          component="div" count={totalCount} page={page} rowsPerPage={rowsPerPage}
+          rowsPerPageOptions={[10, 20, 50, 100]}
+          onPageChange={(_, nextPage) => setPage(nextPage)}
+          onRowsPerPageChange={event => { setRowsPerPage(Number(event.target.value)); setPage(0); }}
         />
-      </TableContainer>
-    </Box>
+      </Paper>
+    </Stack>
   );
 }
 

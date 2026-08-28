@@ -25,8 +25,7 @@ const navGroups = [
   { label: 'Charging network', items: [
     { label: 'Stations', icon: <EvStationRounded />, path: '/stations', permission: 'stations.view' },
     { label: 'Locations', icon: <LocationOnRounded />, path: '/locations', permission: 'locations.view' },
-    { label: 'Transactions', icon: <ReceiptLongRounded />, path: '/transactions', permission: 'transactions.view' },
-    { label: 'Mobile users', icon: <PeopleAltRounded />, path: '/mobile-users', permission: 'mobile_users.view' }
+    { label: 'Transactions', icon: <ReceiptLongRounded />, path: '/transactions', permission: 'transactions.view' }
   ] },
   { label: 'Commercial', items: [
     { label: 'Payments', icon: <PaymentsRounded />, path: '/payments', permission: 'payments.view' },
@@ -36,6 +35,7 @@ const navGroups = [
   ] },
   { label: 'System', items: [
     { label: 'Admin users', icon: <AdminPanelSettingsRounded />, path: '/admin-users', permission: 'admin_users.view' },
+    { label: 'Mobile users', icon: <PeopleAltRounded />, path: '/mobile-users', permission: 'mobile_users.view' },
     { label: 'Settings', icon: <SettingsRounded />, path: '/settings', permission: 'settings.view' },
     { label: 'App update', icon: <SystemUpdateAltRounded />, path: '/app-update', permission: 'app_updates.view' }
   ] }
