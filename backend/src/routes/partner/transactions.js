@@ -20,6 +20,9 @@ async function buildFilters(partnerId, query) {
   if (query.status && ['InProgress', 'Completed', 'Stopped'].includes(query.status)) {
     where.status = query.status;
   }
+  if (query.settlementStatus && ['pending', 'included', 'paid'].includes(query.settlementStatus)) {
+    where.settlementStatus = query.settlementStatus;
+  }
   if (query.chargePointId) where.chargePointId = query.chargePointId;
   if (query.locationId) where.locationId = Number.parseInt(query.locationId, 10);
   if (query.range || query.startDate || query.endDate) {

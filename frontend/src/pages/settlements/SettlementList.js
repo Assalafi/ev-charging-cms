@@ -198,6 +198,7 @@ const SettlementList = () => {
 
   const getStatusColor = (status) => {
     switch (status) {
+      case 'pending': return 'warning';
       case 'draft': return 'default';
       case 'approved': return 'info';
       case 'paid': return 'success';
@@ -239,7 +240,7 @@ const SettlementList = () => {
             <CardContent>
               <Typography variant="h6">Pending Approval</Typography>
               <Typography variant="h3" color="warning.main">
-                {settlements.filter(s => s.status === 'draft').length}
+                {settlements.filter(s => ['pending', 'draft'].includes(s.status)).length}
               </Typography>
             </CardContent>
           </Card>
@@ -294,6 +295,7 @@ const SettlementList = () => {
                   label="Status"
                 >
                   <MenuItem value="all">All</MenuItem>
+                  <MenuItem value="pending">Pending</MenuItem>
                   <MenuItem value="draft">Draft</MenuItem>
                   <MenuItem value="approved">Approved</MenuItem>
                   <MenuItem value="paid">Paid</MenuItem>
@@ -365,7 +367,7 @@ const SettlementList = () => {
                       >
                         <ViewIcon />
                       </IconButton>
-                      {settlement.status === 'draft' && (
+                      {['pending', 'draft'].includes(settlement.status) && (
                         <IconButton
                           size="small"
                           color="info"

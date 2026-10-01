@@ -244,6 +244,11 @@ async function startServer() {
     walletMonitor.init(ocppServer);
     walletMonitor.start();
 
+    // Create the previous calendar month's partner statements automatically.
+    // The generator is idempotent, so restarts cannot duplicate settlements.
+    const partnerSettlementScheduler = require('./services/partnerSettlementScheduler');
+    partnerSettlementScheduler.start();
+
     // Start metrics server if enabled
     // if (process.env.METRICS_ENABLED === 'true') {
     //  const metricsServer = http.createServer();

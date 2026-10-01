@@ -52,6 +52,12 @@ export default function PartnerPerformance() {
     setApplied(next);
   };
 
+  const reset = () => {
+    const next = { range: 'monthly' };
+    setFilters({ range: 'monthly', startDate: '', endDate: '', locationId: '', chargePointId: '' });
+    setApplied(next);
+  };
+
   const stations = useMemo(() => {
     const all = data?.filtersAvailable?.stations || [];
     return filters.locationId ? all.filter(station => String(station.locationId) === String(filters.locationId)) : all;
@@ -108,6 +114,7 @@ export default function PartnerPerformance() {
           </Select>
           <Button variant="contained" onClick={apply}
             disabled={filters.range === 'custom' && (!filters.startDate || !filters.endDate)}>Apply</Button>
+          <Button variant="text" onClick={reset} disabled={JSON.stringify(filters) === JSON.stringify({ range: 'monthly', startDate: '', endDate: '', locationId: '', chargePointId: '' })}>Reset</Button>
         </Stack>
       </CardContent></Card>
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}

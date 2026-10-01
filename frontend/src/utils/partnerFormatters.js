@@ -11,7 +11,7 @@ export const formatEnergy = value =>
   })} kWh`;
 
 export const formatDate = value =>
-  value ? new Date(value).toLocaleDateString('en-NG') : '—';
+  value ? new Date(value).toLocaleDateString('en-NG', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
 
 export const statusColor = status => ({
   Available: 'success',
@@ -20,6 +20,7 @@ export const statusColor = status => ({
   Finishing: 'secondary',
   Faulted: 'error',
   Unavailable: 'default',
+  pending: 'warning',
   draft: 'default',
   approved: 'warning',
   paid: 'success',

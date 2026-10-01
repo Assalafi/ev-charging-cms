@@ -8,7 +8,8 @@
     "dev": "nodemon src/index.js",
     "migrate:partner": "node scripts/migrate-partner-schema.js",
     "migrate:admin-access": "node scripts/migrate-admin-access-control.js",
-    "test": "jest"
+    "test": "jest",
+    "migrate:settlement-status": "node scripts/migrate-settlement-status.js"
   },
   "dependencies": {
     "bcrypt": "^5.1.0",

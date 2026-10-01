@@ -90,5 +90,7 @@ function lagosDateKey(value) {
 module.exports = {
   getPartnerDateRange,
   lagosDateKey,
+  lagosParts,
+  lagosDateToUtc,
   parseDateOnly
 };

@@ -73,8 +73,8 @@ module.exports = (sequelize) => {
       comment: 'Final amount to pay to partner'
     },
     status: {
-      type: DataTypes.ENUM('draft', 'approved', 'paid', 'cancelled'),
-      defaultValue: 'draft',
+      type: DataTypes.ENUM('pending', 'draft', 'approved', 'paid', 'cancelled'),
+      defaultValue: 'pending',
       comment: 'Settlement status'
     },
     approvedBy: {

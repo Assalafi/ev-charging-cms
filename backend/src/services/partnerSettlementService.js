@@ -16,9 +16,11 @@ const { Op, Transaction: SequelizeTransaction } = require('sequelize');
  * @param {string} params.periodType - 'weekly', 'monthly', 'yearly', or 'custom'
  * @param {Date} params.periodStart - Period start date
  * @param {Date} params.periodEnd - Period end date
+ * @param {boolean} params.allowEmpty - Create a zero-value settlement when no
+ * pending transactions exist (used by the monthly scheduler)
  * @returns {Promise<Object>} Settlement result
  */
-async function generateSettlement({ partnerId, periodType, periodStart, periodEnd }) {
+async function generateSettlement({ partnerId, periodType, periodStart, periodEnd, allowEmpty = false }) {
   const allowedPeriodTypes = ['weekly', 'monthly', 'yearly', 'custom'];
   if (!allowedPeriodTypes.includes(periodType)) {
     return { success: false, message: 'Invalid settlement period type' };
@@ -78,7 +80,7 @@ async function generateSettlement({ partnerId, periodType, periodStart, periodEn
       skipLocked: true
     });
 
-    if (candidates.length === 0) {
+    if (candidates.length === 0 && !allowEmpty) {
       await t.rollback();
       return {
         success: false,
@@ -92,7 +94,7 @@ async function generateSettlement({ partnerId, periodType, periodStart, periodEn
       transaction.sellingPricePerWh != null
     );
     const excludedSnapshotCount = candidates.length - transactions.length;
-    if (transactions.length === 0) {
+    if (transactions.length === 0 && !allowEmpty) {
       await t.rollback();
       return {
         success: false,
@@ -137,7 +139,7 @@ async function generateSettlement({ partnerId, periodType, periodStart, periodEn
       companyEarning: totals.companyEarning,
       adjustmentAmount: 0,
       finalPayableAmount: totals.partnerEarning,
-      status: 'draft',
+      status: 'pending',
       approvedBy: null,
       approvedAt: null,
       paidBy: null,
@@ -221,7 +223,7 @@ async function approveSettlement(settlementId, approvedBy) {
       };
     }
 
-    if (settlement.status !== 'draft') {
+    if (!['pending', 'draft'].includes(settlement.status)) {
       return {
         success: false,
         message: `Cannot approve settlement with status: ${settlement.status}`
