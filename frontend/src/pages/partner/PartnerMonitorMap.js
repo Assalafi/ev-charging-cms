@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Divider,
   FormControl, Grid, IconButton, InputAdornment, InputLabel, List, ListItemButton,
@@ -11,6 +12,10 @@ import SearchIcon from '@mui/icons-material/Search';
 import TuneIcon from '@mui/icons-material/Tune';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import CloseIcon from '@mui/icons-material/Close';
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
+import ViewSidebarIcon from '@mui/icons-material/ViewSidebar';
+import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { Marker, Popup, TileLayer } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import partnerService from '../../services/partnerService';
@@ -63,10 +68,14 @@ function StatusDot({ status }) {
 }
 
 export default function PartnerMonitorMap() {
+  const navigate = useNavigate();
   const [locations, setLocations] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [focusId, setFocusId] = useState(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [visibleStatuses, setVisibleStatuses] = useState({ online: true, partial: true, offline: true, empty: true });
+  const [showFilters, setShowFilters] = useState(true);
+  const [showLocationList, setShowLocationList] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [updatedAt, setUpdatedAt] = useState(null);
@@ -101,19 +110,21 @@ export default function PartnerMonitorMap() {
   const filteredLocations = useMemo(() => {
     const search = filters.search.trim().toLowerCase();
     return locations.filter(location => {
+      const layerMatches = visibleStatuses[locationMarkerStatus(location)] !== false;
       const searchText = [
         location.name, location.address, location.city, location.state,
         ...(location.stations || []).flatMap(station => [station.name, station.chargePointId])
       ].filter(Boolean).join(' ').toLowerCase();
 
-      return (filters.availability === 'all' || locationMarkerStatus(location) === filters.availability)
+      return layerMatches
+        && (filters.availability === 'all' || locationMarkerStatus(location) === filters.availability)
         && (filters.state === 'all' || location.state === filters.state)
         && (filters.city === 'all' || location.city === filters.city)
         && (filters.stationStatus === 'all'
           || (location.stations || []).some(station => station.status === filters.stationStatus))
         && (!search || searchText.includes(search));
     });
-  }, [filters, locations]);
+  }, [filters, locations, visibleStatuses]);
 
   useEffect(() => {
     if (!filteredLocations.some(location => location.id === selectedId)) {
@@ -128,7 +139,7 @@ export default function PartnerMonitorMap() {
   ), [filteredLocations]);
   const hasFilters = Object.entries(filters).some(([key, value]) =>
     key === 'search' ? Boolean(value.trim()) : value !== 'all'
-  );
+  ) || Object.values(visibleStatuses).some(value => !value);
 
   const totals = useMemo(() => filteredLocations.reduce((result, location) => ({
     stations: result.stations + Number(location.stationCount || 0),
@@ -148,6 +159,7 @@ export default function PartnerMonitorMap() {
 
   const resetFilters = () => {
     setFilters(EMPTY_FILTERS);
+    setVisibleStatuses({ online: true, partial: true, offline: true, empty: true });
     setFocusId(null);
   };
 
@@ -156,7 +168,7 @@ export default function PartnerMonitorMap() {
     setFocusId(location.id);
   };
 
-  const filterOverlay = (
+  const filterOverlay = showFilters ? (
     <Paper
       elevation={5}
       sx={{
@@ -172,7 +184,10 @@ export default function PartnerMonitorMap() {
           <Typography variant="subtitle2">Map filters</Typography>
           <Chip size="small" label={`${filteredLocations.length} of ${locations.length}`} />
         </Stack>
-        <Button size="small" startIcon={<RestartAltIcon />} disabled={!hasFilters} onClick={resetFilters}>Reset</Button>
+        <Stack direction="row" alignItems="center">
+          <Button size="small" startIcon={<RestartAltIcon />} disabled={!hasFilters} onClick={resetFilters}>Reset</Button>
+          <Tooltip title="Hide filter panel"><IconButton size="small" onClick={() => setShowFilters(false)}><VisibilityOffIcon fontSize="small" /></IconButton></Tooltip>
+        </Stack>
       </Stack>
       <TextField
         size="small" fullWidth placeholder="Search locations or charging stations"
@@ -206,8 +221,85 @@ export default function PartnerMonitorMap() {
           </FilterSelect>
         </Grid>
       </Grid>
+      <Divider sx={{ my: 1.25 }} />
+      <Typography variant="caption" color="text.secondary">Marker visibility</Typography>
+      <Stack direction="row" gap={0.75} mt={0.75} flexWrap="wrap">
+        {Object.entries(STATUS_LABELS).map(([status, label]) => (
+          <Chip
+            key={status} size="small" clickable label={label}
+            variant={visibleStatuses[status] ? 'filled' : 'outlined'}
+            onClick={() => setVisibleStatuses(current => ({ ...current, [status]: !current[status] }))}
+            icon={<StatusDot status={status} />}
+            sx={{ opacity: visibleStatuses[status] ? 1 : 0.55 }}
+          />
+        ))}
+      </Stack>
     </Paper>
+  ) : (
+    <Tooltip title="Show map filters">
+      <IconButton onClick={() => setShowFilters(true)} sx={{ position: 'absolute', top: 12, left: 58, zIndex: 1200, bgcolor: 'background.paper', boxShadow: 3, '&:hover': { bgcolor: 'background.paper' } }}>
+        <TuneIcon />
+      </IconButton>
+    </Tooltip>
   );
+
+  const detailsPanel = selected ? (
+    <Paper
+      elevation={16}
+      sx={{
+        position: 'absolute', inset: '0 0 0 auto', zIndex: 1500,
+        width: { xs: '100%', sm: 430 }, height: '100%', overflowY: 'auto',
+        borderRadius: 0, p: { xs: 2, sm: 2.5 },
+        bgcolor: 'rgba(255,255,255,.98)', backdropFilter: 'blur(14px)'
+      }}
+    >
+      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={1} mb={2}>
+        <Box minWidth={0}>
+          <Typography variant="overline" color="primary.main" fontWeight={800}>Your location</Typography>
+          <Typography variant="h5" noWrap>{selected.name}</Typography>
+          <Typography variant="body2" color="text.secondary">{[selected.address, selected.city, selected.state].filter(Boolean).join(', ') || 'No address provided'}</Typography>
+        </Box>
+        <IconButton onClick={() => setSelectedId(null)} aria-label="Close location details"><CloseIcon /></IconButton>
+      </Stack>
+      <Chip size="small" label={STATUS_LABELS[locationMarkerStatus(selected)]} sx={{ mb: 1.5 }} />
+      <Grid container spacing={1.25} mb={2.5}>
+        {[
+          ['Stations', selected.stationCount], ['Online', selected.onlineStations],
+          ['Today sessions', selected.todayTransactions], ['Energy', formatEnergy(selected.todayEnergyWh)],
+          ['Your earning', formatNaira(selected.todayPartnerEarning)]
+        ].map(([label, value]) => <Grid item xs={6} key={label}>
+          <Box sx={{ p: 1.35, borderRadius: 2.5, bgcolor: 'grey.50', border: '1px solid', borderColor: 'divider' }}>
+            <Typography variant="caption" color="text.secondary">{label}</Typography><Typography fontWeight={750}>{value}</Typography>
+          </Box>
+        </Grid>)}
+      </Grid>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1}>
+        <Typography variant="subtitle2">Charging stations</Typography>
+        <Chip size="small" label={(selected.stations || []).length} />
+      </Stack>
+      <Stack gap={1}>
+        {(selected.stations || []).map(station => (
+          <Card variant="outlined" key={station.chargePointId} sx={{ borderRadius: 2.5 }}>
+            <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" gap={1}>
+                <Box minWidth={0}>
+                  <Typography fontWeight={700} noWrap>{station.name || station.chargePointId}</Typography>
+                  <Typography variant="caption" color="text.secondary">{station.connectorCount || 0} connectors · {station.chargePointId}</Typography>
+                </Box>
+                <Chip size="small" label={station.status} color={statusColor(station.status)} />
+              </Stack>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+                {station.todayTransactions || 0} sessions · {formatEnergy(station.todayEnergyWh)}
+              </Typography>
+              <Typography variant="caption" color="success.dark" fontWeight={700} display="block">Your earning {formatNaira(station.todayPartnerEarning)}</Typography>
+              <Button size="small" endIcon={<ArrowForwardIcon />} onClick={() => navigate('/partner/stations')} sx={{ mt: 1, px: 0 }}>Open station list</Button>
+            </CardContent>
+          </Card>
+        ))}
+        {!selected.stations?.length && <Alert severity="info">No charging stations are assigned to this location.</Alert>}
+      </Stack>
+    </Paper>
+  ) : null;
 
   return (
     <Box>
@@ -219,9 +311,10 @@ export default function PartnerMonitorMap() {
             {updatedAt && ` Updated ${updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`}
           </Typography>
         </Box>
-        <Tooltip title="Refresh monitor data">
-          <span><IconButton onClick={loadMonitor} disabled={loading} color="primary"><RefreshIcon /></IconButton></span>
-        </Tooltip>
+        <Stack direction="row" gap={1}>
+          <Button variant="outlined" startIcon={<ViewSidebarIcon />} onClick={() => setShowLocationList(current => !current)}>{showLocationList ? 'Hide list' : 'Show list'}</Button>
+          <Tooltip title="Refresh monitor data"><span><IconButton onClick={loadMonitor} disabled={loading} color="primary"><RefreshIcon /></IconButton></span></Tooltip>
+        </Stack>
       </Stack>
 
       {error && <Alert severity="error" sx={{ mb: 2 }} action={<Button color="inherit" onClick={loadMonitor}>Retry</Button>}>{error}</Alert>}
@@ -247,9 +340,9 @@ export default function PartnerMonitorMap() {
         <Card><Box height={650} display="grid" sx={{ placeItems: 'center' }}><CircularProgress /></Box></Card>
       ) : (
         <Grid container spacing={2}>
-          <Grid item xs={12} lg={8}>
-            <Card sx={{ overflow: 'hidden' }}>
-              <FullscreenMap height={{ xs: 560, md: 650 }} ariaLabel="Partner charging network map" overlay={filterOverlay}>
+          <Grid item xs={12} lg={showLocationList ? 9 : 12}>
+            <Card sx={{ overflow: 'hidden', borderRadius: 3, border: '1px solid', borderColor: 'divider', boxShadow: '0 14px 38px rgba(15,23,42,.08)' }}>
+              <FullscreenMap height={{ xs: 620, md: 700 }} ariaLabel="Partner charging network map" overlay={filterOverlay} panel={detailsPanel}>
                 <TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
                 <MapBounds locations={mapped} focusLocation={focused} />
                 {mapped.map(location => (
@@ -278,17 +371,17 @@ export default function PartnerMonitorMap() {
             </Card>
           </Grid>
 
-          <Grid item xs={12} lg={4}>
-            <Card sx={{ mb: 2 }}>
+          {showLocationList && <Grid item xs={12} lg={3}>
+            <Card sx={{ height: { lg: 700 }, display: 'flex', flexDirection: 'column', borderRadius: 3, border: '1px solid', borderColor: 'divider' }}>
               <CardContent sx={{ pb: 1 }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="center">
                   <Typography variant="h6">Matching locations</Typography>
                   <Chip size="small" color="primary" label={filteredLocations.length} />
                 </Stack>
-                <Typography variant="caption" color="text.secondary">Select a location to focus the map.</Typography>
+                <Typography variant="caption" color="text.secondary">Select a location to focus the map and inspect stations.</Typography>
               </CardContent>
               <Divider />
-              <List disablePadding sx={{ maxHeight: 245, overflowY: 'auto' }}>
+              <List disablePadding sx={{ overflowY: 'auto', flex: 1 }}>
                 {filteredLocations.map(location => {
                   const markerStatus = locationMarkerStatus(location);
                   return (
@@ -316,7 +409,7 @@ export default function PartnerMonitorMap() {
               </Stack>
             </Card>
 
-            {selected && <Card><CardContent>
+            {false && selected && <Card><CardContent>
               <Stack direction="row" justifyContent="space-between" gap={1} mb={0.5}>
                 <Typography variant="h6">{selected.name}</Typography>
                 <Chip size="small" label={STATUS_LABELS[locationMarkerStatus(selected)]} />
@@ -342,7 +435,7 @@ export default function PartnerMonitorMap() {
                 {!selected.stations?.length && <Alert severity="info">No charging stations are assigned to this location.</Alert>}
               </Stack>
             </CardContent></Card>}
-          </Grid>
+          </Grid>}
         </Grid>
       )}
     </Box>
