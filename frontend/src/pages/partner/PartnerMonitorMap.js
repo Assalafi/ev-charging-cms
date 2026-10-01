@@ -87,7 +87,7 @@ export default function PartnerMonitorMap() {
       const response = await partnerService.getLocations();
       const result = response.data.locations || [];
       setLocations(result);
-      setSelectedId(current => result.some(location => location.id === current) ? current : result[0]?.id || null);
+      setSelectedId(current => result.some(location => location.id === current) ? current : null);
       setUpdatedAt(response.data.generatedAt ? new Date(response.data.generatedAt) : new Date());
     } catch (requestError) {
       setError(requestError.serverMessage || 'Could not load live monitor data.');
@@ -127,12 +127,12 @@ export default function PartnerMonitorMap() {
   }, [filters, locations, visibleStatuses]);
 
   useEffect(() => {
-    if (!filteredLocations.some(location => location.id === selectedId)) {
-      setSelectedId(filteredLocations[0]?.id || null);
+    if (selectedId && !filteredLocations.some(location => location.id === selectedId)) {
+      setSelectedId(null);
     }
   }, [filteredLocations, selectedId]);
 
-  const selected = filteredLocations.find(location => location.id === selectedId) || filteredLocations[0] || null;
+  const selected = selectedId ? filteredLocations.find(location => location.id === selectedId) || null : null;
   const focused = filteredLocations.find(location => location.id === focusId) || null;
   const mapped = useMemo(() => filteredLocations.filter(location =>
     Number.isFinite(Number(location.latitude)) && Number.isFinite(Number(location.longitude))
