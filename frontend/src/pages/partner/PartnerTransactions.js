@@ -65,6 +65,13 @@ export default function PartnerTransactions() {
   }, [applied.search, transactions]);
   const currentEnergy = visibleTransactions.reduce((total, transaction) => total + (Number(transaction.energyDelivered) || 0), 0);
   const currentEarnings = visibleTransactions.reduce((total, transaction) => total + (Number(transaction.partnerEarning) || 0), 0);
+  const exportTransactions = () => partnerService.exportTransactions({
+    ...(applied.range === 'custom' ? { startDate: applied.startDate, endDate: applied.endDate } : { range: applied.range }),
+    ...(applied.status && { status: applied.status }),
+    ...(applied.settlementStatus && { settlementStatus: applied.settlementStatus }),
+    ...(applied.locationId && { locationId: applied.locationId }),
+    ...(applied.chargePointId && { chargePointId: applied.chargePointId })
+  });
 
   return (
     <Box>
@@ -81,7 +88,7 @@ export default function PartnerTransactions() {
           <Grid item xs={6} md={2}><Select size="small" fullWidth displayEmpty value={filters.settlementStatus} onChange={event => updateFilter('settlementStatus', event.target.value)}><MenuItem value="">All settlement states</MenuItem><MenuItem value="pending">Pending</MenuItem><MenuItem value="included">Included</MenuItem><MenuItem value="paid">Paid</MenuItem></Select></Grid>
           <Grid item xs={6} md={2}><Select size="small" fullWidth displayEmpty value={filters.locationId} onChange={event => updateFilter('locationId', event.target.value)}><MenuItem value="">All locations</MenuItem>{locations.map(location => <MenuItem key={location.id} value={location.id}>{location.name}</MenuItem>)}</Select></Grid>
           {filters.range === 'custom' && <><Grid item xs={6} md={2}><TextField size="small" fullWidth type="date" label="From" InputLabelProps={{ shrink: true }} value={filters.startDate} onChange={event => updateFilter('startDate', event.target.value)} /></Grid><Grid item xs={6} md={2}><TextField size="small" fullWidth type="date" label="To" InputLabelProps={{ shrink: true }} value={filters.endDate} onChange={event => updateFilter('endDate', event.target.value)} /></Grid></>}
-          <Grid item xs={12} md="auto"><Stack direction="row" spacing={1}><Button variant="contained" onClick={applyFilters} disabled={filters.range === 'custom' && (!filters.startDate || !filters.endDate)}>Apply</Button><Button onClick={clearFilters}>Reset</Button><Button variant="outlined" startIcon={<DownloadIcon />} onClick={() => partnerService.exportTransactions({ range: applied.range, ...(applied.status && { status: applied.status }), ...(applied.settlementStatus && { settlementStatus: applied.settlementStatus }), ...(applied.locationId && { locationId: applied.locationId }), ...(applied.chargePointId && { chargePointId: applied.chargePointId }) })}>CSV</Button></Stack></Grid>
+          <Grid item xs={12} md="auto"><Stack direction="row" spacing={1}><Button variant="contained" onClick={applyFilters} disabled={filters.range === 'custom' && (!filters.startDate || !filters.endDate)}>Apply</Button><Button onClick={clearFilters}>Reset</Button><Button variant="outlined" startIcon={<DownloadIcon />} onClick={exportTransactions}>CSV</Button></Stack></Grid>
         </Grid>
         {filters.locationId && <Box mt={1.5} maxWidth={260}><Select size="small" fullWidth displayEmpty value={filters.chargePointId} onChange={event => updateFilter('chargePointId', event.target.value)}><MenuItem value="">All stations at location</MenuItem>{stations.map(station => <MenuItem key={station.chargePointId} value={station.chargePointId}>{station.name || station.chargePointId}</MenuItem>)}</Select></Box>}
       </CardContent></Card>

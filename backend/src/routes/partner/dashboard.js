@@ -75,25 +75,33 @@ router.get('/summary', authenticate, partnerOnly, async (req, res) => {
       type: sequelize.QueryTypes.SELECT
     });
 
-    // Get pending settlement amount
+    // A settlement owns the transactions once a statement is generated. Read
+    // statement totals first, then add only completed earnings that have not
+    // yet been included in a statement (for the current open month).
     const pendingSettlement = await sequelize.query(`
-      SELECT COALESCE(SUM("partnerEarning"), 0) as pending_amount
-      FROM transactions
-      WHERE "partnerId" = :partnerId
-        AND "settlementStatus" = 'pending'
-        AND status = 'Completed'
+      SELECT COALESCE((
+        SELECT SUM("finalPayableAmount")
+        FROM partner_settlements
+        WHERE "partnerId" = :partnerId
+          AND status IN ('pending', 'draft', 'approved')
+      ), 0) + COALESCE((
+        SELECT SUM("partnerEarning")
+        FROM transactions
+        WHERE "partnerId" = :partnerId
+          AND "settlementStatus" = 'pending'
+          AND status = 'Completed'
+      ), 0) as pending_amount
     `, {
       replacements: { partnerId },
       type: sequelize.QueryTypes.SELECT
     });
 
-    // Get paid settlement amount
+    // Paid statements are the source of truth for paid-to-date totals.
     const paidSettlement = await sequelize.query(`
-      SELECT COALESCE(SUM("partnerEarning"), 0) as paid_amount
-      FROM transactions
+      SELECT COALESCE(SUM("finalPayableAmount"), 0) as paid_amount
+      FROM partner_settlements
       WHERE "partnerId" = :partnerId
-        AND "settlementStatus" = 'paid'
-        AND status = 'Completed'
+        AND status = 'paid'
     `, {
       replacements: { partnerId },
       type: sequelize.QueryTypes.SELECT
