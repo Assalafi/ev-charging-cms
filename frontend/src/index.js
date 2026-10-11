@@ -12,6 +12,7 @@ import './styles/global.css';
 import { AuthProvider } from './contexts/AuthContext';
 import { MQTTProvider } from './contexts/MQTTContext';
 import { BrandingProvider, useBranding } from './contexts/BrandingContext';
+import { CompanyAuthProvider } from './contexts/CompanyAuthContext';
 
 function BrandedApplication() {
   const { branding } = useBranding();
@@ -21,7 +22,9 @@ function BrandedApplication() {
       <CssBaseline />
       <AuthProvider>
         <MQTTProvider>
-          <App />
+          <CompanyAuthProvider>
+            <App />
+          </CompanyAuthProvider>
         </MQTTProvider>
       </AuthProvider>
     </ThemeProvider>

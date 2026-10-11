@@ -9,6 +9,7 @@
     "migrate:partner": "node scripts/migrate-partner-schema.js",
     "migrate:admin-access": "node scripts/migrate-admin-access-control.js",
     "migrate:company-subscriptions": "node scripts/migrate-company-subscriptions.js",
+    "migrate:company-portal": "node scripts/migrate-company-portal.js",
     "test": "jest",
     "migrate:settlement-status": "node scripts/migrate-settlement-status.js"
   },

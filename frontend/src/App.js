@@ -36,6 +36,14 @@ import CompanyForm from './pages/companies/CompanyForm';
 import PartnerLayout from './components/PartnerLayout';
 import SettlementList from './pages/settlements/SettlementList';
 import NotFound from './pages/NotFound';
+import CompanyLogin from './pages/company/CompanyLogin';
+import CompanyDashboard from './pages/company/CompanyDashboard';
+import CompanyMonitor from './pages/company/CompanyMonitor';
+import CompanyUsers from './pages/company/CompanyUsers';
+import CompanyWallet from './pages/company/CompanyWallet';
+import CompanyFunding from './pages/company/CompanyFunding';
+import CompanyLayout from './components/CompanyLayout';
+import CompanyPrivateRoute from './components/CompanyPrivateRoute';
 import AdminMonitorMap from './pages/monitor/AdminMonitorMap';
 import AdminUsers from './pages/adminUsers/AdminUsers';
 import { useAuth } from './contexts/AuthContext';
@@ -65,6 +73,7 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/company/login" element={<CompanyLogin />} />
       
       <Route path="/" element={<PrivateRoute audience="admin"><Layout /></PrivateRoute>}>
         <Route index element={<Navigate to={adminHome} replace />} />
@@ -122,6 +131,15 @@ function App() {
         <Route path="performance" element={<PartnerPerformance />} />
         <Route path="settlements" element={<PartnerSettlements />} />
         <Route path="profile" element={<PartnerProfile />} />
+      </Route>
+
+      <Route path="/company" element={<CompanyPrivateRoute><CompanyLayout /></CompanyPrivateRoute>}>
+        <Route index element={<Navigate to="/company/dashboard" replace />} />
+        <Route path="dashboard" element={<CompanyDashboard />} />
+        <Route path="monitor" element={<CompanyMonitor />} />
+        <Route path="users" element={<CompanyUsers />} />
+        <Route path="wallet" element={<CompanyWallet />} />
+        <Route path="funding" element={<CompanyFunding />} />
       </Route>
       
       <Route path="*" element={<NotFound />} />

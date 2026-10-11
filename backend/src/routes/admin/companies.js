@@ -5,6 +5,7 @@ const {
   CompanyWallet,
   CompanyWalletTransaction,
   CompanyFundingRule,
+  CompanyUser,
   MobileUser,
   Wallet,
   AuthorizedTag,
@@ -25,6 +26,7 @@ const {
 const router = express.Router();
 
 const COMPANY_ATTRIBUTES = ['id', 'name', 'email', 'phone', 'address', 'city', 'state', 'country', 'status', 'notes', 'createdBy', 'createdAt', 'updatedAt'];
+const COMPANY_USER_ATTRIBUTES = ['id', 'companyId', 'name', 'email', 'phone', 'role', 'status', 'lastLogin', 'createdAt', 'updatedAt'];
 
 function parsePage(query) {
   const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
@@ -58,6 +60,12 @@ function serializeCompany(company) {
     userCount: value.mobileUsers?.length || value.userCount || 0,
     activeUserCount: value.activeUserCount || 0
   };
+}
+
+function serializeCompanyUser(user) {
+  const data = user.toJSON ? user.toJSON() : user;
+  const { password, ...safe } = data;
+  return safe;
 }
 
 function paystackRequest({ method = 'GET', path, secretKey, payload }) {
@@ -289,6 +297,83 @@ router.delete('/:companyId/users/:userId', authenticate, requirePermission('comp
   } catch (error) {
     logger.error('Error unassigning company mobile user:', error);
     res.status(500).json({ success: false, message: 'Failed to unassign mobile user' });
+  }
+});
+
+// Company portal accounts are deliberately separate from administrative users.
+router.get('/:companyId/portal-users', authenticate, requirePermission('companies.view'), async (req, res) => {
+  try {
+    const company = await SubscriptionCompany.findByPk(req.params.companyId, { attributes: ['id', 'name', 'status'] });
+    if (!company) return res.status(404).json({ success: false, message: 'Company not found' });
+    const users = await CompanyUser.findAll({
+      where: { companyId: company.id },
+      attributes: COMPANY_USER_ATTRIBUTES,
+      order: [['role', 'ASC'], ['name', 'ASC']]
+    });
+    res.json({ success: true, company, users });
+  } catch (error) {
+    logger.error('Error fetching company portal users:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch company portal users' });
+  }
+});
+
+router.post('/:companyId/portal-users', authenticate, requirePermission('companies.manage_users'), async (req, res) => {
+  try {
+    const company = await SubscriptionCompany.findByPk(req.params.companyId);
+    if (!company) return res.status(404).json({ success: false, message: 'Company not found' });
+    const name = String(req.body.name || '').trim();
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const password = String(req.body.password || '');
+    const role = ['owner', 'manager', 'viewer'].includes(req.body.role) ? req.body.role : 'owner';
+    if (!name || !email || !password) return res.status(400).json({ success: false, message: 'Name, email and password are required' });
+    if (password.length < 8) return res.status(400).json({ success: false, message: 'Portal password must be at least 8 characters' });
+    const existing = await CompanyUser.findOne({ where: { email } });
+    if (existing) return res.status(409).json({ success: false, message: 'A portal account with that email already exists' });
+    const user = await CompanyUser.create({ companyId: company.id, name, email, phone: req.body.phone || null, password, role, status: 'active' });
+    res.status(201).json({ success: true, message: 'Company portal account created', user: serializeCompanyUser(user) });
+  } catch (error) {
+    logger.error('Error creating company portal user:', error);
+    res.status(error.name === 'SequelizeUniqueConstraintError' ? 409 : 400).json({ success: false, message: error.message || 'Failed to create company portal account' });
+  }
+});
+
+router.put('/:companyId/portal-users/:userId', authenticate, requirePermission('companies.manage_users'), async (req, res) => {
+  try {
+    const user = await CompanyUser.findOne({ where: { id: req.params.userId, companyId: req.params.companyId } });
+    if (!user) return res.status(404).json({ success: false, message: 'Company portal account not found' });
+    const data = {};
+    if (req.body.name !== undefined) data.name = String(req.body.name || '').trim();
+    if (req.body.email !== undefined) data.email = String(req.body.email || '').trim().toLowerCase();
+    if (req.body.phone !== undefined) data.phone = req.body.phone ? String(req.body.phone).trim() : null;
+    if (req.body.role !== undefined && ['owner', 'manager', 'viewer'].includes(req.body.role)) data.role = req.body.role;
+    if (req.body.status !== undefined && ['active', 'suspended'].includes(req.body.status)) data.status = req.body.status;
+    if (req.body.password) {
+      if (String(req.body.password).length < 8) return res.status(400).json({ success: false, message: 'Portal password must be at least 8 characters' });
+      data.password = String(req.body.password);
+    }
+    if (data.email) {
+      const duplicate = await CompanyUser.findOne({ where: { email: data.email, id: { [Op.ne]: user.id } } });
+      if (duplicate) return res.status(409).json({ success: false, message: 'A portal account with that email already exists' });
+    }
+    await user.update(data);
+    res.json({ success: true, message: 'Company portal account updated', user: serializeCompanyUser(user) });
+  } catch (error) {
+    logger.error('Error updating company portal user:', error);
+    res.status(400).json({ success: false, message: error.message || 'Failed to update company portal account' });
+  }
+});
+
+router.delete('/:companyId/portal-users/:userId', authenticate, requirePermission('companies.manage_users'), async (req, res) => {
+  try {
+    const user = await CompanyUser.findOne({ where: { id: req.params.userId, companyId: req.params.companyId } });
+    if (!user) return res.status(404).json({ success: false, message: 'Company portal account not found' });
+    const owners = await CompanyUser.count({ where: { companyId: user.companyId, role: 'owner', status: 'active' } });
+    if (user.role === 'owner' && owners <= 1) return res.status(400).json({ success: false, message: 'Create another active owner before removing the last owner' });
+    await user.destroy();
+    res.json({ success: true, message: 'Company portal account removed' });
+  } catch (error) {
+    logger.error('Error deleting company portal user:', error);
+    res.status(500).json({ success: false, message: 'Failed to remove company portal account' });
   }
 });
 

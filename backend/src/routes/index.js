@@ -29,6 +29,8 @@ const partnerPerformanceRoutes = require('./partner/performance');
 const partnerSettlementsRoutes = require('./partner/settlements');
 const partnerTransactionsRoutes = require('./partner/transactions');
 const partnerProfileRoutes = require('./partner/profile');
+const companyAuthRoutes = require('./company/auth');
+const companyPortalRoutes = require('./company/portal');
 // Temporarily commenting out simulator routes due to import issues
 // const simulatorRoutes = require('./simulator');
 
@@ -72,6 +74,8 @@ router.use('/partner/performance', partnerPerformanceRoutes);
 router.use('/partner/settlements', partnerSettlementsRoutes);
 router.use('/partner/transactions', partnerTransactionsRoutes);
 router.use('/partner/profile', partnerProfileRoutes);
+router.use('/company/auth', companyAuthRoutes);
+router.use('/company', companyPortalRoutes);
 router.use('/mobile', mobileRoutes);
 // Temporarily commenting out simulator routes due to import issues
 // router.use('/simulator', simulatorRoutes);

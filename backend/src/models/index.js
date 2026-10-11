@@ -39,6 +39,7 @@ const SubscriptionCompany = require('./SubscriptionCompany')(sequelize);
 const CompanyWallet = require('./CompanyWallet')(sequelize);
 const CompanyWalletTransaction = require('./CompanyWalletTransaction')(sequelize);
 const CompanyFundingRule = require('./CompanyFundingRule')(sequelize);
+const CompanyUser = require('./CompanyUser')(sequelize);
 
 // Partnership models
 const PartnerCompany = require('./PartnerCompany')(sequelize);
@@ -94,6 +95,8 @@ SubscriptionCompany.hasMany(CompanyFundingRule, { foreignKey: 'companyId', as: '
 CompanyFundingRule.belongsTo(SubscriptionCompany, { foreignKey: 'companyId', as: 'company' });
 CompanyFundingRule.belongsTo(MobileUser, { foreignKey: 'mobileUserId', as: 'mobileUser' });
 MobileUser.hasMany(CompanyFundingRule, { foreignKey: 'mobileUserId', as: 'fundingRules' });
+SubscriptionCompany.hasMany(CompanyUser, { foreignKey: 'companyId', as: 'users' });
+CompanyUser.belongsTo(SubscriptionCompany, { foreignKey: 'companyId', as: 'company' });
 
 // MobileUser -> AuthorizedTag and Transaction associations (used by admin routes)
 MobileUser.hasOne(AuthorizedTag, { foreignKey: 'tagId', sourceKey: 'tagId', as: 'authorizedTag' });
@@ -168,6 +171,7 @@ module.exports = {
   CompanyWallet,
   CompanyWalletTransaction,
   CompanyFundingRule,
+  CompanyUser,
   PartnerCompany,
   PartnerSettlement,
   PartnerSettlementItem

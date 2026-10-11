@@ -45,6 +45,22 @@ const companyService = {
     const response = await api.delete(`/admin/companies/${companyId}/users/${userId}`);
     return response.data;
   },
+  portalUsers: async (id) => {
+    const response = await api.get(`/admin/companies/${id}/portal-users`);
+    return response.data;
+  },
+  createPortalUser: async (id, payload) => {
+    const response = await api.post(`/admin/companies/${id}/portal-users`, payload);
+    return response.data;
+  },
+  updatePortalUser: async (companyId, userId, payload) => {
+    const response = await api.put(`/admin/companies/${companyId}/portal-users/${userId}`, payload);
+    return response.data;
+  },
+  deletePortalUser: async (companyId, userId) => {
+    const response = await api.delete(`/admin/companies/${companyId}/portal-users/${userId}`);
+    return response.data;
+  },
   fundWallet: async (id, payload) => {
     const response = await api.post(`/admin/companies/${id}/wallet/fund`, payload);
     return response.data;
