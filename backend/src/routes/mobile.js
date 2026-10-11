@@ -1,7 +1,7 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
-const { MobileUser, AuthorizedTag, ChargingStation, Transaction, Connector, Location, Wallet } = require('../models');
+const { MobileUser, AuthorizedTag, ChargingStation, Transaction, Connector, Location, Wallet, SubscriptionCompany } = require('../models');
 const logger = require('../utils/logger');
 const ocppServer = require('../ocpp/server');
 
@@ -15,7 +15,7 @@ const getJwtSecret = () =>
   process.env.JWT_SECRET || 'ev-charging-secure-secret';
 
 // ─── Middleware: authenticate mobile user ────────────────────────────────────
-function mobileAuth(req, res, next) {
+async function mobileAuth(req, res, next) {
   logger.info('Mobile auth middleware called', { 
     path: req.path, 
     method: req.method,
@@ -37,8 +37,20 @@ function mobileAuth(req, res, next) {
       logger.warn('Mobile auth failed: Invalid mobile token structure', { path: req.path, decoded });
       throw new Error('Invalid mobile token');
     }
-    logger.info('Mobile auth success', { path: req.path, userId: decoded.id, userEmail: decoded.email });
-    req.user = decoded;
+    const user = await MobileUser.findByPk(decoded.id, {
+      attributes: ['id', 'name', 'email', 'phone', 'tagId', 'active', 'status', 'companyId']
+    });
+    if (!user || !user.active || user.status !== 'active') {
+      return res.status(401).json({ success: false, message: 'Mobile account is inactive or suspended' });
+    }
+    if (user.companyId) {
+      const company = await SubscriptionCompany.findByPk(user.companyId, { attributes: ['id', 'name', 'status'] });
+      if (!company || company.status !== 'active') {
+        return res.status(403).json({ success: false, message: 'Your company account is not active' });
+      }
+    }
+    logger.info('Mobile auth success', { path: req.path, userId: user.id, userEmail: user.email, companyId: user.companyId });
+    req.user = { ...decoded, ...user.toJSON(), isMobile: true };
     next();
   } catch (error) {
     logger.error('Mobile auth error', { path: req.path, error: error.message, errorName: error.name });
@@ -177,8 +189,15 @@ router.post('/auth/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    if (!user.active) {
-      return res.status(401).json({ success: false, message: 'Account is disabled' });
+    if (!user.active || user.status !== 'active') {
+      return res.status(401).json({ success: false, message: 'Account is disabled or suspended' });
+    }
+
+    if (user.companyId) {
+      const company = await SubscriptionCompany.findByPk(user.companyId, { attributes: ['status'] });
+      if (!company || company.status !== 'active') {
+        return res.status(403).json({ success: false, message: 'Your company account is not active' });
+      }
     }
 
     const isPasswordValid = await user.comparePassword(password);

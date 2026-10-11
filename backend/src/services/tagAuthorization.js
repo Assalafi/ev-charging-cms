@@ -1,4 +1,4 @@
-const { sequelize, AuthorizedTag } = require('../models');
+const { sequelize, AuthorizedTag, MobileUser, SubscriptionCompany } = require('../models');
 const logger = require('../utils/logger');
 
 /**
@@ -106,6 +106,33 @@ class TagAuthorizationService {
           status: 'Blocked',
           expiryDate: authorizedTag.expiryDate
         };
+      }
+
+      // A valid OCPP tag must also belong to an active mobile account. For
+      // company-managed users this keeps a suspended/inactive company from
+      // continuing to charge with a token issued before the suspension.
+      const mobileUser = await MobileUser.findOne({
+        where: { tagId },
+        attributes: ['id', 'active', 'status', 'companyId']
+      });
+      if (mobileUser && (!mobileUser.active || mobileUser.status !== 'active')) {
+        logger.debug(`Tag ${tagId} belongs to an inactive mobile user`);
+        return {
+          status: 'Blocked',
+          expiryDate: authorizedTag.expiryDate
+        };
+      }
+      if (mobileUser && mobileUser.companyId) {
+        const company = await SubscriptionCompany.findByPk(mobileUser.companyId, {
+          attributes: ['id', 'status']
+        });
+        if (!company || company.status !== 'active') {
+          logger.debug(`Tag ${tagId} belongs to an inactive subscription company`);
+          return {
+            status: 'Blocked',
+            expiryDate: authorizedTag.expiryDate
+          };
+        }
       }
       
       // Check if tag has expired

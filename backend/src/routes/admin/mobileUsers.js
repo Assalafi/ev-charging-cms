@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { MobileUser, AuthorizedTag, Transaction } = require('../../models');
+const { MobileUser, AuthorizedTag, Transaction, SubscriptionCompany } = require('../../models');
 const { authenticate } = require('../../middleware/auth');
 const { requirePermission } = require('../../middleware/permissions');
 const logger = require('../../utils/logger');
@@ -28,6 +28,7 @@ router.get('/', authenticate, requirePermission('mobile_users.view'), async (req
 
     const { count, rows: users } = await MobileUser.findAndCountAll({
       where: whereClause,
+      attributes: { exclude: ['password'] },
       include: [
         {
           model: AuthorizedTag,
@@ -40,6 +41,12 @@ router.get('/', authenticate, requirePermission('mobile_users.view'), async (req
           attributes: ['transactionId', 'startTime', 'stopTime', 'energyDelivered', 'amount', 'status'],
           limit: 5,
           order: [['startTime', 'DESC']]
+        },
+        {
+          model: SubscriptionCompany,
+          as: 'company',
+          attributes: ['id', 'name', 'status'],
+          required: false
         }
       ],
       order: [['name', 'ASC']],
@@ -113,6 +120,7 @@ router.get('/stats', authenticate, requirePermission('mobile_users.view'), async
 router.get('/:id', authenticate, requirePermission('mobile_users.view'), async (req, res) => {
   try {
     const user = await MobileUser.findByPk(req.params.id, {
+      attributes: { exclude: ['password'] },
       include: [
         {
           model: AuthorizedTag,

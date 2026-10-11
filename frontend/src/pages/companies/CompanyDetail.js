@@ -1,0 +1,229 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  Autocomplete,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  FormControl,
+  Grid,
+  IconButton,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
+  Tab,
+  Tabs,
+  TextField,
+  Typography
+} from '@mui/material';
+import {
+  AccountBalanceWalletRounded,
+  AddRounded,
+  ArrowBackRounded,
+  AutorenewRounded,
+  BusinessRounded,
+  CloseRounded,
+  DeleteOutlineRounded,
+  EditRounded,
+  GroupAddRounded,
+  PeopleAltRounded,
+  RefreshRounded,
+  SendRounded,
+  TimelineRounded
+} from '@mui/icons-material';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
+import companyService from '../../services/companyService';
+import mobileUserService from '../../services/mobileUserService';
+
+const money = value => new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(Number(value || 0));
+const statusColor = { active: 'success', suspended: 'warning', inactive: 'default', deleted: 'error' };
+const blankUser = { name: '', phone: '', email: '', password: '' };
+const blankRule = { frequency: 'monthly', amount: '', startDate: new Date().toISOString().slice(0, 10), endDate: '', mobileUserId: '', notes: '' };
+
+export default function CompanyDetail() {
+  const navigate = useNavigate();
+  const { id } = useParams();
+  const { hasPermission } = useAuth();
+  const canUpdate = hasPermission('companies.update');
+  const canSuspend = hasPermission('companies.suspend');
+  const canManageUsers = hasPermission('companies.manage_users');
+  const canManageWallet = hasPermission('companies.manage_wallet');
+  const canManageFunding = hasPermission('companies.manage_funding');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const paymentReference = searchParams.get('reference') || searchParams.get('trxref');
+  const [company, setCompany] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [userPage, setUserPage] = useState({ page: 1, limit: 20, total: 0 });
+  const [transactions, setTransactions] = useState([]);
+  const [rules, setRules] = useState([]);
+  const [tab, setTab] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState({ type: '', text: '' });
+  const [userSearch, setUserSearch] = useState('');
+  const [dialogs, setDialogs] = useState({ fund: false, transfer: false, createUser: false, assign: false, rule: false });
+  const [fundForm, setFundForm] = useState({ amount: '', description: '', method: 'offline' });
+  const [transferForm, setTransferForm] = useState({ mobileUserId: '', amount: '', description: '' });
+  const [userForm, setUserForm] = useState(blankUser);
+  const [ruleForm, setRuleForm] = useState(blankRule);
+  const [assignOptions, setAssignOptions] = useState([]);
+  const [assignedOptions, setAssignedOptions] = useState([]);
+
+  const loadCompany = useCallback(async () => {
+    const result = await companyService.get(id);
+    setCompany(result.company);
+    setRules(result.company?.fundingRules || []);
+  }, [id]);
+
+  const loadUsers = useCallback(async () => {
+    const result = await companyService.users(id, { page: userPage.page, limit: userPage.limit, search: userSearch });
+    setUsers(result.users || []);
+    setUserPage(current => result.pagination || current);
+  }, [id, userPage.page, userPage.limit, userSearch]);
+
+  const loadTransactions = useCallback(async () => {
+    const result = await companyService.transactions(id, { page: 1, limit: 30 });
+    setTransactions(result.transactions || []);
+  }, [id]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { await Promise.all([loadCompany(), loadUsers(), loadTransactions()]); setNotice({ type: '', text: '' }); }
+    catch (err) { setNotice({ type: 'error', text: err.serverMessage || err.message || 'Failed to load company workspace' }); }
+    finally { setLoading(false); }
+  }, [loadCompany, loadUsers, loadTransactions]);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (tab === 3) companyService.rules(id).then(result => setRules(result.rules || [])).catch(() => {}); }, [id, tab]);
+  useEffect(() => {
+    if (!paymentReference) return undefined;
+    let cancelled = false;
+    companyService.verifyPaystackFunding(id, paymentReference)
+      .then(() => {
+        if (!cancelled) {
+          setNotice({ type: 'success', text: 'Company wallet payment verified and applied.' });
+          loadCompany();
+          loadTransactions();
+        }
+      })
+      .catch(error => {
+        if (!cancelled) setNotice({ type: 'error', text: error.serverMessage || error.message || 'Unable to verify company wallet payment' });
+      })
+      .finally(() => {
+        if (!cancelled) setSearchParams({}, { replace: true });
+      });
+    return () => { cancelled = true; };
+  }, [id, loadCompany, loadTransactions, paymentReference, setSearchParams]);
+
+  const action = async (callback, successMessage) => {
+    setBusy(true);
+    try { await callback(); setNotice({ type: 'success', text: successMessage }); await loadCompany(); await loadUsers(); await loadTransactions(); return true; }
+    catch (err) { setNotice({ type: 'error', text: err.serverMessage || err.message || 'Action failed' }); return false; }
+    finally { setBusy(false); }
+  };
+
+  const openAssign = async () => {
+    try {
+      const result = await mobileUserService.getMobileUsers(1, 100, '');
+      const available = (result.data?.users || []).filter(user => !user.companyId && user.status !== 'deleted');
+      setAssignOptions(available);
+      setAssignedOptions([]);
+      setDialogs(previous => ({ ...previous, assign: true }));
+    } catch (err) { setNotice({ type: 'error', text: err.serverMessage || err.message || 'Failed to load available users' }); }
+  };
+
+  const close = key => setDialogs(previous => ({ ...previous, [key]: false }));
+
+  const submitFund = async event => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      if (fundForm.method === 'paystack') {
+        if (!company.email) throw new Error('Add a company email before using gateway funding');
+        const result = await companyService.initializePaystackFunding(id, {
+          amount: fundForm.amount,
+          description: fundForm.description,
+          email: company.email,
+          callbackUrl: `${window.location.origin}${window.location.pathname}`
+        });
+        if (!result.authorization_url) throw new Error('Payment gateway did not return an authorization link');
+        window.location.assign(result.authorization_url);
+        return;
+      }
+      const succeeded = await action(() => companyService.fundWallet(id, { amount: fundForm.amount, description: fundForm.description, method: 'offline' }), 'Company wallet funded');
+      if (succeeded) { setFundForm({ amount: '', description: '', method: 'offline' }); close('fund'); }
+    } catch (err) {
+      setNotice({ type: 'error', text: err.serverMessage || err.message || 'Unable to initialize company wallet funding' });
+    } finally { setBusy(false); }
+  };
+  const submitTransfer = async event => { event.preventDefault(); if (await action(() => companyService.transferToUser(id, transferForm), 'User wallet funded from company wallet')) { setTransferForm({ mobileUserId: '', amount: '', description: '' }); close('transfer'); } };
+  const submitUser = async event => { event.preventDefault(); if (await action(() => companyService.createUser(id, userForm), 'Company mobile user created')) { setUserForm(blankUser); close('createUser'); } };
+  const submitAssign = async event => { event.preventDefault(); if (!assignedOptions.length) return; if (await action(() => companyService.assignUsers(id, assignedOptions.map(user => user.id)), 'Mobile users assigned to company')) close('assign'); };
+  const submitRule = async event => { event.preventDefault(); if (await action(() => companyService.createRule(id, { ...ruleForm, amount: Number(ruleForm.amount), mobileUserId: ruleForm.mobileUserId || null, endDate: ruleForm.endDate || null }), 'Funding rule created')) { setRuleForm(blankRule); close('rule'); } };
+
+  const companyUsers = useMemo(() => users.filter(user => user.status !== 'deleted'), [users]);
+
+  if (loading && !company) return <Box sx={{ minHeight: 360, display: 'grid', placeItems: 'center' }}><CircularProgress /></Box>;
+  if (!company) return <Alert severity="error">Company could not be found.</Alert>;
+
+  return (
+    <Stack spacing={3}>
+      <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} justifyContent="space-between" alignItems={{ md: 'center' }}>
+        <Stack direction="row" spacing={1.25} alignItems="center"><IconButton onClick={() => navigate('/companies')}><ArrowBackRounded /></IconButton><Box><Typography variant="h4" fontWeight={850}>{company.name}</Typography><Typography color="text.secondary">Company subscription workspace · {company.email || company.phone || 'No contact details'}</Typography></Box></Stack>
+        <Stack direction="row" spacing={1} flexWrap="wrap"><IconButton onClick={load} disabled={busy} aria-label="Refresh"><RefreshRounded /></IconButton>{canUpdate && <Button variant="outlined" startIcon={<EditRounded />} onClick={() => navigate(`/companies/${id}/edit`)}>Edit profile</Button>}{canManageWallet && <Button variant="contained" startIcon={<AccountBalanceWalletRounded />} onClick={() => setDialogs(previous => ({ ...previous, fund: true }))}>Fund company wallet</Button>}</Stack>
+      </Stack>
+
+      {notice.text && <Alert severity={notice.type || 'info'} onClose={() => setNotice({ type: '', text: '' })}>{notice.text}</Alert>}
+
+      <Paper variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}>
+        <Box sx={{ p: { xs: 2, sm: 2.5 }, background: theme => `linear-gradient(115deg, ${theme.palette.primary.main}, ${theme.palette.primary.dark})`, color: 'primary.contrastText' }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="space-between"><Stack direction="row" spacing={1.5} alignItems="center"><Box sx={{ width: 54, height: 54, borderRadius: 3, bgcolor: 'rgba(255,255,255,.18)', display: 'grid', placeItems: 'center' }}><BusinessRounded fontSize="large" /></Box><Box><Typography variant="h5" fontWeight={850}>{company.name}</Typography><Typography sx={{ opacity: .82 }}>{[company.city, company.state, company.country].filter(Boolean).join(', ') || 'Address not provided'}</Typography></Box></Stack><Chip label={company.status} color={company.status === 'active' ? 'success' : 'warning'} sx={{ alignSelf: { xs: 'flex-start', sm: 'center' }, color: 'white', fontWeight: 700 }} /></Stack>
+        </Box>
+        <Tabs value={tab} onChange={(_, value) => setTab(value)} variant="scrollable" scrollButtons="auto"><Tab icon={<TimelineRounded />} iconPosition="start" label="Overview" /><Tab icon={<PeopleAltRounded />} iconPosition="start" label={`Users (${company.userCount || company.mobileUsers?.length || 0})`} /><Tab icon={<AccountBalanceWalletRounded />} iconPosition="start" label="Wallet" /><Tab icon={<AutorenewRounded />} iconPosition="start" label="Auto funding" /></Tabs>
+      </Paper>
+
+      {tab === 0 && <Overview company={company} canSuspend={canSuspend} onStatus={status => action(() => companyService.setStatus(id, status), `Company marked ${status}`)} />}
+      {tab === 1 && <UsersTab users={companyUsers} page={userPage} search={userSearch} canManage={canManageUsers} setSearch={value => { setUserSearch(value); setUserPage(previous => ({ ...previous, page: 1 })); }} onPage={page => setUserPage(previous => ({ ...previous, page }))} onCreate={() => setDialogs(previous => ({ ...previous, createUser: true }))} onAssign={openAssign} onTransfer={user => { setTransferForm({ mobileUserId: user.id, amount: '', description: '' }); setDialogs(previous => ({ ...previous, transfer: true })); }} onStatus={(user, status) => action(() => companyService.setUserStatus(id, user.id, status), `User ${status}`)} onUnassign={user => action(() => companyService.unassignUser(id, user.id), 'User unassigned')} />}
+      {tab === 2 && <WalletTab company={company} transactions={transactions} canManage={canManageWallet} onFund={() => setDialogs(previous => ({ ...previous, fund: true }))} onTransfer={() => setDialogs(previous => ({ ...previous, transfer: true }))} />}
+      {tab === 3 && <RulesTab rules={rules} users={companyUsers} canManage={canManageFunding} onCreate={() => setDialogs(previous => ({ ...previous, rule: true }))} onDisable={rule => action(() => companyService.disableRule(id, rule.id), 'Funding rule disabled')} />}
+
+      <Dialog open={dialogs.fund} onClose={() => close('fund')} fullWidth maxWidth="sm"><form onSubmit={submitFund}><DialogTitle>Fund company wallet</DialogTitle><DialogContent dividers><Stack spacing={2} sx={{ pt: 1 }}><FormControl fullWidth><InputLabel>Funding method</InputLabel><Select label="Funding method" value={fundForm.method} onChange={event => setFundForm(previous => ({ ...previous, method: event.target.value }))}><MenuItem value="offline">Offline / admin credit</MenuItem><MenuItem value="paystack">Paystack gateway</MenuItem></Select></FormControl><TextField required autoFocus type="number" inputProps={{ min: 1, step: '0.01' }} label="Amount (₦)" value={fundForm.amount} onChange={event => setFundForm(previous => ({ ...previous, amount: event.target.value }))} />{fundForm.method === 'paystack' && <TextField disabled label="Payment email" value={company.email || 'Add an email to the company profile'} helperText="The payment provider uses the company email for this transaction." />}<TextField multiline minRows={2} label="Reference / description" value={fundForm.description} onChange={event => setFundForm(previous => ({ ...previous, description: event.target.value }))} helperText={fundForm.method === 'paystack' ? 'You will be redirected to Paystack, then returned here for verification.' : 'This admin action is recorded as an offline credit.'} /></Stack></DialogContent><DialogActions><Button onClick={() => close('fund')}>Cancel</Button><Button type="submit" variant="contained" disabled={busy}>{fundForm.method === 'paystack' ? 'Continue to Paystack' : 'Add funds'}</Button></DialogActions></form></Dialog>
+
+      <Dialog open={dialogs.transfer} onClose={() => close('transfer')} fullWidth maxWidth="sm"><form onSubmit={submitTransfer}><DialogTitle>Fund a mobile user</DialogTitle><DialogContent dividers><Stack spacing={2} sx={{ pt: 1 }}><FormControl fullWidth required><InputLabel>Mobile user</InputLabel><Select label="Mobile user" value={transferForm.mobileUserId} onChange={event => setTransferForm(previous => ({ ...previous, mobileUserId: event.target.value }))}><MenuItem value=""><em>Select user</em></MenuItem>{companyUsers.map(user => <MenuItem key={user.id} value={user.id}>{user.name} · {user.email}</MenuItem>)}</Select></FormControl><TextField required type="number" inputProps={{ min: 1, step: '0.01' }} label="Amount (₦)" value={transferForm.amount} onChange={event => setTransferForm(previous => ({ ...previous, amount: event.target.value }))} /><TextField label="Description" value={transferForm.description} onChange={event => setTransferForm(previous => ({ ...previous, description: event.target.value }))} /></Stack></DialogContent><DialogActions><Button onClick={() => close('transfer')}>Cancel</Button><Button type="submit" variant="contained" startIcon={<SendRounded />} disabled={busy}>Fund user</Button></DialogActions></form></Dialog>
+
+      <Dialog open={dialogs.createUser} onClose={() => close('createUser')} fullWidth maxWidth="sm"><form onSubmit={submitUser}><DialogTitle>Create company mobile user</DialogTitle><DialogContent dividers><Stack spacing={2} sx={{ pt: 1 }}><TextField required label="Full name" value={userForm.name} onChange={event => setUserForm(previous => ({ ...previous, name: event.target.value }))} /><TextField required label="Phone" value={userForm.phone} onChange={event => setUserForm(previous => ({ ...previous, phone: event.target.value }))} /><TextField required type="email" label="Email" value={userForm.email} onChange={event => setUserForm(previous => ({ ...previous, email: event.target.value }))} /><TextField required type="password" label="Temporary password" value={userForm.password} onChange={event => setUserForm(previous => ({ ...previous, password: event.target.value }))} helperText="Minimum 6 characters" /></Stack></DialogContent><DialogActions><Button onClick={() => close('createUser')}>Cancel</Button><Button type="submit" variant="contained" disabled={busy}>Create user</Button></DialogActions></form></Dialog>
+
+      <Dialog open={dialogs.assign} onClose={() => close('assign')} fullWidth maxWidth="sm"><form onSubmit={submitAssign}><DialogTitle>Assign existing mobile users</DialogTitle><DialogContent dividers><Autocomplete multiple options={assignOptions} value={assignedOptions} onChange={(_, value) => setAssignedOptions(value)} getOptionLabel={option => `${option.name} · ${option.email}`} isOptionEqualToValue={(a, b) => a.id === b.id} renderInput={params => <TextField {...params} label="Available mobile users" placeholder="Select users" />} /></DialogContent><DialogActions><Button onClick={() => close('assign')}>Cancel</Button><Button type="submit" variant="contained" startIcon={<GroupAddRounded />} disabled={busy || !assignedOptions.length}>Assign users</Button></DialogActions></form></Dialog>
+
+      <Dialog open={dialogs.rule} onClose={() => close('rule')} fullWidth maxWidth="sm"><form onSubmit={submitRule}><DialogTitle>Create automatic funding rule</DialogTitle><DialogContent dividers><Stack spacing={2} sx={{ pt: 1 }}><FormControl fullWidth><InputLabel>Frequency</InputLabel><Select label="Frequency" value={ruleForm.frequency} onChange={event => setRuleForm(previous => ({ ...previous, frequency: event.target.value }))}><MenuItem value="daily">Daily</MenuItem><MenuItem value="weekly">Weekly</MenuItem><MenuItem value="monthly">Monthly</MenuItem><MenuItem value="yearly">Yearly</MenuItem></Select></FormControl><TextField required type="number" inputProps={{ min: 1, step: '0.01' }} label="Amount per run (₦)" value={ruleForm.amount} onChange={event => setRuleForm(previous => ({ ...previous, amount: event.target.value }))} /><FormControl fullWidth><InputLabel>Applies to</InputLabel><Select label="Applies to" value={ruleForm.mobileUserId} onChange={event => setRuleForm(previous => ({ ...previous, mobileUserId: event.target.value }))}><MenuItem value="">All active company users</MenuItem>{companyUsers.map(user => <MenuItem key={user.id} value={user.id}>{user.name}</MenuItem>)}</Select></FormControl><TextField required type="date" label="Start date" InputLabelProps={{ shrink: true }} value={ruleForm.startDate} onChange={event => setRuleForm(previous => ({ ...previous, startDate: event.target.value }))} /><TextField type="date" label="End date (optional)" InputLabelProps={{ shrink: true }} value={ruleForm.endDate} onChange={event => setRuleForm(previous => ({ ...previous, endDate: event.target.value }))} /><TextField label="Notes" value={ruleForm.notes} onChange={event => setRuleForm(previous => ({ ...previous, notes: event.target.value }))} /></Stack></DialogContent><DialogActions><Button onClick={() => close('rule')}>Cancel</Button><Button type="submit" variant="contained" startIcon={<AutorenewRounded />} disabled={busy}>Create rule</Button></DialogActions></form></Dialog>
+    </Stack>
+  );
+}
+
+function Overview({ company, canSuspend, onStatus }) {
+  const stats = company.stats || {};
+  return <Stack spacing={2.5}><Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' }, gap: 1.5 }}><Metric icon={<AccountBalanceWalletRounded />} label="Wallet balance" value={money(company.walletBalance)} color="#2563EB" /><Metric icon={<PeopleAltRounded />} label="Active users" value={stats.activeUsers || 0} color="#059669" /><Metric icon={<SendRounded />} label="User funding" value={money(stats.totalUserFunding)} color="#7C3AED" /><Metric icon={<AutorenewRounded />} label="Active rules" value={stats.activeRules || 0} color="#D97706" /></Box><Card variant="outlined" sx={{ borderRadius: 3.5 }}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box><Typography variant="h6" fontWeight={800}>Company controls</Typography><Typography color="text.secondary">Suspending a company immediately blocks its users from mobile authentication and charging.</Typography></Box>{canSuspend && <Stack direction="row" spacing={1}><Button size="small" color="warning" variant={company.status === 'suspended' ? 'contained' : 'outlined'} onClick={() => onStatus(company.status === 'suspended' ? 'active' : 'suspended')}>{company.status === 'suspended' ? 'Reactivate' : 'Suspend'}</Button><Button size="small" color="inherit" variant="outlined" onClick={() => onStatus(company.status === 'inactive' ? 'active' : 'inactive')}>{company.status === 'inactive' ? 'Activate' : 'Archive'}</Button></Stack>}</Stack><Divider sx={{ my: 2 }} /><Grid container spacing={2}><Grid item xs={12} md={6}><Typography variant="caption" color="text.secondary">Contact</Typography><Typography fontWeight={700}>{company.email || 'No email'}</Typography><Typography color="text.secondary">{company.phone || 'No phone'}</Typography></Grid><Grid item xs={12} md={6}><Typography variant="caption" color="text.secondary">Address</Typography><Typography fontWeight={700}>{company.address || 'No address provided'}</Typography><Typography color="text.secondary">{[company.city, company.state, company.country].filter(Boolean).join(', ')}</Typography></Grid></Grid></CardContent></Card></Stack>;
+}
+
+function UsersTab({ users, page, search, canManage, setSearch, onPage, onCreate, onAssign, onTransfer, onStatus, onUnassign }) {
+  return <Stack spacing={2.5}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1.5}><Box><Typography variant="h6" fontWeight={800}>Company mobile users</Typography><Typography color="text.secondary">Create users, assign existing users, control status and fund individual wallets.</Typography></Box>{canManage && <Stack direction="row" spacing={1}><Button variant="outlined" startIcon={<GroupAddRounded />} onClick={onAssign}>Assign existing</Button><Button variant="contained" startIcon={<AddRounded />} onClick={onCreate}>Create user</Button></Stack>}</Stack><TextField size="small" value={search} onChange={event => setSearch(event.target.value)} label="Search users" placeholder="Name, email, phone or tag" /><Card variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}>{users.length === 0 ? <EmptyUsers /> : <Stack divider={<Divider />}><Box sx={{ display: { xs: 'none', md: 'grid' }, gridTemplateColumns: '2fr 1.5fr 1fr 1fr 1.5fr', px: 2, py: 1.5, bgcolor: 'action.hover' }}><Typography variant="caption" fontWeight={800}>USER</Typography><Typography variant="caption" fontWeight={800}>CONTACT</Typography><Typography variant="caption" fontWeight={800}>STATUS</Typography><Typography variant="caption" fontWeight={800}>BALANCE</Typography><Typography variant="caption" fontWeight={800} textAlign="right">ACTIONS</Typography></Box>{users.map(user => <Box key={user.id} sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '2fr 1.5fr 1fr 1fr 1.5fr' }, gap: { xs: 1, md: 2 }, alignItems: 'center', px: 2, py: 1.75 }}><Box><Typography fontWeight={750}>{user.name}</Typography><Typography variant="caption" color="text.secondary">{user.tagId || 'No tag'}</Typography></Box><Box><Typography variant="body2">{user.email}</Typography><Typography variant="caption" color="text.secondary">{user.phone}</Typography></Box><Chip size="small" label={user.status} color={statusColor[user.status] || 'default'} sx={{ justifySelf: 'flex-start' }} /><Typography fontWeight={750}>{money(user.wallet?.balance)}</Typography>{canManage && <Stack direction="row" justifyContent={{ xs: 'flex-start', md: 'flex-end' }} spacing={.5}><Button size="small" startIcon={<SendRounded />} onClick={() => onTransfer(user)}>Fund</Button><Button size="small" color={user.status === 'active' ? 'warning' : 'success'} onClick={() => onStatus(user, user.status === 'active' ? 'suspended' : 'active')}>{user.status === 'active' ? 'Suspend' : 'Activate'}</Button><IconButton size="small" color="error" onClick={() => onUnassign(user)}><CloseRounded fontSize="small" /></IconButton></Stack>}</Box>)}</Stack>}<TablePager page={page} onPage={onPage} /></Card></Stack>;
+}
+
+function WalletTab({ company, transactions, onFund, onTransfer }) { return <Stack spacing={2.5}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1.5}><Box><Typography variant="h6" fontWeight={800}>Company wallet</Typography><Typography color="text.secondary">Offline credits and transfers to employee wallets are fully auditable.</Typography></Box><Stack direction="row" spacing={1}><Button variant="outlined" startIcon={<SendRounded />} onClick={onTransfer}>Fund user</Button><Button variant="contained" startIcon={<AddRounded />} onClick={onFund}>Add funds</Button></Stack></Stack><Card variant="outlined" sx={{ borderRadius: 3.5, background: 'linear-gradient(135deg, #0F3D70, #2563EB)', color: 'white' }}><CardContent><Typography sx={{ opacity: .75 }}>Available company balance</Typography><Typography variant="h3" fontWeight={850} sx={{ mt: .5 }}>{money(company.walletBalance)}</Typography><Typography sx={{ opacity: .7, mt: 1 }}>{company.wallet?.currency || 'NGN'} · {company.stats?.walletTransactions || 0} ledger entries</Typography></CardContent></Card><Card variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}><CardContent><Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>Recent wallet activity</Typography>{transactions.length === 0 ? <Typography color="text.secondary">No wallet activity yet.</Typography> : <Stack divider={<Divider />}>{transactions.map(tx => <Stack key={tx.id} direction="row" spacing={1.5} alignItems="center" sx={{ py: 1.25 }}><Box sx={{ width: 36, height: 36, borderRadius: 2, bgcolor: tx.type === 'CREDIT' ? 'success.light' : 'warning.light', color: tx.type === 'CREDIT' ? 'success.dark' : 'warning.dark', display: 'grid', placeItems: 'center' }}>{tx.type === 'CREDIT' ? <AddRounded fontSize="small" /> : <SendRounded fontSize="small" />}</Box><Box sx={{ flex: 1, minWidth: 0 }}><Typography fontWeight={700}>{tx.description || tx.method}</Typography><Typography variant="caption" color="text.secondary">{tx.beneficiary?.name ? `For ${tx.beneficiary.name} · ` : ''}{new Date(tx.createdAt).toLocaleString()}</Typography></Box><Typography fontWeight={800} color={tx.type === 'CREDIT' ? 'success.main' : 'warning.main'}>{tx.type === 'CREDIT' ? '+' : '-'}{money(tx.amount)}</Typography></Stack>)}</Stack>}</CardContent></Card></Stack>; }
+
+function RulesTab({ rules, users, onCreate, onDisable }) { return <Stack spacing={2.5}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1.5}><Box><Typography variant="h6" fontWeight={800}>Automatic funding</Typography><Typography color="text.secondary">Create company-wide or user-specific daily, weekly, monthly or yearly allowances.</Typography></Box><Button variant="contained" startIcon={<AddRounded />} onClick={onCreate}>Create rule</Button></Stack>{rules.length === 0 ? <Card variant="outlined" sx={{ borderRadius: 3.5 }}><CardContent><Stack alignItems="center" spacing={1}><AutorenewRounded sx={{ fontSize: 46, color: 'text.disabled' }} /><Typography fontWeight={750}>No funding routines configured</Typography><Typography color="text.secondary">The scheduler will run active rules automatically when their next run is due.</Typography></Stack></CardContent></Card> : <Stack spacing={1.25}>{rules.map(rule => <Card key={rule.id} variant="outlined" sx={{ borderRadius: 3.5 }}><CardContent><Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }}><Box sx={{ flex: 1 }}><Stack direction="row" spacing={1} alignItems="center"><Chip size="small" label={rule.active ? 'Active' : 'Disabled'} color={rule.active ? 'success' : 'default'} /><Typography fontWeight={800}>{money(rule.amount)} · {rule.frequency}</Typography></Stack><Typography variant="body2" color="text.secondary" sx={{ mt: .75 }}>{rule.mobileUser?.name || 'All active company users'} · Next run {new Date(rule.nextRunAt).toLocaleString()}</Typography>{rule.notes && <Typography variant="caption" color="text.secondary">{rule.notes}</Typography>}</Box>{rule.active && <Button color="error" size="small" startIcon={<DeleteOutlineRounded />} onClick={() => onDisable(rule)}>Disable</Button>}</Stack></CardContent></Card>)}</Stack>}</Stack>; }
+
+function Metric({ icon, label, value, color }) { return <Paper variant="outlined" sx={{ p: { xs: 1.5, sm: 2 }, borderRadius: 3 }}><Stack direction="row" spacing={1.25} alignItems="center"><Box sx={{ width: 38, height: 38, borderRadius: 2, bgcolor: `${color}14`, color, display: 'grid', placeItems: 'center' }}>{icon}</Box><Box sx={{ minWidth: 0 }}><Typography variant="caption" color="text.secondary" noWrap>{label}</Typography><Typography fontWeight={850} noWrap>{value}</Typography></Box></Stack></Paper>; }
+function TablePager({ page, onPage }) { return <Stack direction="row" justifyContent="flex-end" spacing={1} sx={{ p: 1.5 }}><Button size="small" disabled={page.page <= 1} onClick={() => onPage(page.page - 1)}>Previous</Button><Chip size="small" label={`Page ${page.page}`} /><Button size="small" disabled={page.page >= page.pages} onClick={() => onPage(page.page + 1)}>Next</Button></Stack>; }
+function EmptyUsers() { return <Stack alignItems="center" spacing={1} sx={{ py: 6 }}><PeopleAltRounded sx={{ fontSize: 46, color: 'text.disabled' }} /><Typography fontWeight={750}>No company users</Typography><Typography color="text.secondary">Create a user or assign an existing mobile account.</Typography></Stack>; }

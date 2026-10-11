@@ -25,6 +25,11 @@ module.exports = (sequelize) => {
         isEmail: true
       }
     },
+    companyId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Subscription company that owns or manages this mobile user'
+    },
     password: {
       type: DataTypes.STRING,
       allowNull: false

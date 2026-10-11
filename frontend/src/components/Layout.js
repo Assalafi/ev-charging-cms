@@ -3,6 +3,7 @@ import {
   AccountBalanceRounded,
   AdminPanelSettingsRounded,
   CampaignRounded,
+  BusinessRounded,
   DashboardRounded,
   EvStationRounded,
   LocationOnRounded,
@@ -30,6 +31,7 @@ const navGroups = [
   { label: 'Commercial', items: [
     { label: 'Payments', icon: <PaymentsRounded />, path: '/payments', permission: 'payments.view' },
     { label: 'Partners', icon: <StorefrontRounded />, path: '/partners', permission: 'partners.view' },
+    { label: 'Companies', icon: <BusinessRounded />, path: '/companies', permission: 'companies.view' },
     { label: 'Settlements', icon: <AccountBalanceRounded />, path: '/settlements', permission: 'settlements.view' },
     { label: 'Ads board', icon: <CampaignRounded />, path: '/ads-board', permission: 'ads.view' }
   ] },

@@ -34,6 +34,12 @@ const PaymentSettings = require('./PaymentSettings')(sequelize);
 const Reservation = require('./Reservation')(sequelize);
 const AdsBoard = require('./AdsBoard')(sequelize);
 
+// Company subscription models
+const SubscriptionCompany = require('./SubscriptionCompany')(sequelize);
+const CompanyWallet = require('./CompanyWallet')(sequelize);
+const CompanyWalletTransaction = require('./CompanyWalletTransaction')(sequelize);
+const CompanyFundingRule = require('./CompanyFundingRule')(sequelize);
+
 // Partnership models
 const PartnerCompany = require('./PartnerCompany')(sequelize);
 const PartnerSettlement = require('./PartnerSettlement')(sequelize);
@@ -72,6 +78,22 @@ PaymentTransaction.belongsTo(Wallet, { foreignKey: 'walletId', as: 'wallet' });
 PaymentTransaction.belongsTo(MobileUser, { foreignKey: 'userId', as: 'user' });
 Wallet.hasMany(PaymentTransaction, { foreignKey: 'walletId', as: 'transactions' });
 MobileUser.hasMany(PaymentTransaction, { foreignKey: 'userId', as: 'payments' });
+
+// Subscription company relationships. These are deliberately separate from
+// PartnerCompany so existing partner settlements and ownership remain intact.
+SubscriptionCompany.hasMany(MobileUser, { foreignKey: 'companyId', as: 'mobileUsers' });
+MobileUser.belongsTo(SubscriptionCompany, { foreignKey: 'companyId', as: 'company' });
+SubscriptionCompany.hasOne(CompanyWallet, { foreignKey: 'companyId', as: 'wallet' });
+CompanyWallet.belongsTo(SubscriptionCompany, { foreignKey: 'companyId', as: 'company' });
+SubscriptionCompany.hasMany(CompanyWalletTransaction, { foreignKey: 'companyId', as: 'walletTransactions' });
+CompanyWalletTransaction.belongsTo(SubscriptionCompany, { foreignKey: 'companyId', as: 'company' });
+CompanyWallet.hasMany(CompanyWalletTransaction, { foreignKey: 'walletId', as: 'transactions' });
+CompanyWalletTransaction.belongsTo(CompanyWallet, { foreignKey: 'walletId', as: 'wallet' });
+CompanyWalletTransaction.belongsTo(MobileUser, { foreignKey: 'beneficiaryUserId', as: 'beneficiary' });
+SubscriptionCompany.hasMany(CompanyFundingRule, { foreignKey: 'companyId', as: 'fundingRules' });
+CompanyFundingRule.belongsTo(SubscriptionCompany, { foreignKey: 'companyId', as: 'company' });
+CompanyFundingRule.belongsTo(MobileUser, { foreignKey: 'mobileUserId', as: 'mobileUser' });
+MobileUser.hasMany(CompanyFundingRule, { foreignKey: 'mobileUserId', as: 'fundingRules' });
 
 // MobileUser -> AuthorizedTag and Transaction associations (used by admin routes)
 MobileUser.hasOne(AuthorizedTag, { foreignKey: 'tagId', sourceKey: 'tagId', as: 'authorizedTag' });
@@ -142,6 +164,10 @@ module.exports = {
   PaymentSettings,
   Reservation,
   AdsBoard,
+  SubscriptionCompany,
+  CompanyWallet,
+  CompanyWalletTransaction,
+  CompanyFundingRule,
   PartnerCompany,
   PartnerSettlement,
   PartnerSettlementItem

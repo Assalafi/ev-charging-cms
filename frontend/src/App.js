@@ -30,6 +30,9 @@ import PartnerStations from './pages/partner/PartnerStations';
 import PartnerLocations from './pages/partner/PartnerLocations';
 import PartnerTransactions from './pages/partner/PartnerTransactions';
 import PartnerProfile from './pages/partner/PartnerProfile';
+import CompanyList from './pages/companies/CompanyList';
+import CompanyDetail from './pages/companies/CompanyDetail';
+import CompanyForm from './pages/companies/CompanyForm';
 import PartnerLayout from './components/PartnerLayout';
 import SettlementList from './pages/settlements/SettlementList';
 import NotFound from './pages/NotFound';
@@ -90,6 +93,13 @@ function App() {
           <Route path="new" element={<PrivateRoute permission="partners.create"><PartnerForm /></PrivateRoute>} />
           <Route path=":id" element={<PrivateRoute permission="partners.view"><PartnerDetail /></PrivateRoute>} />
           <Route path=":id/edit" element={<PrivateRoute permission="partners.update"><PartnerForm /></PrivateRoute>} />
+        </Route>
+
+        <Route path="companies">
+          <Route index element={<PrivateRoute permission="companies.view"><CompanyList /></PrivateRoute>} />
+          <Route path="new" element={<PrivateRoute permission="companies.create"><CompanyForm /></PrivateRoute>} />
+          <Route path=":id" element={<PrivateRoute permission="companies.view"><CompanyDetail /></PrivateRoute>} />
+          <Route path=":id/edit" element={<PrivateRoute permission="companies.update"><CompanyForm /></PrivateRoute>} />
         </Route>
         
         <Route path="settlements">

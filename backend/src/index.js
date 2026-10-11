@@ -249,6 +249,11 @@ async function startServer() {
     const partnerSettlementScheduler = require('./services/partnerSettlementScheduler');
     partnerSettlementScheduler.start();
 
+    // Run company-wide recurring wallet funding rules. Each transfer is
+    // transactional and idempotent at the rule-run level via nextRunAt.
+    const companyFundingService = require('./services/companyFundingService');
+    companyFundingService.startCompanyFundingScheduler();
+
     // Start metrics server if enabled
     // if (process.env.METRICS_ENABLED === 'true') {
     //  const metricsServer = http.createServer();
