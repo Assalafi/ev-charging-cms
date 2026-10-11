@@ -44,6 +44,7 @@ import CompanyWallet from './pages/company/CompanyWallet';
 import CompanyFunding from './pages/company/CompanyFunding';
 import CompanyLayout from './components/CompanyLayout';
 import CompanyPrivateRoute from './components/CompanyPrivateRoute';
+import PublicLanding from './pages/PublicLanding';
 import AdminMonitorMap from './pages/monitor/AdminMonitorMap';
 import AdminUsers from './pages/adminUsers/AdminUsers';
 import { useAuth } from './contexts/AuthContext';
@@ -72,11 +73,11 @@ function App() {
 
   return (
     <Routes>
+      <Route path="/" element={<PublicEntry adminHome={adminHome} />} />
       <Route path="/login" element={<Login />} />
       <Route path="/company/login" element={<CompanyLogin />} />
       
-      <Route path="/" element={<PrivateRoute audience="admin"><Layout /></PrivateRoute>}>
-        <Route index element={<Navigate to={adminHome} replace />} />
+      <Route element={<PrivateRoute audience="admin"><Layout /></PrivateRoute>}>
         <Route path="dashboard" element={<PrivateRoute permission="dashboard.view"><Dashboard /></PrivateRoute>} />
         
         <Route path="stations">
@@ -145,6 +146,12 @@ function App() {
       <Route path="*" element={<NotFound />} />
     </Routes>
   );
+}
+
+function PublicEntry({ adminHome }) {
+  const { isAuthenticated, currentUser } = useAuth();
+  if (isAuthenticated) return <Navigate to={currentUser?.partnerId ? '/partner/dashboard' : adminHome} replace />;
+  return <PublicLanding />;
 }
 
 export default App;

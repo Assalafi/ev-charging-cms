@@ -31,6 +31,7 @@ const partnerTransactionsRoutes = require('./partner/transactions');
 const partnerProfileRoutes = require('./partner/profile');
 const companyAuthRoutes = require('./company/auth');
 const companyPortalRoutes = require('./company/portal');
+const publicNetworkRoutes = require('./publicNetwork');
 // Temporarily commenting out simulator routes due to import issues
 // const simulatorRoutes = require('./simulator');
 
@@ -76,6 +77,7 @@ router.use('/partner/transactions', partnerTransactionsRoutes);
 router.use('/partner/profile', partnerProfileRoutes);
 router.use('/company/auth', companyAuthRoutes);
 router.use('/company', companyPortalRoutes);
+router.use('/public', publicNetworkRoutes);
 router.use('/mobile', mobileRoutes);
 // Temporarily commenting out simulator routes due to import issues
 // router.use('/simulator', simulatorRoutes);
