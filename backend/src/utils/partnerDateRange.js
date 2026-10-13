@@ -1,18 +1,4 @@
-const LAGOS_OFFSET_MS = 60 * 60 * 1000;
-
-function lagosParts(date = new Date()) {
-  const lagosDate = new Date(date.getTime() + LAGOS_OFFSET_MS);
-  return {
-    year: lagosDate.getUTCFullYear(),
-    month: lagosDate.getUTCMonth(),
-    day: lagosDate.getUTCDate(),
-    weekday: lagosDate.getUTCDay()
-  };
-}
-
-function lagosDateToUtc(year, month, day, hour = 0, minute = 0, second = 0, millisecond = 0) {
-  return new Date(Date.UTC(year, month, day, hour, minute, second, millisecond) - LAGOS_OFFSET_MS);
-}
+const { lagosParts, lagosDateToUtc, OFFSET_MS: LAGOS_OFFSET_MS } = require('./timezone');
 
 function parseDateOnly(value, endOfDay = false) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) {

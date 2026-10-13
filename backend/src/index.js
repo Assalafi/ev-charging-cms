@@ -1,4 +1,7 @@
 require('dotenv').config();
+// Keep server-side calendar calculations and scheduled jobs on West Africa Time.
+// Timestamps are still persisted as instants; this controls the runtime clock.
+process.env.TZ = process.env.TZ || 'Africa/Lagos';
 const express = require('express');
 const http = require('http');
 const cors = require('cors');

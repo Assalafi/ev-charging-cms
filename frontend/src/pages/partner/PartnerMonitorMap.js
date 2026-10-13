@@ -20,6 +20,7 @@ import { Marker, Popup, TileLayer } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import partnerService from '../../services/partnerService';
 import { formatEnergy, formatNaira, statusColor } from '../../utils/partnerFormatters';
+import { formatTime } from '../../utils/timezone';
 import { evChargingMarker, locationMarkerStatus } from '../../utils/mapMarkerIcons';
 import FullscreenMap, { MapBounds } from '../../components/maps/FullscreenMap';
 
@@ -308,7 +309,7 @@ export default function PartnerMonitorMap() {
           <Typography variant="h4">Network Monitor</Typography>
           <Typography color="text.secondary">
             Live availability and today's site performance.
-            {updatedAt && ` Updated ${updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`}
+            {updatedAt && ` Updated ${formatTime(updatedAt)} WAT.`}
           </Typography>
         </Box>
         <Stack direction="row" gap={1}>

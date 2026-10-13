@@ -10,6 +10,7 @@ const {
   sequelize
 } = require('../models');
 const logger = require('../utils/logger');
+const { nextLagosRunAt, parseLagosDate } = require('../utils/timezone');
 
 let schedulerHandle = null;
 let schedulerRunning = false;
@@ -20,15 +21,6 @@ function numericAmount(value) {
     throw new Error('Amount must be greater than 0');
   }
   return Math.round(amount * 100) / 100;
-}
-
-function nextRunAt(frequency, from = new Date()) {
-  const next = new Date(from);
-  if (frequency === 'daily') next.setUTCDate(next.getUTCDate() + 1);
-  if (frequency === 'weekly') next.setUTCDate(next.getUTCDate() + 7);
-  if (frequency === 'monthly') next.setUTCMonth(next.getUTCMonth() + 1);
-  if (frequency === 'yearly') next.setUTCFullYear(next.getUTCFullYear() + 1);
-  return next;
 }
 
 async function getOrCreateCompanyWallet(companyId, transaction) {
@@ -272,8 +264,8 @@ async function executeFundingRule(ruleId) {
   }
 
   const now = new Date();
-  const next = nextRunAt(rule.frequency, now);
-  const endReached = rule.endDate && next > new Date(`${rule.endDate}T23:59:59.999Z`);
+  const next = nextLagosRunAt(rule.frequency, now);
+  const endReached = rule.endDate && next > parseLagosDate(rule.endDate, true);
   await rule.update({ lastRunAt: now, nextRunAt: next, active: !endReached });
   return { ruleId: rule.id, users: results, nextRunAt: next, active: !endReached };
 }
@@ -308,7 +300,7 @@ function stopCompanyFundingScheduler() {
 }
 
 module.exports = {
-  nextRunAt,
+  nextRunAt: nextLagosRunAt,
   fundCompanyWallet,
   initializeCompanyGatewayFunding,
   settleCompanyGatewayFunding,

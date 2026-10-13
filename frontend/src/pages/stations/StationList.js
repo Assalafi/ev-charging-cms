@@ -58,13 +58,13 @@ import {
   WifiOff as OfflineIcon,
   WarningAmber as AttentionIcon
 } from '@mui/icons-material';
-import { format } from 'date-fns';
 import api from '../../services/api';
 import tagService from '../../services/tagService';
 import stationService from '../../services/stationService';
 import remoteCommandService from '../../services/remoteCommandService';
 import { useMQTT } from '../../contexts/MQTTContext';
 import { isStationConnected as hasLiveConnection, stationDisplayStatus } from '../../utils/stationConnection';
+import { formatDateTime } from '../../utils/timezone';
 
 function StationList() {
   const navigate = useNavigate();
@@ -733,7 +733,7 @@ function StationList() {
                           {station.model ? `${station.model} • ${station.vendor || 'Unknown'}` : 'Unknown'}
                         </TableCell>
                         <TableCell>
-                          {station.lastHeartbeat ? format(new Date(station.lastHeartbeat), 'dd MMM yyyy HH:mm:ss') : 'Never'}
+                          {station.lastHeartbeat ? formatDateTime(station.lastHeartbeat) : 'Never'}
                         </TableCell>
                         <TableCell>
                           {station.firmwareVersion || 'Unknown'}
@@ -1055,7 +1055,7 @@ function StationList() {
               {activeTransactions.map((transaction) => (
                 <MenuItem key={transaction.transactionId} value={transaction.transactionId.toString()}>
                   ID: {transaction.transactionId} - Tag: {transaction.idTag} - 
-                  Started: {new Date(transaction.startTime).toLocaleString()}
+                  Started: {formatDateTime(transaction.startTime)}
                 </MenuItem>
               ))}
             </TextField>
@@ -1067,7 +1067,7 @@ function StationList() {
               )}
               {selectedTransaction.startTime !== 'Unknown' && (
                 <Typography variant="body2">
-                  Started: {new Date(selectedTransaction.startTime).toLocaleString()}
+                  Started: {formatDateTime(selectedTransaction.startTime)}
                 </Typography>
               )}
             </Box>

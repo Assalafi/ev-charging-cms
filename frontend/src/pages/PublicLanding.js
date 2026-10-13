@@ -53,6 +53,7 @@ import FullscreenMap, { MapBounds } from '../components/maps/FullscreenMap';
 import { useBranding } from '../contexts/BrandingContext';
 import publicNetworkService from '../services/publicNetworkService';
 import { evChargingMarker, locationMarkerStatus } from '../utils/mapMarkerIcons';
+import { formatTime } from '../utils/timezone';
 import './PublicLanding.css';
 
 const STATUS_LABELS = {
@@ -628,7 +629,7 @@ export default function PublicLanding() {
                     <Typography variant="caption" display="block" color="#75E5BD" fontWeight={750}>LIVE DATA</Typography>
                     <Typography variant="caption" color="rgba(222,236,247,.5)">
                       {snapshot?.generatedAt
-                        ? `Updated ${new Date(snapshot.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                        ? `Updated ${formatTime(snapshot.generatedAt)} WAT`
                         : 'Connecting to network'}
                     </Typography>
                   </Box>

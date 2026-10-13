@@ -15,12 +15,12 @@ const {
 const { authenticate } = require('../../middleware/auth');
 const { requirePermission } = require('../../middleware/permissions');
 const logger = require('../../utils/logger');
+const { parseLagosDate } = require('../../utils/timezone');
 const {
   fundCompanyWallet,
   initializeCompanyGatewayFunding,
   settleCompanyGatewayFunding,
-  transferCompanyFundsToUser,
-  nextRunAt
+  transferCompanyFundsToUser
 } = require('../../services/companyFundingService');
 
 const router = express.Router();
@@ -589,7 +589,7 @@ router.post('/:companyId/funding-rules', authenticate, requirePermission('compan
       const user = await MobileUser.findOne({ where: { id: mobileUserId, companyId: company.id } });
       if (!user) return res.status(400).json({ success: false, message: 'Selected mobile user does not belong to this company' });
     }
-    const firstRun = requestedNextRun ? new Date(requestedNextRun) : new Date(`${startDate}T00:00:00.000Z`);
+    const firstRun = requestedNextRun ? new Date(requestedNextRun) : parseLagosDate(startDate);
     if (Number.isNaN(firstRun.getTime())) return res.status(400).json({ success: false, message: 'Invalid first run date' });
     const rule = await CompanyFundingRule.create({ companyId: company.id, mobileUserId: mobileUserId || null, frequency, amount: Number(amount), startDate, endDate: endDate || null, nextRunAt: firstRun, active: true, notes: notes || null, createdBy: req.user.id });
     res.status(201).json({ success: true, message: 'Funding rule created', rule });

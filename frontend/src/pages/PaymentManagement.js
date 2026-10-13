@@ -43,6 +43,7 @@ import {
   Add as AddIcon
 } from '@mui/icons-material';
 import api from '../services/api';
+import { formatDateTime } from '../utils/timezone';
 
 function TabPanel({ children, value, index, ...other }) {
   return (
@@ -456,7 +457,7 @@ function PaymentManagement() {
                         />
                       </TableCell>
                       <TableCell>
-                        {new Date(transaction.createdAt).toLocaleString()}
+                        {formatDateTime(transaction.createdAt)}
                       </TableCell>
                       <TableCell>
                         {(transaction.status === 'PENDING' || transaction.status === 'FAILED') && transaction.type === 'CREDIT' && (

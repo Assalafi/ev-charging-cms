@@ -45,11 +45,12 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import companyService from '../../services/companyService';
 import mobileUserService from '../../services/mobileUserService';
+import { todayKey } from '../../utils/timezone';
 
 const money = value => new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(Number(value || 0));
 const statusColor = { active: 'success', suspended: 'warning', inactive: 'default', deleted: 'error' };
 const blankUser = { name: '', phone: '', email: '', password: '' };
-const blankRule = { frequency: 'monthly', amount: '', startDate: new Date().toISOString().slice(0, 10), endDate: '', mobileUserId: '', notes: '' };
+const blankRule = { frequency: 'monthly', amount: '', startDate: todayKey(), endDate: '', mobileUserId: '', notes: '' };
 
 export default function CompanyDetail() {
   const navigate = useNavigate();

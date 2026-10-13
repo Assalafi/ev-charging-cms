@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Chip, Stack, Typography } from '@mui/material';
+import { formatTime } from '../../utils/timezone';
 
 const PageHeader = ({ eyebrow, title, description, actions, live, updatedAt }) => (
   <Box
@@ -31,7 +32,7 @@ const PageHeader = ({ eyebrow, title, description, actions, live, updatedAt }) =
         )}
       </Stack>
       {description && <Typography color="text.secondary" sx={{ mt: 0.6, maxWidth: 760 }}>{description}</Typography>}
-      {updatedAt && <Typography variant="caption" color="text.disabled">Updated {updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</Typography>}
+      {updatedAt && <Typography variant="caption" color="text.disabled">Updated {formatTime(updatedAt, { second: '2-digit' })} WAT</Typography>}
     </Box>
     {actions && <Stack direction="row" spacing={1} sx={{ width: { xs: '100%', md: 'auto' }, flexWrap: 'wrap' }}>{actions}</Stack>}
   </Box>

@@ -39,6 +39,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import settingsService from '../services/settingsService';
 import { defaultBranding, useBranding } from '../contexts/BrandingContext';
+import { formatDateTime } from '../utils/timezone';
 
 // Tab panel component
 function TabPanel({ children, value, index, ...other }) {
@@ -830,7 +831,7 @@ function Settings() {
                   </Typography>
                 </Box>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  Last system check: {new Date().toLocaleString()}
+                  Last system check (WAT): {formatDateTime(new Date())}
                 </Typography>
               </Grid>
               <Grid item xs={12} md={6} sx={{ textAlign: 'right' }}>

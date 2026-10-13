@@ -40,10 +40,11 @@ import PageHeader from '../../components/ui/PageHeader';
 import DashboardMetricTile from '../../components/ui/DashboardMetricTile';
 import SectionCard from '../../components/ui/SectionCard';
 import DashboardSkeleton from '../../components/ui/DashboardSkeleton';
+import { formatDateTime } from '../../utils/timezone';
 
 const money = value => new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(Number(value || 0));
 const energy = value => { const kwh = Number(value || 0) / 1000; return kwh >= 1000 ? `${(kwh / 1000).toFixed(2)} MWh` : `${kwh.toFixed(1)} kWh`; };
-const dateTime = value => value ? new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'Not available';
+const dateTime = value => value ? formatDateTime(value) : 'Not available';
 const rate = value => Number(value) > 0 ? `${money(Number(value) * 1000)}/kWh` : 'Location rate';
 
 function PolicyRow({ icon, label, value, helper, tone = 'text.primary' }) {

@@ -26,8 +26,8 @@ import {
   LineElement, PointElement, Tooltip as ChartTooltip
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
-import { format } from 'date-fns';
 import api from '../services/api';
+import { dateKey, formatDateTime, formatWeekday } from '../utils/timezone';
 import { useMQTT } from '../contexts/MQTTContext';
 import DashboardMetricTile from '../components/ui/DashboardMetricTile';
 import DashboardSkeleton from '../components/ui/DashboardSkeleton';
@@ -97,7 +97,7 @@ function Dashboard() {
     setRefreshing(true);
 
     try {
-      const today = new Date().toISOString().split('T')[0];
+      const today = dateKey();
       const [dashboardSummary, payments, stationStats, stationList, recent, energy, usage] = await Promise.all([
         api.get('/admin/monitor/summary'),
         canViewPayments ? api.get('/admin/payments/transactions', { params: { startDate: `${today}T00:00:00.000Z`, endDate: `${today}T23:59:59.999Z`, status: 'SUCCESS', type: 'CREDIT', gateway: 'paystack', limit: 10000 } }) : Promise.resolve({ data: { transactions: [] } }),
@@ -146,7 +146,7 @@ function Dashboard() {
       (energy.data?.energyStats || []).forEach(item => {
         const date = new Date(item.timestamp);
         if (!Number.isNaN(date.getTime())) {
-          const day = format(date, 'EEEE');
+          const day = formatWeekday(date);
           energyByDay[day] = (energyByDay[day] || 0) + (Number(item.energy) || 0);
         }
       });
@@ -324,7 +324,7 @@ function Dashboard() {
                     <TableRow hover key={transaction.id || transaction.transactionId} onClick={() => navigate(`/transactions/${transaction.transactionId}`)} sx={{ cursor: 'pointer' }}>
                       <TableCell><Typography variant="body2" fontWeight={700}>#{transaction.transactionId}</Typography><Typography variant="caption" color="text.secondary">{transaction.idTag || 'No tag'}</Typography></TableCell>
                       <TableCell>{transaction.charging_station?.name || transaction.chargePointId || 'Unknown'}</TableCell>
-                      <TableCell>{transaction.startTime ? format(new Date(transaction.startTime), 'dd MMM, HH:mm') : '-'}</TableCell>
+                      <TableCell>{transaction.startTime ? formatDateTime(transaction.startTime) : '-'}</TableCell>
                       <TableCell>{formatEnergy(transaction.energyDelivered)}</TableCell>
                       <TableCell><Chip size="small" label={transaction.status || 'Unknown'} color={transaction.status === 'InProgress' ? 'primary' : 'success'} /></TableCell>
                     </TableRow>

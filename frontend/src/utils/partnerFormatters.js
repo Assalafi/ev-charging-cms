@@ -1,3 +1,5 @@
+import { formatDate as formatLagosDate } from './timezone';
+
 export const formatNaira = value =>
   new Intl.NumberFormat('en-NG', {
     style: 'currency',
@@ -10,8 +12,7 @@ export const formatEnergy = value =>
     maximumFractionDigits: 2
   })} kWh`;
 
-export const formatDate = value =>
-  value ? new Date(value).toLocaleDateString('en-NG', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
+export const formatDate = value => value ? formatLagosDate(value, { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
 
 export const statusColor = status => ({
   Available: 'success',

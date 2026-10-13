@@ -35,6 +35,7 @@ import {
 } from '@mui/icons-material';
 import { useNavigate, useParams } from 'react-router-dom';
 import api from '../../services/api';
+import { formatDate as formatLagosDate, formatDateTime } from '../../utils/timezone';
 
 const PartnerDetail = () => {
   const navigate = useNavigate();
@@ -537,7 +538,7 @@ const PartnerDetail = () => {
                 {(partner.settlements || []).map(settlement => (
                   <TableRow key={settlement.id}>
                     <TableCell>
-                      {new Date(settlement.periodStart).toLocaleDateString()} – {new Date(settlement.periodEnd).toLocaleDateString()}
+                      {formatLagosDate(settlement.periodStart)} – {formatLagosDate(settlement.periodEnd)}
                     </TableCell>
                     <TableCell>{settlement.totalTransactions}</TableCell>
                     <TableCell align="right">{formatNaira(settlement.grossAmount)}</TableCell>
@@ -600,7 +601,7 @@ const PartnerDetail = () => {
                         size="small"
                       />
                     </TableCell>
-                    <TableCell>{user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never'}</TableCell>
+                    <TableCell>{user.lastLogin ? formatDateTime(user.lastLogin) : 'Never'}</TableCell>
                     <TableCell>
                       <IconButton size="small" onClick={() => handleEditUser(user)}><EditIcon /></IconButton>
                       <IconButton size="small" color="error" onClick={() => handleDeleteUser(user.id)}><DeleteIcon /></IconButton>

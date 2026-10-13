@@ -33,6 +33,7 @@ import FullscreenMap, { MapBounds } from '../../components/maps/FullscreenMap';
 import DashboardMetricTile from '../../components/ui/DashboardMetricTile';
 import DashboardSkeleton from '../../components/ui/DashboardSkeleton';
 import SectionCard from '../../components/ui/SectionCard';
+import { formatDateTime } from '../../utils/timezone';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ChartTooltip, Legend, Filler);
 
@@ -48,9 +49,7 @@ const formatEnergy = valueWh => {
   return `${kWh.toLocaleString(undefined, { maximumFractionDigits: 2 })} kWh`;
 };
 
-const formatDate = value => value
-  ? new Date(value).toLocaleString('en-NG', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
-  : '-';
+const formatDate = value => value ? formatDateTime(value, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '-';
 
 const PartnerDashboard = () => {
   const theme = useTheme();

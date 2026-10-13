@@ -10,6 +10,9 @@ const sequelize = new Sequelize(
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432', 10),
     dialect: 'postgres',
+    // PostgreSQL sessions use WAT for calendar functions and date rendering.
+    // Stored timestamp instants are not rewritten by this setting.
+    timezone: process.env.DB_TIMEZONE || 'Africa/Lagos',
     logging: msg => logger.debug(msg),
     define: {
       underscored: false,
