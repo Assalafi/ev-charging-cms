@@ -118,7 +118,7 @@ export default function CompanyForm() {
               </Stack>
               <Grid container spacing={2}>
                 <Grid item xs={12} sm={6}>
-                  <TextField required fullWidth type="number" label="Charging price (₦/Wh)" value={form.pricePerWh} onChange={event => update('pricePerWh', event.target.value)} inputProps={{ min: 0.0001, step: '0.01' }} helperText={Number(form.pricePerWh) > 0 ? `Equivalent to ₦${(Number(form.pricePerWh) * 1000).toFixed(2)}/kWh` : 'Enter the company selling rate'} />
+                  <TextField required fullWidth type="number" label="Charging price (₦/Wh)" value={form.pricePerWh} onChange={event => update('pricePerWh', event.target.value)} inputProps={{ min: 0.0001, step: 'any', inputMode: 'decimal' }} helperText={Number(form.pricePerWh) > 0 ? `Equivalent to ₦${(Number(form.pricePerWh) * 1000).toFixed(2)}/kWh` : 'Enter the company selling rate'} />
                 </Grid>
                 <Grid item xs={12} sm={6}>
                   <TextField required fullWidth type="number" label="Minimum charge (₦)" value={form.minimumCharge} onChange={event => update('minimumCharge', event.target.value)} inputProps={{ min: 0, step: '0.01' }} helperText="Applied when a session's energy total is lower than this amount" />
