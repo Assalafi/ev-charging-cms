@@ -10,6 +10,7 @@
     "migrate:admin-access": "node scripts/migrate-admin-access-control.js",
     "migrate:company-subscriptions": "node scripts/migrate-company-subscriptions.js",
     "migrate:company-portal": "node scripts/migrate-company-portal.js",
+    "migrate:company-billing": "node scripts/migrate-company-billing-controls.js",
     "test": "jest",
     "migrate:settlement-status": "node scripts/migrate-settlement-status.js"
   },

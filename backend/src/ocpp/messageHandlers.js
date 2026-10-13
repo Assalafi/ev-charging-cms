@@ -1,12 +1,13 @@
 // Updated messageHandlers.js with OCPP 1.6 compliant authorization
 const logger = require("../utils/logger")
-const { Transaction, ChargingStation, Location, MobileUser, Wallet, sequelize } = require("../models")
+const { Transaction, ChargingStation, MobileUser, Wallet, sequelize } = require("../models")
 const mqttClient = require("../mqtt/client")
 const tagAuthService = require("../services/tagAuthorization")
 const chargingSessionTracker = require("../services/chargingSessionTracker")
 const { validatePricingSettings } = require("../utils/pricingValidator")
 const { billTransaction } = require("../services/billingService")
 const { calculatePartnerRevenue } = require("../services/partnerRevenueService")
+const { getChargingPricing } = require("../services/chargingPricingService")
 
 // Track pending remote starts so we can accept StartTransaction from stations
 // that use their own default idTag instead of the one from RemoteStartTransaction
@@ -322,21 +323,9 @@ async function handleStartTransaction1(chargePointId, uniqueId, payload) {
         },
       })
       if (staleTransactions.length > 0) {
-        // Get location pricing for this station
-        let pricePerWh = 0.4
-        let minimumCharge = 150
-        try {
-          const stationForPrice = await ChargingStation.findOne({ where: { chargePointId }, attributes: ['locationId'] })
-          if (stationForPrice && stationForPrice.locationId) {
-            const location = await Location.findByPk(stationForPrice.locationId)
-            if (location) {
-              pricePerWh = location.pricePerWh ?? 0.4
-              minimumCharge = location.minimumCharge ?? 150
-            }
-          }
-        } catch (_) {}
-
         for (const stale of staleTransactions) {
+          const pricing = await getChargingPricing({ chargePointId, idTag: stale.idTag })
+          const { pricePerWh, minimumCharge } = pricing
           let staleAmount = parseFloat(stale.amount)
           if (!(staleAmount > 0)) {
             const energy = parseFloat(stale.energyDelivered) || 0
@@ -794,20 +783,10 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
 
               // Recalculate correct amount with real energy
               let correctedAmount = 0
+              let pricing = null
               try {
-                const stationForPrice = await ChargingStation.findOne({
-                  where: { chargePointId },
-                  attributes: ['locationId']
-                })
-                let pricePerWh = 0.4
-                let minimumCharge = 150
-                if (stationForPrice && stationForPrice.locationId) {
-                  const location = await Location.findByPk(stationForPrice.locationId)
-                  if (location) {
-                    pricePerWh = location.pricePerWh ?? 0.4
-                    minimumCharge = location.minimumCharge ?? 150
-                  }
-                }
+                pricing = await getChargingPricing({ chargePointId, idTag: completedTx.idTag })
+                const { pricePerWh, minimumCharge } = pricing
                 const ratePerKwh = pricePerWh * 1000
                 const energyInKwh = realEnergy / 1000
                 correctedAmount = Math.max(energyInKwh * ratePerKwh, minimumCharge)
@@ -820,7 +799,9 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
               const reconciledRevenue = await calculatePartnerRevenue({
                 chargePointId,
                 energyWh: realEnergy,
-                billableAmount: correctedAmount
+                billableAmount: correctedAmount,
+                idTag: completedTx.idTag,
+                pricing
               })
               await completedTx.update({
                 stopMeterValue: normalizedPayload.meterStop,
@@ -861,20 +842,10 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
               if (Math.abs(realEnergy - oldEnergy) > 50) {
                 // Recalculate the correct amount
                 let correctAmount = 0
+                let pricing = null
                 try {
-                  const stationForPrice = await ChargingStation.findOne({
-                    where: { chargePointId },
-                    attributes: ['locationId']
-                  })
-                  let pricePerWh = 0.4
-                  let minimumCharge = 150
-                  if (stationForPrice && stationForPrice.locationId) {
-                    const location = await Location.findByPk(stationForPrice.locationId)
-                    if (location) {
-                      pricePerWh = location.pricePerWh ?? 0.4
-                      minimumCharge = location.minimumCharge ?? 150
-                    }
-                  }
+                  pricing = await getChargingPricing({ chargePointId, idTag: completedTx.idTag })
+                  const { pricePerWh, minimumCharge } = pricing
                   const ratePerKwh = pricePerWh * 1000
                   const energyInKwh = realEnergy / 1000
                   correctAmount = Math.max(energyInKwh * ratePerKwh, minimumCharge)
@@ -888,7 +859,9 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
                 const reconciledRevenue = await calculatePartnerRevenue({
                   chargePointId,
                   energyWh: realEnergy,
-                  billableAmount: correctAmount
+                  billableAmount: correctAmount,
+                  idTag: completedTx.idTag,
+                  pricing
                 })
 
                 // Keep the billing and partner commission snapshots aligned with the real meter reading.
@@ -1001,26 +974,18 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         normalizedPayload.meterStop - startMeterValue
       )
 
-      // Calculate the transaction amount based on LOCATION pricing
+      // Calculate the transaction amount using company pricing when configured,
+      // otherwise use the station location tariff.
       let transactionAmount = 0
       let sellingPricePerWh = 0.4
       let minimumCharge = 150
       let grossAmount = 0
       let isUsingMinimumCharge = false
+      let pricing = null
       try {
-        // Get location pricing for this station
-        const stationForPrice = await ChargingStation.findOne({
-          where: { chargePointId },
-          attributes: ['locationId']
-        })
-
-        if (stationForPrice && stationForPrice.locationId) {
-          const location = await Location.findByPk(stationForPrice.locationId)
-          if (location) {
-            sellingPricePerWh = location.pricePerWh ?? 0.4
-            minimumCharge = location.minimumCharge ?? 150
-          }
-        }
+        pricing = await getChargingPricing({ chargePointId, idTag: transaction.idTag })
+        sellingPricePerWh = pricing.pricePerWh
+        minimumCharge = pricing.minimumCharge
 
         const ratePerKwh = sellingPricePerWh * 1000 // Convert ₦/Wh to ₦/kWh
 
@@ -1032,7 +997,7 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
 
         // Add detailed debug logging for troubleshooting
         logger.debug(
-          `StopTransaction LOCATION PRICING: ` +
+          `StopTransaction EFFECTIVE PRICING (${pricing.source}): ` +
             `pricePerWh=${sellingPricePerWh}, ` +
             `ratePerKwh=${ratePerKwh}, ` +
             `minimumCharge=${minimumCharge}`
@@ -1072,7 +1037,9 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         partnerRevenue = await calculatePartnerRevenue({
           chargePointId,
           energyWh: energyDelivered,
-          billableAmount: transactionAmount
+          billableAmount: transactionAmount,
+          idTag: transaction.idTag,
+          pricing
         })
         logger.info(`Partner revenue calculated for tx ${transaction.transactionId}:`, partnerRevenue)
       } catch (partnerError) {
@@ -1514,24 +1481,15 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                       // Debug: log energy calculation
                       logger.info(`MeterValues tx ${transactionId}: energyValue=${energyValue} Wh, startMeterValue=${startMeterValue} Wh, energyDelivered=${energyDelivered} Wh`);
 
-                      // Calculate real-time price based on energy delivered (location pricing)
+                      // Calculate real-time price based on the effective tariff.
                       let currentPrice = 0
                       let amount = 0
+                      let pricing = null
                       try {
-                        // Get location pricing for this station
-                        const stationForPrice = await ChargingStation.findOne({
-                          where: { chargePointId },
-                          attributes: ['locationId']
-                        })
+                        pricing = await getChargingPricing({ chargePointId, idTag: transaction.idTag })
+                        const { pricePerWh: effectivePricePerWh } = pricing
 
-                        let pricePerWh = 0.4 // Default: ₦0.4/Wh = ₦400/kWh
-                        if (stationForPrice && stationForPrice.locationId) {
-                          const location = await Location.findByPk(stationForPrice.locationId)
-                          if (location) {
-                            pricePerWh = location.pricePerWh ?? 0.4
-                          }
-                        }
-
+                        const pricePerWh = effectivePricePerWh
                         const ratePerKwh = pricePerWh * 1000 // Convert ₦/Wh to ₦/kWh
 
                         // Energy unit conversion: OCPP meters report in Wh, convert to kWh
@@ -1545,7 +1503,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                         )
 
                         logger.debug(
-                          `MeterValues LOCATION PRICING: pricePerWh=${pricePerWh}, ratePerKwh=${ratePerKwh}`
+                          `MeterValues EFFECTIVE PRICING (${pricing.source}): pricePerWh=${pricePerWh}, ratePerKwh=${ratePerKwh}`
                         )
 
                         // Calculate price
@@ -2208,29 +2166,17 @@ async function handleStatusNotification(chargePointId, uniqueId, payload) {
           if (staleTxs.length > 0) {
             logger.warn(`Station ${chargePointId}:${connectorId} reports ${status} but has ${staleTxs.length} InProgress transaction(s) — auto-completing`)
 
-            // Get location pricing
-            let pricePerWh = 0.4, minimumCharge = 150
-            try {
-              const stationForPrice = await ChargingStation.findOne({ where: { chargePointId }, attributes: ['locationId'] })
-              if (stationForPrice && stationForPrice.locationId) {
-                const location = await Location.findByPk(stationForPrice.locationId)
-                if (location) {
-                  pricePerWh = location.pricePerWh ?? 0.4
-                  minimumCharge = location.minimumCharge ?? 150
-                }
-              }
-            } catch (_) {}
-
             const { billTransaction } = require("../services/billingService")
             for (const staleTx of staleTxs) {
+              const pricing = await getChargingPricing({ chargePointId, idTag: staleTx.idTag })
               let txAmount = parseFloat(staleTx.amount)
               if (!(txAmount > 0)) {
                 const energy = parseFloat(staleTx.energyDelivered) || 0
                 if (energy > 0) {
                   const energyKwh = energy > 100 ? energy / 1000 : energy
-                  txAmount = energyKwh * pricePerWh * 1000
+                  txAmount = energyKwh * pricing.pricePerWh * 1000
                 }
-                txAmount = Math.max(txAmount || 0, minimumCharge)
+                txAmount = Math.max(txAmount || 0, pricing.minimumCharge)
               }
               await staleTx.update({ status: "Completed", stopTime: new Date(), amount: txAmount })
               logger.warn(`Auto-completed orphan tx ${staleTx.transactionId} on ${chargePointId}:${connectorId} (charger reported ${status}) — ₦${txAmount}`)

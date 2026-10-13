@@ -1,6 +1,6 @@
 const logger = require('../utils/logger');
 const { Transaction, ChargingStation, OcppMessage, sequelize } = require('../models');
-const { validatePricingSettings } = require('../utils/pricingValidator');
+const { getChargingPricing } = require('./chargingPricingService');
 
 class TransactionMonitor {
   constructor() {
@@ -215,19 +215,14 @@ class TransactionMonitor {
       let finalAmount = transaction.amount || 0;
       
       if (transaction.energyDelivered > 0 && finalAmount === 0) {
-        // Try to calculate amount if not already set
+        // Use the company tariff when the driver belongs to a subscription
+        // company, otherwise fall back to the station tariff.
         try {
-          const { isValid, settings, error } = await validatePricingSettings(
-            `ForceComplete:${transaction.transactionId}`
-          );
-
-          if (isValid && settings) {
-            const energyInKwh = transaction.energyDelivered > 100 ? 
-              transaction.energyDelivered / 1000 : transaction.energyDelivered;
-            
-            finalAmount = energyInKwh * settings.baseRatePerKwh;
-            logger.debug(`Calculated final amount ${finalAmount} for transaction ${transaction.transactionId}`);
-          }
+          const pricing = await getChargingPricing({ chargePointId: transaction.chargePointId, idTag: transaction.idTag });
+          const delivered = Number(transaction.energyDelivered) || 0;
+          const energyInKwh = delivered > 100 ? delivered / 1000 : delivered;
+          finalAmount = Math.max(energyInKwh * pricing.pricePerWh * 1000, pricing.minimumCharge);
+          logger.debug(`Calculated final amount ${finalAmount} for transaction ${transaction.transactionId} using ${pricing.source} pricing`);
         } catch (pricingError) {
           logger.warn(`Could not calculate pricing for forced completion: ${pricingError.message}`);
         }

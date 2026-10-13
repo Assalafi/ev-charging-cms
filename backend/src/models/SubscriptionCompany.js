@@ -41,6 +41,22 @@ module.exports = (sequelize) => sequelize.define('SubscriptionCompany', {
     allowNull: false,
     defaultValue: 'active'
   },
+  debtEnabled: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    comment: 'Allows company-funded user transfers to take the company wallet below zero'
+  },
+  pricePerWh: {
+    type: DataTypes.FLOAT,
+    allowNull: true,
+    comment: 'Company charging price per Wh. NULL keeps the location tariff for legacy companies.'
+  },
+  minimumCharge: {
+    type: DataTypes.FLOAT,
+    allowNull: true,
+    comment: 'Company minimum charging amount. NULL keeps the location minimum for legacy companies.'
+  },
   notes: {
     type: DataTypes.TEXT,
     allowNull: true

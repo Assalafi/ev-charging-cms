@@ -4,6 +4,7 @@ const { Op } = require('sequelize');
 const { MobileUser, AuthorizedTag, ChargingStation, Transaction, Connector, Location, Wallet, SubscriptionCompany } = require('../models');
 const logger = require('../utils/logger');
 const ocppServer = require('../ocpp/server');
+const { getChargingPricing } = require('../services/chargingPricingService');
 
 const router = express.Router();
 
@@ -565,6 +566,12 @@ router.get('/locations', mobileAuth, async (req, res) => {
       order: [['name', 'ASC']]
     });
 
+    const company = req.user.companyId
+      ? await SubscriptionCompany.findByPk(req.user.companyId, { attributes: ['id', 'pricePerWh', 'minimumCharge'] })
+      : null;
+    const companyPrice = Number(company?.pricePerWh);
+    const hasCompanyPrice = Number.isFinite(companyPrice) && companyPrice > 0;
+
     const result = locations.map(loc => {
       const l = loc.toJSON();
       const stations = l.stations || [];
@@ -584,8 +591,10 @@ router.get('/locations', mobileAuth, async (req, res) => {
         longitude: l.longitude,
         totalStations: stations.length,
         readyStations,
-        pricePerWh: l.pricePerWh,
-        minimumCharge: l.minimumCharge,
+        pricePerWh: hasCompanyPrice ? companyPrice : l.pricePerWh,
+        minimumCharge: hasCompanyPrice && company.minimumCharge !== null && company.minimumCharge !== undefined
+          ? Number(company.minimumCharge)
+          : l.minimumCharge,
       };
     }).filter(l => l.totalStations > 0);
 
@@ -669,26 +678,9 @@ router.get('/stations/:chargePointId', mobileAuth, async (req, res) => {
       }
     }
 
-    // Add pricing and wallet info
-    let pricePerWh = 0.4;
-    let minimumCharge = 150;
-    if (station.locationId) {
-      const location = await Location.findByPk(station.locationId);
-      if (location) {
-        pricePerWh = location.pricePerWh ?? 0.4;
-        minimumCharge = location.minimumCharge ?? 150;
-      }
-    } else {
-      // Try to find via separate query since locationId wasn't in attributes
-      const stationWithLoc = await ChargingStation.findOne({ where: { chargePointId }, attributes: ['locationId'] });
-      if (stationWithLoc && stationWithLoc.locationId) {
-        const location = await Location.findByPk(stationWithLoc.locationId);
-        if (location) {
-          pricePerWh = location.pricePerWh ?? 0.4;
-          minimumCharge = location.minimumCharge ?? 150;
-        }
-      }
-    }
+    // Company pricing takes precedence over location pricing for company users.
+    const pricing = await getChargingPricing({ chargePointId, userId: req.user.id });
+    const { pricePerWh, minimumCharge } = pricing;
     stationData.pricePerWh = pricePerWh;
     stationData.minimumCharge = minimumCharge;
     stationData.pricePerKwh = (pricePerWh * 1000).toFixed(2);
@@ -784,14 +776,8 @@ router.post('/charging/start', mobileAuth, async (req, res) => {
     const wallet = await Wallet.findOne({ where: { userId: req.user.id } });
     const walletBalance = wallet ? parseFloat(wallet.balance) : 0;
 
-    let minimumCharge = 150;
-    const stationForPrice = await ChargingStation.findOne({ where: { chargePointId }, attributes: ['locationId'] });
-    if (stationForPrice && stationForPrice.locationId) {
-      const location = await Location.findByPk(stationForPrice.locationId);
-      if (location && location.minimumCharge) {
-        minimumCharge = location.minimumCharge;
-      }
-    }
+    const pricing = await getChargingPricing({ chargePointId, userId: req.user.id });
+    const { minimumCharge } = pricing;
 
     if (walletBalance < minimumCharge) {
       return res.status(402).json({ 
@@ -1124,17 +1110,9 @@ router.get('/charging/status/:chargePointId', mobileAuth, async (req, res) => {
       where: { chargePointId, connectorId: transaction.connectorId }
     });
 
-    // Get location pricing
-    let pricePerWh = 0.4;
-    let minimumCharge = 150;
-    const station = await ChargingStation.findOne({ where: { chargePointId }, attributes: ['locationId'] });
-    if (station && station.locationId) {
-      const location = await Location.findByPk(station.locationId);
-      if (location) {
-        pricePerWh = location.pricePerWh ?? 0.4;
-        minimumCharge = location.minimumCharge ?? 150;
-      }
-    }
+    // Company pricing takes precedence over location pricing for this driver.
+    const pricing = await getChargingPricing({ chargePointId, userId: req.user.id });
+    const { pricePerWh, minimumCharge } = pricing;
 
     const duration = Math.floor((Date.now() - new Date(transaction.startTime).getTime()) / 1000);
     const energyWh = transaction.energyDelivered || 0; // Always in Wh

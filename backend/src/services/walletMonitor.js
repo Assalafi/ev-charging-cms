@@ -9,7 +9,8 @@
  */
 
 const logger = require('../utils/logger');
-const { Transaction, MobileUser, Wallet, ChargingStation, Location, sequelize } = require('../models');
+const { Transaction, MobileUser, Wallet, ChargingStation, sequelize } = require('../models');
+const { getChargingPricing } = require('./chargingPricingService');
 
 let intervalHandle = null;
 let ocppServerRef = null;
@@ -193,26 +194,17 @@ async function offlineStop(session) {
       return;
     }
 
-    // Calculate final amount using location pricing
+    // Calculate final amount using the driver's effective company/location tariff.
     let finalAmount = parseFloat(amount) || 0;
+    let pricingForRevenue = null;
     const energy = parseFloat(energyDelivered) || 0;
 
     try {
-      const station = await ChargingStation.findOne({
-        where: { chargePointId },
-        attributes: ['locationId']
-      });
-
-      if (station && station.locationId) {
-        const location = await Location.findByPk(station.locationId);
-        if (location) {
-          const pricePerWh = location.pricePerWh || 0.4;
-          const minimumCharge = location.minimumCharge || 0;
-          const energyInKwh = energy / 1000;
-          const ratePerKwh = pricePerWh * 1000;
-          finalAmount = Math.max(energyInKwh * ratePerKwh, minimumCharge);
-        }
-      }
+      const pricing = await getChargingPricing({ chargePointId, idTag: transaction.idTag });
+      pricingForRevenue = pricing;
+      const energyInKwh = energy / 1000;
+      const ratePerKwh = pricing.pricePerWh * 1000;
+      finalAmount = Math.max(energyInKwh * ratePerKwh, pricing.minimumCharge);
     } catch (priceErr) {
       logger.error(`WalletMonitor offlineStop: Price calc error for tx ${transactionId}:`, priceErr.message);
     }
@@ -221,7 +213,9 @@ async function offlineStop(session) {
     const partnerRevenue = await calculatePartnerRevenue({
       chargePointId,
       energyWh: energy,
-      billableAmount: finalAmount
+      billableAmount: finalAmount,
+      idTag: transaction.idTag,
+      pricing: pricingForRevenue
     });
 
     await transaction.update({

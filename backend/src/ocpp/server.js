@@ -455,40 +455,24 @@ function init(server) {
                         }
                         logger.warn(`Station ${chargePointId} offline for 120s — auto-completing active transactions`);
                         try {
-                            const { Transaction, ChargingStation, Connector, sequelize } = require('../models');
-
-                            // Get location pricing
-                            let pricePerWh = 0.4;
-                            let minimumCharge = 150;
-                            try {
-                                const [rows] = await sequelize.query(
-                                    `SELECT l."pricePerWh", l."minimumCharge" FROM locations l 
-                                     JOIN charging_stations cs ON cs."locationId" = l.id 
-                                     WHERE cs."chargePointId" = $1 LIMIT 1`,
-                                    { bind: [chargePointId] }
-                                );
-                                if (rows.length > 0) {
-                                    if (rows[0].pricePerWh != null) pricePerWh = parseFloat(rows[0].pricePerWh);
-                                    if (rows[0].minimumCharge != null) minimumCharge = parseFloat(rows[0].minimumCharge);
-                                }
-                            } catch (priceErr) {
-                                logger.warn(`Could not fetch location pricing for ${chargePointId}: ${priceErr.message}`);
-                            }
+                            const { Transaction, ChargingStation, Connector } = require('../models');
 
                             const activeTxs = await Transaction.findAll({
                                 where: { chargePointId, status: 'InProgress' }
                             });
                             for (const tx of activeTxs) {
+                                const { getChargingPricing } = require('../services/chargingPricingService');
+                                const pricing = await getChargingPricing({ chargePointId, idTag: tx.idTag });
                                 // Calculate amount: energy-based if kWh > 0, otherwise minimum charge
                                 let txAmount = parseFloat(tx.amount);
                                 if (!(txAmount > 0)) {
                                     const energy = parseFloat(tx.energyDelivered) || 0;
                                     if (energy > 0) {
                                         const energyKwh = energy / 1000;
-                                        const ratePerKwh = pricePerWh * 1000;
+                                        const ratePerKwh = pricing.pricePerWh * 1000;
                                         txAmount = energyKwh * ratePerKwh;
                                     }
-                                    txAmount = Math.max(txAmount || 0, minimumCharge);
+                                    txAmount = Math.max(txAmount || 0, pricing.minimumCharge);
                                 }
                                 // Mark as completed but DO NOT bill yet — defer billing 60s
                                 // to allow the charger to reconnect and send StopTransaction with real meterStop
@@ -496,7 +480,9 @@ function init(server) {
                                 const revenue = await calculatePartnerRevenue({
                                     chargePointId,
                                     energyWh: parseFloat(tx.energyDelivered) || 0,
-                                    billableAmount: txAmount
+                                    billableAmount: txAmount,
+                                    idTag: tx.idTag,
+                                    pricing
                                 });
                                 await tx.update({
                                     status: 'Completed',
@@ -697,41 +683,30 @@ async function handleOcppMessage(chargePointId, data, ws) {
                                     const rejectedTxId = originalPayload.transactionId;
                                     logger.warn(`RemoteStopTransaction rejected by ${chargePointId} for tx ${rejectedTxId} — forcing completion in backend`);
                                     
-                                    const { Transaction, Connector, sequelize } = require('../models');
+                                    const { Transaction, Connector } = require('../models');
                                     const { billTransaction } = require('../services/billingService');
                                     
                                     const tx = await Transaction.findOne({ where: { transactionId: rejectedTxId, status: 'InProgress' } });
                                     if (tx) {
-                                        // Get location pricing for amount calculation
-                                        let pricePerWh = 0.4, minimumCharge = 150;
-                                        try {
-                                            const [rows] = await sequelize.query(
-                                                `SELECT l."pricePerWh", l."minimumCharge" FROM locations l 
-                                                 JOIN charging_stations cs ON cs."locationId" = l.id 
-                                                 WHERE cs."chargePointId" = $1 LIMIT 1`,
-                                                { bind: [chargePointId] }
-                                            );
-                                            if (rows.length > 0) {
-                                                if (rows[0].pricePerWh != null) pricePerWh = parseFloat(rows[0].pricePerWh);
-                                                if (rows[0].minimumCharge != null) minimumCharge = parseFloat(rows[0].minimumCharge);
-                                            }
-                                        } catch (_) {}
-                                        
+                                        const { getChargingPricing } = require('../services/chargingPricingService');
+                                        const pricing = await getChargingPricing({ chargePointId, idTag: tx.idTag });
                                         let txAmount = parseFloat(tx.amount);
                                         if (!(txAmount > 0)) {
                                             const energy = parseFloat(tx.energyDelivered) || 0;
                                             if (energy > 0) {
                                                 const energyKwh = energy / 1000;
-                                                txAmount = energyKwh * pricePerWh * 1000;
+                                                txAmount = energyKwh * pricing.pricePerWh * 1000;
                                             }
-                                            txAmount = Math.max(txAmount || 0, minimumCharge);
+                                            txAmount = Math.max(txAmount || 0, pricing.minimumCharge);
                                         }
                                         
                                         const { calculatePartnerRevenue } = require('../services/partnerRevenueService');
                                         const revenue = await calculatePartnerRevenue({
                                             chargePointId,
                                             energyWh: parseFloat(tx.energyDelivered) || 0,
-                                            billableAmount: txAmount
+                                            billableAmount: txAmount,
+                                            idTag: tx.idTag,
+                                            pricing
                                         });
                                         await tx.update({
                                             status: 'Completed',

@@ -25,7 +25,7 @@ const {
 
 const router = express.Router();
 
-const COMPANY_ATTRIBUTES = ['id', 'name', 'email', 'phone', 'address', 'city', 'state', 'country', 'status', 'notes', 'createdBy', 'createdAt', 'updatedAt'];
+const COMPANY_ATTRIBUTES = ['id', 'name', 'email', 'phone', 'address', 'city', 'state', 'country', 'status', 'debtEnabled', 'pricePerWh', 'minimumCharge', 'notes', 'createdBy', 'createdAt', 'updatedAt'];
 const COMPANY_USER_ATTRIBUTES = ['id', 'companyId', 'name', 'email', 'phone', 'role', 'status', 'lastLogin', 'createdAt', 'updatedAt'];
 
 function parsePage(query) {
@@ -35,7 +35,7 @@ function parsePage(query) {
 }
 
 function cleanCompanyPayload(body = {}) {
-  return {
+  const payload = {
     name: String(body.name || '').trim(),
     email: body.email ? String(body.email).trim().toLowerCase() : null,
     phone: body.phone ? String(body.phone).trim() : null,
@@ -45,6 +45,30 @@ function cleanCompanyPayload(body = {}) {
     country: body.country ? String(body.country).trim() : 'Nigeria',
     notes: body.notes ? String(body.notes).trim() : null
   };
+  if (Object.prototype.hasOwnProperty.call(body, 'debtEnabled')) {
+    payload.debtEnabled = body.debtEnabled === true || body.debtEnabled === 'true' || body.debtEnabled === 1 || body.debtEnabled === '1';
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'pricePerWh')) {
+    payload.pricePerWh = body.pricePerWh === '' || body.pricePerWh === null ? null : Number(body.pricePerWh);
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'minimumCharge')) {
+    payload.minimumCharge = body.minimumCharge === '' || body.minimumCharge === null ? null : Number(body.minimumCharge);
+  }
+  return payload;
+}
+
+function validateCompanyBilling(payload, { requirePricing = false } = {}) {
+  const hasPrice = payload.pricePerWh !== undefined && payload.pricePerWh !== null;
+  const hasMinimum = payload.minimumCharge !== undefined && payload.minimumCharge !== null;
+  if (requirePricing && (!hasPrice || !hasMinimum)) {
+    throw new Error('Company charging price and minimum charge are required');
+  }
+  if (hasPrice && (!Number.isFinite(payload.pricePerWh) || payload.pricePerWh <= 0)) {
+    throw new Error('Company charging price must be greater than 0');
+  }
+  if (hasMinimum && (!Number.isFinite(payload.minimumCharge) || payload.minimumCharge < 0)) {
+    throw new Error('Company minimum charge cannot be negative');
+  }
 }
 
 function phoneToTagId(phone) {
@@ -57,6 +81,8 @@ function serializeCompany(company) {
   return {
     ...value,
     walletBalance: Number(value.wallet?.balance || 0),
+    debtOutstanding: Math.max(0, -Number(value.wallet?.balance || 0)),
+    pricingConfigured: Number.isFinite(Number(value.pricePerWh)) && Number(value.pricePerWh) > 0,
     userCount: value.mobileUsers?.length || value.userCount || 0,
     activeUserCount: value.activeUserCount || 0
   };
@@ -151,6 +177,7 @@ router.get('/', authenticate, requirePermission('companies.view'), async (req, r
 router.post('/', authenticate, requirePermission('companies.create'), async (req, res) => {
   const payload = cleanCompanyPayload(req.body);
   if (!payload.name) return res.status(400).json({ success: false, message: 'Company name is required' });
+  try { validateCompanyBilling(payload, { requirePricing: true }); } catch (error) { return res.status(400).json({ success: false, message: error.message }); }
 
   try {
     const company = await sequelize.transaction(async transaction => {
@@ -654,6 +681,7 @@ router.put('/:id', authenticate, requirePermission('companies.update'), async (r
     if (!company) return res.status(404).json({ success: false, message: 'Company not found' });
     const payload = cleanCompanyPayload(req.body);
     if (!payload.name) return res.status(400).json({ success: false, message: 'Company name is required' });
+    validateCompanyBilling(payload);
     await company.update(payload);
     res.json({ success: true, message: 'Company updated successfully', company });
   } catch (error) {

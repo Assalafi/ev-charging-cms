@@ -5,7 +5,8 @@ async function buildCompletionSnapshot(transaction, reason) {
   const revenue = await calculatePartnerRevenue({
     chargePointId: transaction.chargePointId,
     energyWh,
-    billableAmount: Number(transaction.amount) || 0
+    billableAmount: Number(transaction.amount) || 0,
+    idTag: transaction.idTag
   });
 
   return {

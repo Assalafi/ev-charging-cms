@@ -16,7 +16,7 @@ async function companyAuthenticate(req, res, next) {
     const user = await CompanyUser.findOne({
       where: { id: decoded.companyUserId, companyId: decoded.companyId },
       attributes: { exclude: ['password'] },
-      include: [{ model: SubscriptionCompany, as: 'company', attributes: ['id', 'name', 'email', 'phone', 'address', 'city', 'state', 'country', 'status'] }]
+      include: [{ model: SubscriptionCompany, as: 'company', attributes: ['id', 'name', 'email', 'phone', 'address', 'city', 'state', 'country', 'status', 'debtEnabled', 'pricePerWh', 'minimumCharge'] }]
     });
     if (!user || user.status !== 'active') return res.status(401).json({ success: false, message: 'Company account is suspended or no longer exists' });
     if (!user.company || user.company.status !== 'active') return res.status(403).json({ success: false, message: 'Company access is currently suspended' });
@@ -39,4 +39,3 @@ function companyAuthorize(roles = []) {
 }
 
 module.exports = { companyAuthenticate, companyAuthorize };
-

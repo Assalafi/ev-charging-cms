@@ -159,7 +159,8 @@ async function transferCompanyFundsToUser({ companyId, mobileUserId, amount, fun
 
     const companyWallet = await getOrCreateCompanyWallet(company.id, transaction);
     const companyBalance = Number(companyWallet.balance || 0);
-    if (companyBalance < transferAmount) {
+    const debtEnabled = company.debtEnabled === true;
+    if (companyBalance < transferAmount && !debtEnabled) {
       const error = new Error('Company wallet balance is insufficient');
       error.code = 'INSUFFICIENT_COMPANY_BALANCE';
       throw error;
@@ -176,6 +177,7 @@ async function transferCompanyFundsToUser({ companyId, mobileUserId, amount, fun
 
     const previousCompanyBalance = companyBalance;
     const newCompanyBalance = companyBalance - transferAmount;
+    const debtAmount = Math.max(0, -newCompanyBalance);
     const previousUserBalance = Number(userWallet.balance || 0);
     const newUserBalance = previousUserBalance + transferAmount;
     const reference = `COMPANY-USER-${company.id}-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -194,8 +196,14 @@ async function transferCompanyFundsToUser({ companyId, mobileUserId, amount, fun
       reference,
       method: fundingRuleId ? 'auto_funding' : 'company_transfer',
       status: 'SUCCESS',
-      description: description || `Funding for ${user.name}`,
-      metadata: { previousBalance: previousCompanyBalance, newBalance: newCompanyBalance, beneficiaryUserId: user.id },
+      description: description || `${debtAmount > 0 ? 'Debt funding' : 'Funding'} for ${user.name}`,
+      metadata: {
+        previousBalance: previousCompanyBalance,
+        newBalance: newCompanyBalance,
+        beneficiaryUserId: user.id,
+        debtEnabled,
+        debtAmount
+      },
       performedBy: performedBy || null
     }, { transaction });
 
@@ -227,6 +235,8 @@ async function transferCompanyFundsToUser({ companyId, mobileUserId, amount, fun
       newCompanyBalance,
       previousUserBalance,
       newUserBalance,
+      debtEnabled,
+      debtAmount,
       reference
     };
   });

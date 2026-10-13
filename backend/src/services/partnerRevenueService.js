@@ -1,4 +1,5 @@
 const logger = require('../utils/logger');
+const { getChargingPricing } = require('./chargingPricingService');
 const { ChargingStation, Location } = require('../models');
 
 /**
@@ -19,10 +20,11 @@ const { ChargingStation, Location } = require('../models');
  * @param {number} params.billableAmount - Final billable amount (after minimum charge)
  * @returns {Promise<Object>} Revenue calculation result
  */
-async function calculatePartnerRevenue({ chargePointId, energyWh, billableAmount }) {
+async function calculatePartnerRevenue({ chargePointId, energyWh, billableAmount, idTag, pricing }) {
   const safeEnergyWh = Math.max(parseFloat(energyWh) || 0, 0);
   const safeBillableAmount = Math.max(parseFloat(billableAmount) || 0, 0);
   try {
+    const effectivePricing = pricing || (idTag ? await getChargingPricing({ chargePointId, idTag }) : null);
     // Get station to find location
     const station = await ChargingStation.findOne({
       where: { chargePointId },
@@ -71,9 +73,16 @@ async function calculatePartnerRevenue({ chargePointId, energyWh, billableAmount
 
     const productionCostPerWh = parseFloat(location.productionCostPerWh || 0);
     const partnerSharePercent = parseFloat(location.partnerSharePercent || 0);
-    const sellingPricePerWh = parseFloat(location.pricePerWh || 0);
+    const sellingPricePerWh = effectivePricing?.pricePerWh !== undefined
+      ? parseFloat(effectivePricing.pricePerWh)
+      : parseFloat(location.pricePerWh || 0);
     const grossAmount = safeEnergyWh * sellingPricePerWh;
-    const minimumCharge = Math.max(parseFloat(location.minimumCharge) || 0, 0);
+    const minimumCharge = Math.max(
+      effectivePricing?.minimumCharge !== undefined
+        ? parseFloat(effectivePricing.minimumCharge)
+        : parseFloat(location.minimumCharge),
+      0
+    );
     const finalBillableAmount = Math.max(safeBillableAmount, grossAmount, minimumCharge);
     
     // Calculate production cost
