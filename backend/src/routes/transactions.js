@@ -580,7 +580,10 @@ router.get('/stats/usage', authenticate, async (req, res) => {
             required: false // Use left join to include transactions even if station is deleted
           }
         ],
-        group: ['chargePointId', 'charging_station.id'],
+        // The joined ChargingStation model also has chargePointId. Qualify
+        // the transaction column so PostgreSQL does not reject the grouped
+        // query as ambiguous.
+        group: [sequelize.literal('"transaction"."chargePointId"'), 'charging_station.id'],
         order: [[sequelize.literal('count'), 'DESC']]
       }) || [];
     } catch (error) {
@@ -595,7 +598,7 @@ router.get('/stats/usage', authenticate, async (req, res) => {
             'chargePointId',
             [sequelize.literal('COUNT("transaction"."id")'), 'count']
           ],
-          group: ['chargePointId'],
+          group: [sequelize.literal('"transaction"."chargePointId"')],
           order: [[sequelize.literal('count'), 'DESC']]
         }) || [];
       } catch (fallbackError) {
