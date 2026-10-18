@@ -1,7 +1,15 @@
 // Updated messageHandlers.js with OCPP 1.6 compliant authorization
 const logger = require("../utils/logger")
 const { Op } = require("sequelize")
-const { Transaction, MeterValue, ChargingStation, MobileUser, Wallet, sequelize } = require("../models")
+const {
+  Transaction,
+  MeterValue,
+  ChargingStation,
+  MobileUser,
+  Wallet,
+  PaymentTransaction,
+  sequelize,
+} = require("../models")
 const mqttClient = require("../mqtt/client")
 const tagAuthService = require("../services/tagAuthorization")
 const chargingSessionTracker = require("../services/chargingSessionTracker")
