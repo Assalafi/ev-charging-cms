@@ -75,24 +75,11 @@ const transactionService = {
   
   // Get transaction meter values
   getMeterValues: async (transactionId) => {
-    console.log(`Fetching meter values for transaction: ${transactionId}`);
-    try {
-      // Try the transactions endpoint first
-      const response = await api.get(`/transactions/${transactionId}/meter-values`);
-      console.log('Meter values response:', response.data);
-      return response.data;
-    } catch (error) {
-      console.error('Error with first meter values endpoint, trying alternative:', error);
-      // Fall back to meter-values endpoint
-      try {
-        const altResponse = await api.get(`/meter-values/transaction/${transactionId}`);
-        console.log('Alternative meter values response:', altResponse.data);
-        return altResponse.data;
-      } catch (altError) {
-        console.error('Error with alternative meter values endpoint:', altError);
-        throw altError;
-      }
-    }
+    // Meter history is served by the dedicated route. The old
+    // `/transactions/:id/meter-values` URL is not a backend endpoint and
+    // caused an avoidable 404 before every successful request.
+    const response = await api.get(`/meter-values/transaction/${transactionId}`);
+    return response.data;
   },
   
   // Mark a transaction as complete (for fixing stuck transactions)

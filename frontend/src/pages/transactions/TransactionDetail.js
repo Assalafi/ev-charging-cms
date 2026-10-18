@@ -1,19 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
+  Alert,
   Box,
-  Typography,
-  Paper,
-  Grid,
+  Button,
   Card,
   CardContent,
-  CardHeader,
-  Divider,
   Chip,
-  Button,
-  IconButton,
   CircularProgress,
-  Alert,
+  Divider,
+  Grid,
+  IconButton,
+  LinearProgress,
+  Stack,
+  Tab,
   Table,
   TableBody,
   TableCell,
@@ -21,791 +21,471 @@ import {
   TableHead,
   TableRow,
   Tabs,
-  Tab
+  Typography,
+  useMediaQuery,
+  useTheme
 } from '@mui/material';
 import {
-  Refresh as RefreshIcon,
-  ArrowBack as BackIcon,
-  EvStation as StationIcon,
-  Person as PersonIcon,
-  BatteryChargingFull as ChargingIcon,
-  Speed as MeterIcon,
-  Schedule as TimeIcon,
-  Bolt as EnergyIcon,
-  AttachMoney as CostIcon,
-  Sync as ReconcileIcon
+  AccessTimeRounded,
+  ArrowBackRounded,
+  BoltRounded,
+  CableRounded,
+  CheckCircleRounded,
+  ElectricBoltRounded,
+  EvStationRounded,
+  InfoOutlined,
+  OpenInNewRounded,
+  PaymentsRounded,
+  ReceiptLongRounded,
+  RefreshRounded,
+  SpeedRounded,
+  SyncRounded,
+  TimerRounded,
+  TrendingUpRounded,
+  WalletRounded
 } from '@mui/icons-material';
-import { format } from 'date-fns';
-import { 
-  Chart as ChartJS, 
-  CategoryScale, 
-  LinearScale, 
-  PointElement, 
-  LineElement, 
-  Title, 
-  Tooltip as ChartTooltip, 
-  Legend 
-} from 'chart.js';
-import { Line } from 'react-chartjs-2';
-import axios from 'axios';
-import { formatCurrency } from '../../utils/currencyFormatter';
-import transactionService from '../../services/transactionService';
-import api from '../../services/api';
-
-// Register Chart.js components
-ChartJS.register(
+import { format, formatDistanceStrict } from 'date-fns';
+import {
+  Chart as ChartJS,
   CategoryScale,
+  Filler,
+  Legend,
+  LineElement,
   LinearScale,
   PointElement,
-  LineElement,
   Title,
-  ChartTooltip,
-  Legend
-);
+  Tooltip as ChartTooltip
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
+import { alpha } from '@mui/material/styles';
+import api from '../../services/api';
+import transactionService from '../../services/transactionService';
+import PageHeader from '../../components/ui/PageHeader';
+import { useMQTT } from '../../contexts/MQTTContext';
 
-// Tab panel component
-function TabPanel({ children, value, index, ...other }) {
+ChartJS.register(CategoryScale, Filler, LinearScale, PointElement, LineElement, Title, ChartTooltip, Legend);
+
+const formatMoney = value => new Intl.NumberFormat('en-NG', {
+  style: 'currency',
+  currency: 'NGN',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
+}).format(Number(value) || 0);
+
+const toPlain = value => {
+  if (!value) return value;
+  if (typeof value.toJSON === 'function') return value.toJSON();
+  if (value.dataValues) return value.dataValues;
+  return value;
+};
+
+const safeDate = (value, pattern = 'd MMM yyyy, HH:mm:ss') => {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : format(date, pattern);
+};
+
+const safeDuration = (transaction, now) => {
+  if (!transaction?.startTime) return '—';
+  const start = new Date(transaction.startTime);
+  const end = transaction.stopTime ? new Date(transaction.stopTime) : now;
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return '—';
+  return formatDistanceStrict(end, start, { roundingMethod: 'floor' });
+};
+
+const statusMeta = status => {
+  if (status === 'Completed') return { label: 'Completed', color: 'success', icon: <CheckCircleRounded fontSize="small" /> };
+  if (status === 'InProgress') return { label: 'Charging now', color: 'primary', icon: <ElectricBoltRounded fontSize="small" /> };
+  if (status === 'Stopped') return { label: 'Stopped', color: 'warning', icon: <AccessTimeRounded fontSize="small" /> };
+  if (status === 'Failed') return { label: 'Failed', color: 'error', icon: <InfoOutlined fontSize="small" /> };
+  return { label: status || 'Unknown', color: 'default', icon: <InfoOutlined fontSize="small" /> };
+};
+
+const getEnergyWh = row => {
+  if (!row || (row.measurand && row.measurand !== 'Energy.Active.Import.Register')) return null;
+  const value = Number(row.value);
+  if (!Number.isFinite(value)) return null;
+  return String(row.unit || 'Wh').toLowerCase() === 'kwh' ? value * 1000 : value;
+};
+
+const flattenMeterValues = values => (Array.isArray(values) ? values : []).flatMap((value, index) => {
+  const row = toPlain(value) || {};
+  if (Array.isArray(row.value)) {
+    return row.value.map((sample, sampleIndex) => ({
+      ...row,
+      ...toPlain(sample),
+      id: `${row.id || index}-${sampleIndex}`
+    }));
+  }
+  return [{ ...row, id: row.id || index }];
+});
+
+const mergeMeterValues = (existing, incoming) => {
+  const persisted = Array.isArray(incoming) ? incoming : [];
+  if (!persisted.length) return existing;
+  const latestPersistedAt = Math.max(...persisted.map(row => new Date(row.timestamp || 0).getTime()).filter(Number.isFinite), 0);
+  const liveTail = (Array.isArray(existing) ? existing : []).filter(row => (
+    row.__live && new Date(row.timestamp || 0).getTime() > latestPersistedAt
+  ));
+  return [...persisted, ...liveTail].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).slice(-300);
+};
+
+function Metric({ icon, label, value, caption, color = 'primary' }) {
   return (
-    <div
-      role="tabpanel"
-      hidden={value !== index}
-      id={`transaction-tabpanel-${index}`}
-      aria-labelledby={`transaction-tab-${index}`}
-      {...other}
-    >
-      {value === index && <Box sx={{ p: 3 }}>{children}</Box>}
-    </div>
+    <Card variant="outlined" sx={{ height: '100%', borderRadius: 3, borderColor: 'divider' }}>
+      <CardContent sx={{ p: { xs: 1.6, sm: 2 } }}>
+        <Stack direction="row" spacing={1.25} alignItems="flex-start">
+          <Box sx={theme => ({ width: 40, height: 40, borderRadius: 2.25, display: 'grid', placeItems: 'center', flexShrink: 0, color: theme.palette[color]?.main || theme.palette.primary.main, bgcolor: alpha(theme.palette[color]?.main || theme.palette.primary.main, .1) })}>
+            {icon}
+          </Box>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{label}</Typography>
+            <Typography variant="h6" fontWeight={850} sx={{ mt: .25, overflowWrap: 'anywhere' }}>{value}</Typography>
+            {caption && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: .35 }}>{caption}</Typography>}
+          </Box>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DetailRow({ label, value, mono = false, emphasis = false }) {
+  return (
+    <Stack direction="row" justifyContent="space-between" spacing={2} sx={{ py: 1.15, borderBottom: '1px solid', borderColor: 'divider', '&:last-child': { borderBottom: 0 } }}>
+      <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>{label}</Typography>
+      <Typography variant="body2" fontWeight={emphasis ? 800 : 650} textAlign="right" sx={{ minWidth: 0, overflowWrap: 'anywhere', fontFamily: mono ? 'ui-monospace, SFMono-Regular, Menlo, monospace' : undefined }}>{value || '—'}</Typography>
+    </Stack>
+  );
+}
+
+function EmptyChart({ label }) {
+  return (
+    <Stack alignItems="center" justifyContent="center" spacing={1} sx={{ height: 330, color: 'text.secondary' }}>
+      <TrendingUpRounded sx={{ fontSize: 42, color: 'text.disabled' }} />
+      <Typography fontWeight={750}>{label}</Typography>
+      <Typography variant="body2" color="text.secondary">Meter readings will appear here as the charger reports them.</Typography>
+    </Stack>
   );
 }
 
 function TransactionDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  
-  // State
+  const theme = useTheme();
+  const compact = useMediaQuery(theme.breakpoints.down('sm'));
+  const mqttContext = useMQTT() || {};
+  const { subscribe, isConnected: mqttConnected } = mqttContext;
+
   const [transaction, setTransaction] = useState(null);
   const [station, setStation] = useState(null);
   const [meterValues, setMeterValues] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [tabValue, setTabValue] = useState(0);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState('');
+  const [refreshError, setRefreshError] = useState('');
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const [lastLiveAt, setLastLiveAt] = useState(null);
+  const [now, setNow] = useState(new Date());
+  const [tab, setTab] = useState(0);
+  const [chartMode, setChartMode] = useState('energy');
   const [reconciling, setReconciling] = useState(false);
   const [reconcileMessage, setReconcileMessage] = useState(null);
-  
-  // Chart data
-  const [energyChartData, setEnergyChartData] = useState({
-    labels: [],
-    datasets: []
-  });
-  
-  const [powerChartData, setPowerChartData] = useState({
-    labels: [],
-    datasets: []
-  });
-  
-  // Chart options
-  const chartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: {
-        position: 'top',
-      },
-      tooltip: {
-        callbacks: {
-          label: function(context) {
-            let label = context.dataset.label || '';
-            if (label) {
-              label += ': ';
-            }
-            if (context.parsed.y !== null) {
-              label += context.parsed.y.toFixed(2);
-              
-              // Add units based on chart type
-              if (context.dataset.label.includes('Energy')) {
-                label += ' kWh';
-              } else if (context.dataset.label.includes('Power')) {
-                label += ' kW';
-              }
-            }
-            return label;
-          }
-        }
-      }
-    },
-    scales: {
-      y: {
-        beginAtZero: true,
-        title: {
-          display: true,
-          text: tabValue === 0 ? 'Energy (kWh)' : 'Power (kW)'
-        }
-      },
-      x: {
-        title: {
-          display: true,
-          text: 'Time'
-        }
-      }
-    },
-    animation: {
-      duration: 1000
-    }
-  };
-  
-  // Handle tab change
-  const handleTabChange = (event, newValue) => {
-    setTabValue(newValue);
-  };
-  
-  // Format transaction status
-  const getStatusChip = (status) => {
-    let color = 'default';
-    let label = status || 'Unknown';
-    
-    switch (status) {
-      case 'Completed':
-        color = 'success';
-        break;
-      case 'InProgress':
-        color = 'primary';
-        label = 'In Progress';
-        break;
-      case 'Stopped':
-        color = 'warning';
-        break;
-      case 'Failed':
-        color = 'error';
-        break;
-      default:
-        color = 'default';
-    }
-    
-    return <Chip label={label} color={color} size="small" />;
-  };
-  
-  // Refresh data
-  const handleRefresh = () => {
-    fetchTransactionData();
-  };
-  
-  // Navigate back
-  const handleBack = () => {
-    navigate('/transactions');
-  };
 
-// Handle reconciliation
-  const handleReconcile = async () => {
-    if (!window.confirm('This will recalculate the transaction amount using location-based pricing. Continue?')) {
-      return;
+  const loadTransaction = useCallback(async ({ silent = false, loadStation = false } = {}) => {
+    if (silent) {
+      setRefreshing(true);
+      setRefreshError('');
+    } else {
+      setInitialLoading(true);
+      setError('');
     }
-
-    setReconciling(true);
-    setReconcileMessage(null);
 
     try {
+      const response = await transactionService.getById(id);
+      const nextTransaction = toPlain(response?.transaction);
+      if (!nextTransaction) throw new Error('Transaction not found');
+
+      setTransaction(nextTransaction);
+      if (Array.isArray(response.meterValues) && response.meterValues.length) {
+        setMeterValues(previous => mergeMeterValues(previous, response.meterValues));
+      }
+      setLastSyncedAt(new Date());
+
+      if (loadStation && nextTransaction.chargePointId) {
+        try {
+          const stationResponse = await api.get(`/stations/${encodeURIComponent(nextTransaction.chargePointId)}`);
+          setStation(stationResponse.data?.station || stationResponse.data || null);
+        } catch (stationError) {
+          // Station metadata is helpful but should never make a transaction unreadable.
+          setStation(null);
+        }
+      }
+    } catch (requestError) {
+      const message = requestError?.response?.data?.message || requestError?.message || 'Failed to load transaction';
+      if (silent) setRefreshError(message);
+      else setError(message);
+    } finally {
+      setInitialLoading(false);
+      setRefreshing(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    loadTransaction({ loadStation: true });
+  }, [loadTransaction]);
+
+  useEffect(() => {
+    if (transaction?.status !== 'InProgress') return undefined;
+    const timer = window.setInterval(() => loadTransaction({ silent: true }), 15000);
+    return () => window.clearInterval(timer);
+  }, [loadTransaction, transaction?.status]);
+
+  useEffect(() => {
+    if (transaction?.status !== 'InProgress') return undefined;
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, [transaction?.status]);
+
+  useEffect(() => {
+    if (!transaction?.transactionId || transaction.status !== 'InProgress' || typeof subscribe !== 'function') return undefined;
+    const topic = `ocpp/transactions/${transaction.transactionId}/energy`;
+    return subscribe(topic, message => {
+      const payload = toPlain(message) || {};
+      const energyDelivered = Number(payload.energyDelivered ?? payload.energy);
+      if (!Number.isFinite(energyDelivered)) return;
+      const startMeter = Number(transaction.startMeterValue) || 0;
+      const meterValue = Number(payload.meterValue);
+      const liveMeter = Number.isFinite(meterValue) ? meterValue : startMeter + Math.max(0, energyDelivered);
+      const timestamp = payload.timestamp || new Date().toISOString();
+
+      setTransaction(previous => ({
+        ...previous,
+        energyDelivered,
+        currentMeterValue: liveMeter,
+        amount: Number.isFinite(Number(payload.amount)) ? Number(payload.amount) : previous.amount,
+        currentPrice: Number.isFinite(Number(payload.price)) ? Number(payload.price) : previous.currentPrice
+      }));
+      setMeterValues(previous => [...previous, {
+        __live: true,
+        id: `live-${timestamp}-${liveMeter}`,
+        timestamp,
+        value: liveMeter,
+        unit: 'Wh',
+        measurand: 'Energy.Active.Import.Register',
+        context: 'Live update',
+        power: payload.power
+      }].slice(-300));
+      setLastLiveAt(new Date(timestamp));
+    });
+  }, [subscribe, transaction?.status, transaction?.transactionId, transaction?.startMeterValue]);
+
+  const handleReconcile = async () => {
+    if (!window.confirm('Recalculate this completed transaction using the current pricing rules?')) return;
+    setReconciling(true);
+    setReconcileMessage(null);
+    try {
       const response = await api.post(`/transactions/${id}/reconcile`);
-      setReconcileMessage({
-        type: 'success',
-        text: response.data.message || 'Transaction reconciled successfully'
-      });
-      // Refresh transaction data
-      fetchTransactionData();
-    } catch (error) {
-      setReconcileMessage({
-        type: 'error',
-        text: error.response?.data?.message || 'Failed to reconcile transaction'
-      });
+      setReconcileMessage({ type: 'success', text: response.data?.message || 'Transaction reconciled successfully.' });
+      await loadTransaction({ silent: true });
+    } catch (requestError) {
+      setReconcileMessage({ type: 'error', text: requestError?.response?.data?.message || 'Failed to reconcile transaction.' });
     } finally {
       setReconciling(false);
     }
   };
-  
-  // Process meter values for charts
-  const processChartData = (values) => {
-    if (!values || values.length === 0) {
-      setEnergyChartData({ labels: [], datasets: [] });
-      setPowerChartData({ labels: [], datasets: [] });
-      return;
-    }
-    
-    // Sort values by timestamp
-    const sortedValues = [...values].sort((a, b) => 
-      new Date(a.timestamp) - new Date(b.timestamp)
-    );
-    
-    // The API has returned both direct MeterValue rows and legacy nested OCPP
-    // samples. Normalize both forms to kWh before charting; billing/storage
-    // use Wh, but the chart labels are explicitly kWh.
-    const toKwh = (value, unit) => {
-      const numeric = Number(value);
-      if (!Number.isFinite(numeric)) return 0;
-      return String(unit || 'Wh').toLowerCase() === 'wh' ? numeric / 1000 : numeric;
-    };
-    const getEnergyKwh = value => {
-      if (value && value.value !== undefined && !Array.isArray(value.value)) {
-        if (value.measurand && value.measurand !== 'Energy.Active.Import.Register') return null;
-        return toKwh(value.value, value.unit);
-      }
-      const nested = Array.isArray(value?.value)
-        ? value.value.find(sample => sample.measurand === 'Energy.Active.Import.Register')
-        : null;
-      return nested ? toKwh(nested.value, nested.unit) : null;
-    };
 
-    // MeterValue history also contains power, SoC, and other measurands. Only
-    // energy-register samples belong on the cumulative energy/power charts;
-    // treating power rows as zero-energy readings creates false drops.
-    const energySamples = sortedValues.filter(value => getEnergyKwh(value) !== null);
-    if (energySamples.length === 0) {
-      setEnergyChartData({ labels: [], datasets: [] });
-      setPowerChartData({ labels: [], datasets: [] });
-      return;
-    }
-    const timestamps = energySamples.map(val => {
-      const date = new Date(val.timestamp);
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    });
-    const energyValues = energySamples.map(getEnergyKwh);
-    
-    // Calculate power values (rate of change of energy)
-    const powerValues = [];
-    for (let i = 1; i < energySamples.length; i++) {
-      const current = energySamples[i];
-      const previous = energySamples[i - 1];
-      
-      const currentValue = getEnergyKwh(current);
-      const previousValue = getEnergyKwh(previous);
-      
-      const timeDiff = (new Date(current.timestamp) - new Date(previous.timestamp)) / 1000; // seconds
-      
-      if (timeDiff > 0) {
-        const energyDiff = currentValue - previousValue;
-        
-        // Values are already normalized to kWh, so this gives kW.
-        const power = (energyDiff / timeDiff) * 3600;
-        
-        powerValues.push(Math.max(0, parseFloat(power.toFixed(2))));
-      } else {
-        powerValues.push(0);
-      }
-    }
-    
-    // Add 0 for the first timestamp
-    powerValues.unshift(0);
-    
-    // Update energy chart data
-    setEnergyChartData({
-      labels: timestamps,
-      datasets: [
-        {
-          label: 'Energy (kWh)',
-          data: energyValues,
-          borderColor: 'rgb(53, 162, 235)',
-          backgroundColor: 'rgba(53, 162, 235, 0.5)',
-          tension: 0.2,
-          pointRadius: 3,
-          pointHoverRadius: 5,
-          fill: true
-        },
-      ],
-    });
-    
-    // Update power chart data
-    setPowerChartData({
-      labels: timestamps,
-      datasets: [
-        {
-          label: 'Power (kW)',
-          data: powerValues,
-          borderColor: 'rgb(255, 99, 132)',
-          backgroundColor: 'rgba(255, 99, 132, 0.5)',
-          tension: 0.2,
-          pointRadius: 3,
-          pointHoverRadius: 5,
-          fill: true
-        },
-      ],
-    });
-  };
-  
-  // Fetch transaction data using transaction service
-  const fetchTransactionData = async () => {
-    setLoading(true);
-    setError(null);
-    console.log('Fetching transaction data for ID:', id);
-    
-    try {
-      // Step 1: Fetch transaction details using transactionService
-      const response = await transactionService.getById(id);
-      console.log('Transaction response:', response);
-      
-      if (response && response.transaction) {
-        const tx = response.transaction;
-        console.log('Transaction data:', tx);
-        setTransaction(tx);
-        
-        // Step 2: Fetch station info if we have a chargePointId
-        if (tx.chargePointId) {
-          try {
-            const stationResponse = await api.get(`/stations/${tx.chargePointId}`);
-            console.log('Station response:', stationResponse.data);
-            
-            if (stationResponse.data && stationResponse.data.station) {
-              setStation(stationResponse.data.station);
-            }
-          } catch (stationError) {
-            console.error('Error fetching station:', stationError);
-          }
-        }
-        
-        // Step 3: Fetch meter values
-        try {
-          console.log('Fetching meter values for transaction ID:', tx.transactionId);
-          const meterData = await transactionService.getMeterValues(tx.transactionId);
-          console.log('Meter values response:', meterData);
-          
-          if (meterData && (Array.isArray(meterData.meterValues) || Array.isArray(meterData))) {
-            // Handle different response formats
-            const values = Array.isArray(meterData.meterValues) ? meterData.meterValues : meterData;
-            console.log('Processed meter values:', values);
-            
-            if (values && values.length > 0) {
-              setMeterValues(values);
-              processChartData(values);
-            } else {
-              // Empty array - generate fallback data
-              console.log('Empty meter values array, generating fallback data');
-              const generatedValues = generateMeterValuesFromTransaction(tx);
-              setMeterValues(generatedValues);
-              processChartData(generatedValues);
-            }
-          } else {
-            console.log('No meter values found, generating fallback data');
-            // If we don't have real meter values, generate some for demo purposes
-            const generatedValues = generateMeterValuesFromTransaction(tx);
-            setMeterValues(generatedValues);
-            processChartData(generatedValues);
-          }
-        } catch (meterError) {
-          console.error('Error fetching meter values:', meterError);
-          // Generate meter values as fallback
-          const generatedValues = generateMeterValuesFromTransaction(tx);
-          setMeterValues(generatedValues);
-          processChartData(generatedValues);
-        }
-      } else {
-        console.error('Transaction not found in response:', response);
-        setError('Transaction not found');
-      }
-    } catch (error) {
-      console.error('Error fetching transaction data:', error);
-      setError('Failed to fetch transaction data');
-    } finally {
-      setLoading(false);
-    }
-  };
-  
-  // Build a minimal summary only from persisted transaction meters. Never
-  // fabricate readings: a synthetic 352 kWh curve could mislead operators
-  // about energy consumed and the amount charged.
-  const generateMeterValuesFromTransaction = (transaction) => {
-    const startMeter = Number(transaction?.startMeterValue);
-    const stopMeter = Number(transaction?.stopMeterValue);
-    const energyDelivered = Number(transaction?.energyDelivered);
-    if (!Number.isFinite(startMeter)) return [];
-
-    const endMeter = Number.isFinite(stopMeter) && stopMeter >= startMeter
-      ? stopMeter
-      : startMeter + (Number.isFinite(energyDelivered) ? Math.max(0, energyDelivered) : 0);
-    const startTime = transaction?.startTime ? new Date(transaction.startTime) : null;
-    const endTime = transaction?.stopTime ? new Date(transaction.stopTime) : new Date();
-    if (!startTime || Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) return [];
-
-    const values = [{
-      timestamp: startTime.toISOString(),
-      value: startMeter,
-      unit: 'Wh',
-      measurand: 'Energy.Active.Import.Register',
-      context: 'Transaction.Summary'
-    }];
-    if (endMeter !== startMeter) {
-      values.push({
-        timestamp: endTime.toISOString(),
-        value: endMeter,
-        unit: 'Wh',
-        measurand: 'Energy.Active.Import.Register',
-        context: 'Transaction.Summary'
-      });
-    }
+  const displayMeterValues = useMemo(() => {
+    if (meterValues.length) return meterValues;
+    const start = Number(transaction?.startMeterValue);
+    const current = Number(transaction?.currentMeterValue);
+    const delivered = Number(transaction?.energyDelivered);
+    if (!Number.isFinite(start) || !transaction?.startTime) return [];
+    const end = Number.isFinite(current) ? current : start + (Number.isFinite(delivered) ? Math.max(0, delivered) : 0);
+    const values = [{ timestamp: transaction.startTime, value: start, unit: 'Wh', measurand: 'Energy.Active.Import.Register', context: 'Session start' }];
+    if (end !== start) values.push({ timestamp: transaction.stopTime || new Date().toISOString(), value: end, unit: 'Wh', measurand: 'Energy.Active.Import.Register', context: 'Session summary' });
     return values;
-  };
-  
-  // Fetch data on component mount
-  useEffect(() => {
-    fetchTransactionData();
-    
-    // Force re-render every 5 seconds while in InProgress state
-    const interval = setInterval(() => {
-      if (transaction && transaction.status === 'InProgress') {
-        console.log('Transaction in progress, refreshing data...');
-        fetchTransactionData();
-      }
-    }, 5000);
-    
-    return () => clearInterval(interval);
-  }, [id, transaction?.status]);
-  
-  // If loading, show spinner
-  if (loading) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh' }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
-  
-  // If error, show error message
-  if (error) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <Alert severity="error">{error}</Alert>
-        <Button 
-          variant="outlined" 
-          startIcon={<BackIcon />} 
-          onClick={handleBack}
-          sx={{ mt: 2 }}
-        >
-          Back to Transactions
-        </Button>
-      </Box>
-    );
-  }
-  
-  // If no transaction, show message
-  if (!transaction) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <Alert severity="info">Transaction not found</Alert>
-        <Button 
-          variant="outlined" 
-          startIcon={<BackIcon />} 
-          onClick={handleBack}
-          sx={{ mt: 2 }}
-        >
-          Back to Transactions
-        </Button>
-      </Box>
-    );
-  }
-  
-  return (
-    <Box sx={{ p: 3 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
-        <Button 
-          variant="outlined" 
-          startIcon={<BackIcon />}
-          onClick={handleBack}
-        >
-          Back
-        </Button>
-        <Box>
-          <IconButton onClick={handleRefresh} color="primary" sx={{ mr: 1 }}>
-            <RefreshIcon />
-          </IconButton>
-          {transaction?.status === 'Completed' && (
-            <Button
-              variant="contained"
-              startIcon={<ReconcileIcon />}
-              onClick={handleReconcile}
-              disabled={reconciling}
-              color="warning"
-            >
-              {reconciling ? 'Reconciling...' : 'Reconcile'}
-            </Button>
-          )}
-        </Box>
-      </Box>
-      
-      <Typography variant="h4" component="h1" gutterBottom>
-        Transaction Details
-        {getStatusChip(transaction.status)}
-      </Typography>
+  }, [meterValues, transaction]);
 
-      {reconcileMessage && (
-        <Alert 
-          severity={reconcileMessage.type} 
-          sx={{ mb: 3 }}
-          onClose={() => setReconcileMessage(null)}
-        >
-          {reconcileMessage.text}
-        </Alert>
-      )}
-      
-      <Grid container spacing={3}>
-        <Grid item xs={12} md={6}>
-          <Card sx={{ mb: 3 }}>
-            <CardHeader title="Transaction Information" />
-            <Divider />
-            <CardContent>
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                    <StationIcon color="primary" sx={{ mr: 1 }} />
-                    <Box>
-                      <Typography variant="h6">
-                        {station?.name || transaction.chargePointId}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Charging Station
-                      </Typography>
-                    </Box>
-                  </Box>
-                </Grid>
-                
-                <Grid item xs={6}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                    <PersonIcon color="primary" sx={{ mr: 1 }} />
-                    <Box>
-                      <Typography variant="h6">
-                        {transaction.idTag || 'Anonymous'}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        User ID
-                      </Typography>
-                    </Box>
-                  </Box>
-                </Grid>
-                
-                <Grid item xs={6}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                    <ChargingIcon color="primary" sx={{ mr: 1 }} />
-                    <Box>
-                      <Typography variant="h6">
-                        {transaction.connectorId || 1}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Connector
-                      </Typography>
-                    </Box>
-                  </Box>
-                </Grid>
-                
-                <Grid item xs={6}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                    <MeterIcon color="primary" sx={{ mr: 1 }} />
-                    <Box>
-                      <Typography variant="h6">
-                        {transaction.transactionId}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Transaction ID
-                      </Typography>
-                    </Box>
-                  </Box>
-                </Grid>
-              </Grid>
+  const normalizedMeterValues = useMemo(() => flattenMeterValues(displayMeterValues), [displayMeterValues]);
+  const energyReadings = useMemo(() => normalizedMeterValues.map((row, index) => ({ row, index, wh: getEnergyWh(row) })).filter(item => item.wh !== null), [normalizedMeterValues]);
+
+  const chartData = useMemo(() => {
+    if (!energyReadings.length) return null;
+    const labels = energyReadings.map(({ row }) => safeDate(row.timestamp, 'HH:mm:ss'));
+    const powerValues = energyReadings.map(({ row, wh }, readingIndex) => {
+      const explicitPower = Number(row.power ?? row.calculatedPower);
+      if (Number.isFinite(explicitPower)) return String(row.powerUnit || '').toLowerCase() === 'kw' ? explicitPower : explicitPower / 1000;
+      if (readingIndex === 0) return 0;
+      const previous = energyReadings[readingIndex - 1];
+      const seconds = (new Date(row.timestamp) - new Date(previous.row.timestamp)) / 1000;
+      return seconds > 0 ? Math.max(0, ((wh - previous.wh) / seconds) * 3.6) : 0;
+    });
+    const isEnergy = chartMode === 'energy';
+    return {
+      labels,
+      datasets: [{
+        label: isEnergy ? 'Energy delivered (kWh)' : 'Power (kW)',
+        data: isEnergy ? energyReadings.map(item => item.wh / 1000) : powerValues,
+        borderColor: isEnergy ? '#2563EB' : '#0E9F6E',
+        backgroundColor: isEnergy ? 'rgba(37,99,235,.12)' : 'rgba(14,159,110,.12)',
+        fill: true,
+        tension: .35,
+        borderWidth: 3,
+        pointRadius: energyReadings.length > 40 ? 0 : 3,
+        pointHoverRadius: 5
+      }]
+    };
+  }, [chartMode, energyReadings]);
+
+  const chartOptions = useMemo(() => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: context => `${Number(context.parsed.y || 0).toFixed(2)} ${chartMode === 'energy' ? 'kWh' : 'kW'}` } }
+    },
+    scales: {
+      y: { beginAtZero: true, grid: { color: 'rgba(16,24,40,.07)' }, title: { display: true, text: chartMode === 'energy' ? 'kWh' : 'kW' } },
+      x: { grid: { display: false }, ticks: { maxTicksLimit: compact ? 5 : 10 } }
+    }
+  }), [chartMode, compact]);
+
+  const active = transaction?.status === 'InProgress';
+  const status = statusMeta(transaction?.status);
+  const stationName = station?.name || transaction?.ChargingStation?.name || transaction?.charging_station?.name || transaction?.chargePointId || 'Unknown station';
+  const energyKwh = Math.max(0, Number(transaction?.energyDelivered) || 0) / 1000;
+  const currentMeter = Number(transaction?.currentMeterValue);
+  const sellingPricePerKwh = Number(transaction?.sellingPricePerWh) * 1000;
+  const powerKw = useMemo(() => {
+    const latest = energyReadings[energyReadings.length - 1]?.row;
+    const value = Number(latest?.power ?? latest?.calculatedPower);
+    if (!Number.isFinite(value)) return null;
+    return String(latest?.powerUnit || '').toLowerCase() === 'kw' ? value : value / 1000;
+  }, [energyReadings]);
+  const updatedAt = lastLiveAt || lastSyncedAt;
+
+  if (initialLoading) {
+    return <Box sx={{ minHeight: '55vh', display: 'grid', placeItems: 'center' }}><Stack alignItems="center" spacing={1.5}><CircularProgress size={32} /><Typography color="text.secondary">Loading transaction details…</Typography></Stack></Box>;
+  }
+
+  if (error || !transaction) {
+    return <Stack spacing={2}><PageHeader eyebrow="Charging session" title="Transaction unavailable" description={error || 'This transaction could not be found.'} actions={<Button variant="outlined" startIcon={<ArrowBackRounded />} onClick={() => navigate('/transactions')}>Back to transactions</Button>} /><Alert severity="error">{error || 'Transaction not found.'}</Alert></Stack>;
+  }
+
+  return (
+    <Stack spacing={{ xs: 2, md: 3 }}>
+      <PageHeader
+        eyebrow="Charging session"
+        title={`Transaction #${transaction.transactionId || id}`}
+        description={`${stationName} · Connector ${transaction.connectorId || 1} · ${transaction.idTag || 'Anonymous session'}`}
+        live={active && mqttConnected}
+        updatedAt={updatedAt}
+        actions={(
+          <>
+            <Button variant="outlined" startIcon={<ArrowBackRounded />} onClick={() => navigate('/transactions')}>Back</Button>
+            <Button variant="outlined" startIcon={refreshing ? <CircularProgress size={16} /> : <RefreshRounded />} onClick={() => loadTransaction({ silent: true })} disabled={refreshing}>{refreshing ? 'Updating' : 'Refresh'}</Button>
+            {transaction.status === 'Completed' && <Button variant="contained" color="warning" startIcon={reconciling ? <CircularProgress size={16} color="inherit" /> : <SyncRounded />} onClick={handleReconcile} disabled={reconciling}>{reconciling ? 'Reconciling' : 'Reconcile'}</Button>}
+          </>
+        )}
+      />
+
+      {refreshError && <Alert severity="warning" onClose={() => setRefreshError('')}>Live refresh paused briefly: {refreshError}</Alert>}
+      {reconcileMessage && <Alert severity={reconcileMessage.type} onClose={() => setReconcileMessage(null)}>{reconcileMessage.text}</Alert>}
+
+      <Card sx={{ overflow: 'hidden', border: 0, color: 'common.white', background: active ? 'linear-gradient(135deg, #0B1F3F 0%, #1D4ED8 62%, #0E9F6E 145%)' : 'linear-gradient(135deg, #14213D 0%, #344054 100%)', position: 'relative' }}>
+        <Box sx={{ position: 'absolute', width: 260, height: 260, borderRadius: '50%', right: -100, top: -155, bgcolor: 'rgba(255,255,255,.08)' }} />
+        <CardContent sx={{ p: { xs: 2.25, md: 3 }, position: 'relative' }}>
+          <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" gap={2.5}>
+            <Box>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Chip size="small" icon={status.icon} label={status.label} color={status.color} sx={{ bgcolor: status.color === 'default' ? 'rgba(255,255,255,.14)' : undefined, color: status.color === 'default' ? 'common.white' : undefined }} />
+                <Chip size="small" variant="outlined" label={active ? (mqttConnected ? 'Live stream connected' : 'Polling fallback') : 'Final reading'} sx={{ color: 'inherit', borderColor: 'rgba(255,255,255,.35)' }} />
+              </Stack>
+              <Typography variant="h5" fontWeight={800} sx={{ mt: 2 }}>Charging session overview</Typography>
+              <Typography variant="body2" sx={{ mt: .6, color: 'rgba(255,255,255,.72)', maxWidth: 620 }}>{active ? 'Energy, amount and meter readings update in place while the charger is running.' : 'This session is no longer charging. The values below reflect the recorded transaction.'}</Typography>
+            </Box>
+            <Stack direction="row" spacing={{ xs: 2.5, md: 4 }} alignItems="flex-end" sx={{ flexShrink: 0 }}>
+              <Box><Typography variant="caption" sx={{ color: 'rgba(255,255,255,.64)' }}>Energy</Typography><Typography variant="h4" fontWeight={850}>{energyKwh.toFixed(2)} <Typography component="span" variant="body2" sx={{ color: 'rgba(255,255,255,.72)' }}>kWh</Typography></Typography></Box>
+              <Box><Typography variant="caption" sx={{ color: 'rgba(255,255,255,.64)' }}>Recorded amount</Typography><Typography variant="h4" fontWeight={850}>{formatMoney(transaction.amount)}</Typography></Box>
+            </Stack>
+          </Stack>
+          {active && <LinearProgress sx={{ mt: 2.5, bgcolor: 'rgba(255,255,255,.15)', '& .MuiLinearProgress-bar': { bgcolor: '#6EE7B7' } }} />}
+        </CardContent>
+      </Card>
+
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' }, gap: { xs: 1.25, md: 2 } }}>
+        <Metric icon={<BoltRounded />} label="Energy delivered" value={`${energyKwh.toFixed(2)} kWh`} caption={active ? 'Live cumulative reading' : 'Final recorded energy'} color="primary" />
+        <Metric icon={<PaymentsRounded />} label="Amount" value={formatMoney(transaction.amount)} caption={transaction.billedAt ? `Billed ${safeDate(transaction.billedAt, 'd MMM, HH:mm')}` : 'Billing record'} color="success" />
+        <Metric icon={<SpeedRounded />} label="Current power" value={powerKw === null ? '—' : `${powerKw.toFixed(2)} kW`} caption={active ? 'Latest meter sample' : 'Peak/sample data'} color="warning" />
+        <Metric icon={<TimerRounded />} label="Duration" value={safeDuration(transaction, now)} caption={active ? 'Running now' : 'Session duration'} color="secondary" />
+      </Box>
+
+      <Grid container spacing={{ xs: 2, md: 2.5 }}>
+        <Grid item xs={12} md={7}>
+          <Card variant="outlined" sx={{ height: '100%', borderRadius: 3.5 }}>
+            <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+              <Stack direction="row" spacing={1.25} alignItems="center" sx={{ mb: 1 }}><ReceiptLongRounded color="primary" /><Box><Typography variant="h6" fontWeight={800}>Session details</Typography><Typography variant="caption" color="text.secondary">Identity, station and meter context</Typography></Box></Stack>
+              <Divider />
+              <DetailRow label="Station" value={stationName} />
+              <DetailRow label="Charge point" value={transaction.chargePointId} mono />
+              <DetailRow label="Connector" value={`Connector ${transaction.connectorId || 1}`} />
+              <DetailRow label="Driver tag" value={transaction.idTag || 'Anonymous'} mono />
+              <DetailRow label="Started" value={safeDate(transaction.startTime)} />
+              <DetailRow label="Ended" value={transaction.stopTime ? safeDate(transaction.stopTime) : active ? 'Still charging' : 'Not recorded'} />
+              <DetailRow label="Start meter" value={Number.isFinite(Number(transaction.startMeterValue)) ? `${Number(transaction.startMeterValue).toLocaleString()} Wh` : '—'} />
+              <DetailRow label="Current / stop meter" value={Number.isFinite(Number(transaction.stopMeterValue || currentMeter)) ? `${Number(transaction.stopMeterValue || currentMeter).toLocaleString()} Wh` : '—'} />
             </CardContent>
           </Card>
         </Grid>
-        
-        <Grid item xs={12} md={6}>
-          <Card>
-            <CardHeader title="Charging Session" />
-            <Divider />
-            <CardContent>
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                    <TimeIcon color="primary" sx={{ mr: 1 }} />
-                    <Box>
-                      <Typography variant="h6">
-                        {transaction.startTime 
-                          ? format(new Date(transaction.startTime), 'dd MMM yyyy HH:mm:ss')
-                          : 'Unknown'}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Start Time
-                      </Typography>
-                    </Box>
-                  </Box>
-                </Grid>
-                
-                <Grid item xs={6}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                    <TimeIcon color="primary" sx={{ mr: 1 }} />
-                    <Box>
-                      <Typography variant="h6">
-                        {transaction.stopTime 
-                          ? format(new Date(transaction.stopTime), 'dd MMM yyyy HH:mm:ss')
-                          : transaction.status === 'InProgress' 
-                            ? 'In Progress' 
-                            : 'Unknown'}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        End Time
-                      </Typography>
-                    </Box>
-                  </Box>
-                </Grid>
-                
-                <Grid item xs={6}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                      <EnergyIcon color="primary" sx={{ mr: 1 }} />
-                    <Box>
-                      <Typography variant="h6">
-                        {(Number(transaction.energyDelivered || 0) / 1000).toFixed(2)} kWh
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Energy Delivered
-                      </Typography>
-                    </Box>
-                  </Box>
-                </Grid>
-                
-                <Grid item xs={6}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                    <CostIcon color="primary" sx={{ mr: 1 }} />
-                    <Box>
-                      <Typography variant="h6">
-                        {transaction.amount 
-                          ? formatCurrency(transaction.amount)
-                          : formatCurrency(0)}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Amount
-                      </Typography>
-                    </Box>
-                  </Box>
-                </Grid>
-                
-                {transaction?.status === 'InProgress' && (
-                  <Grid item xs={12}>
-                    <Alert severity="info">
-                      This transaction is currently in progress. The values shown are the latest available and will be updated when the transaction is completed.
-                    </Alert>
-                  </Grid>
-                )}
-                
-                {transaction?.status === 'Stopped' && (
-                  <Grid item xs={12}>
-                    <Alert severity="warning">
-                      This transaction was stopped before completion. The final values may be lower than expected.
-                    </Alert>
-                  </Grid>
-                )}
-              </Grid>
+        <Grid item xs={12} md={5}>
+          <Card variant="outlined" sx={{ height: '100%', borderRadius: 3.5 }}>
+            <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+              <Stack direction="row" spacing={1.25} alignItems="center" sx={{ mb: 1 }}><WalletRounded color="success" /><Box><Typography variant="h6" fontWeight={800}>Billing & audit</Typography><Typography variant="caption" color="text.secondary">Recorded financial values</Typography></Box></Stack>
+              <Divider />
+              <DetailRow label="Session amount" value={formatMoney(transaction.amount)} emphasis />
+              {transaction.grossAmount !== undefined && <DetailRow label="Gross amount" value={formatMoney(transaction.grossAmount)} />}
+              {transaction.partnerEarning !== undefined && <DetailRow label="Partner earning" value={formatMoney(transaction.partnerEarning)} />}
+              {transaction.companyEarning !== undefined && <DetailRow label="Company allocation" value={formatMoney(transaction.companyEarning)} />}
+              <DetailRow label="Tariff snapshot" value={Number.isFinite(sellingPricePerKwh) && sellingPricePerKwh > 0 ? `${formatMoney(sellingPricePerKwh)} / kWh` : 'Resolved from session pricing'} />
+              <DetailRow label="Billing status" value={transaction.billedAt ? 'Billed' : active ? 'Pending until completion' : 'Awaiting reconciliation'} />
+              {transaction.reason && <DetailRow label="Stop reason" value={transaction.reason} />}
+              <Button fullWidth variant="outlined" sx={{ mt: 2 }} startIcon={<EvStationRounded />} endIcon={<OpenInNewRounded />} onClick={() => transaction.chargePointId && navigate(`/stations/${transaction.chargePointId}`)} disabled={!transaction.chargePointId}>Open station</Button>
             </CardContent>
           </Card>
         </Grid>
       </Grid>
-      
-      {/* Tabs for Meter Values and Charts */}
-      <Paper sx={{ borderRadius: 2, mt: 3 }}>
-        <Tabs
-          value={tabValue}
-          onChange={handleTabChange}
-          indicatorColor="primary"
-          textColor="primary"
-          variant="fullWidth"
-        >
-          <Tab label="Energy Chart" />
-          <Tab label="Power Chart" />
-          <Tab label="Meter Values" />
-        </Tabs>
-        
-        {/* Energy Chart Tab */}
-        <TabPanel value={tabValue} index={0}>
-          {meterValues.length === 0 ? (
-            <Typography variant="body1" color="text.secondary" align="center">
-              No energy data available for this transaction
-            </Typography>
-          ) : (
-            <Box sx={{ height: 400 }}>
-              <Line data={energyChartData} options={chartOptions} />
-            </Box>
-          )}
-        </TabPanel>
-        
-        {/* Power Chart Tab */}
-        <TabPanel value={tabValue} index={1}>
-          {meterValues.length === 0 ? (
-            <Typography variant="body1" color="text.secondary" align="center">
-              No power data available for this transaction
-            </Typography>
-          ) : (
-            <Box sx={{ height: 400 }}>
-              <Line data={powerChartData} options={chartOptions} />
-            </Box>
-          )}
-        </TabPanel>
-        
-        {/* Meter Values Tab */}
-        <TabPanel value={tabValue} index={2}>
-          {meterValues.length === 0 ? (
-            <Typography variant="body1" color="text.secondary" align="center">
-              No meter values available for this transaction
-            </Typography>
-          ) : (
-            <TableContainer component={Paper} sx={{ mt: 2, mb: 2 }}>
-              <Table aria-label="meter values table">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Timestamp</TableCell>
-                    <TableCell>Value</TableCell>
-                    <TableCell>Unit</TableCell>
-                    <TableCell>Measurand</TableCell>
-                    <TableCell>Context</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {meterValues.map((meterValue, index) => {
-                    // Check if we have the new structure with direct value property or old structure with nested values
-                    const hasDirectValue = typeof meterValue.value === 'number';
-                    
-                    if (hasDirectValue) {
-                      // New structure with direct value property
-                      return (
-                        <TableRow key={index} hover>
-                          <TableCell>
-                            {format(new Date(meterValue.timestamp), 'dd MMM yyyy HH:mm:ss')}
-                          </TableCell>
-                          <TableCell>
-                            <Typography variant="body2" fontWeight="medium">
-                              {parseFloat(meterValue.value).toFixed(2)}
-                            </Typography>
-                          </TableCell>
-                          <TableCell>{meterValue.unit || 'Wh'}</TableCell>
-                          <TableCell>{meterValue.measurand || 'Energy.Active.Import.Register'}</TableCell>
-                          <TableCell>{meterValue.context || 'Sample.Periodic'}</TableCell>
-                        </TableRow>
-                      );
-                    } else {
-                      // Old structure with nested values array
-                      return meterValue.value.map((value, valueIndex) => (
-                        <TableRow key={`${index}-${valueIndex}`} hover>
-                          <TableCell>
-                            {format(new Date(meterValue.timestamp), 'dd MMM yyyy HH:mm:ss')}
-                          </TableCell>
-                          <TableCell>
-                            <Typography variant="body2" fontWeight="medium">
-                              {parseFloat(value.value).toFixed(2)}
-                            </Typography>
-                          </TableCell>
-                          <TableCell>{value.unit || 'Wh'}</TableCell>
-                          <TableCell>{value.measurand || 'Energy.Active.Import.Register'}</TableCell>
-                          <TableCell>{value.context || 'Sample.Periodic'}</TableCell>
-                        </TableRow>
-                      ));
-                    }
-                  })}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          )}
-        </TabPanel>
-      </Paper>
-    </Box>
+
+      <Card variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} gap={1} sx={{ px: { xs: 1.5, md: 2 }, pt: 1 }}>
+          <Tabs value={tab} onChange={(_, value) => { setTab(value); if (value === 0) setChartMode('energy'); if (value === 1) setChartMode('power'); }} variant={compact ? 'scrollable' : 'standard'} scrollButtons={compact ? 'auto' : false}>
+            <Tab label="Energy trend" />
+            <Tab label="Power trend" />
+            <Tab label="Meter readings" />
+          </Tabs>
+          {active && <Stack direction="row" spacing={.75} alignItems="center" sx={{ px: 1, pb: { xs: 1, sm: 0 } }}><Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: mqttConnected ? 'success.main' : 'warning.main' }} /><Typography variant="caption" color="text.secondary">{lastLiveAt ? `Live ${safeDate(lastLiveAt, 'HH:mm:ss')}` : mqttConnected ? 'Waiting for meter updates' : 'Polling every 15s'}</Typography></Stack>}
+        </Stack>
+        <Divider />
+        {tab < 2 ? (
+          <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
+              <Box><Typography fontWeight={800}>{tab === 0 ? 'Cumulative energy' : 'Estimated charging power'}</Typography><Typography variant="caption" color="text.secondary">{tab === 0 ? 'Wh readings converted to kWh' : 'Derived from consecutive meter readings when power is unavailable'}</Typography></Box>
+              <Stack direction="row" spacing={.75}><IconButton size="small" onClick={() => { setChartMode('energy'); setTab(0); }} color={chartMode === 'energy' ? 'primary' : 'default'}><BoltRounded fontSize="small" /></IconButton><IconButton size="small" onClick={() => { setChartMode('power'); setTab(1); }} color={chartMode === 'power' ? 'primary' : 'default'}><TrendingUpRounded fontSize="small" /></IconButton></Stack>
+            </Stack>
+            {chartData ? <Box sx={{ height: { xs: 280, md: 340 } }}><Line data={chartData} options={chartOptions} /></Box> : <EmptyChart label="No meter trend yet" />}
+          </CardContent>
+        ) : (
+          <TableContainer sx={{ maxHeight: 440, border: 0, borderRadius: 0 }}>
+            {normalizedMeterValues.length ? <Table stickyHeader size="small"><TableHead><TableRow><TableCell>Timestamp</TableCell><TableCell>Meter</TableCell><TableCell>Energy</TableCell><TableCell>Power</TableCell><TableCell>Context</TableCell></TableRow></TableHead><TableBody>{normalizedMeterValues.slice().reverse().map((row, index) => { const energy = getEnergyWh(row); const power = Number(row.power ?? row.calculatedPower); return <TableRow key={row.id || `${row.timestamp}-${index}`} hover><TableCell sx={{ whiteSpace: 'nowrap' }}>{safeDate(row.timestamp, 'd MMM, HH:mm:ss')}</TableCell><TableCell sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{Number(row.value).toLocaleString()} {row.unit || 'Wh'}</TableCell><TableCell>{energy === null ? '—' : `${(energy / 1000).toFixed(3)} kWh`}</TableCell><TableCell>{Number.isFinite(power) ? `${(String(row.powerUnit || '').toLowerCase() === 'kw' ? power : power / 1000).toFixed(2)} kW` : '—'}</TableCell><TableCell><Chip size="small" variant={row.__live ? 'filled' : 'outlined'} color={row.__live ? 'success' : 'default'} label={row.context || 'Sample.Periodic'} /></TableCell></TableRow>; })}</TableBody></Table> : <EmptyChart label="No meter readings available" />}
+          </TableContainer>
+        )}
+      </Card>
+
+      <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} spacing={1} sx={{ px: .5 }}>
+        <Stack direction="row" spacing={1} alignItems="center"><CableRounded fontSize="small" color="action" /><Typography variant="caption" color="text.secondary">All energy values are displayed from charger meter readings in Wh/kWh.</Typography></Stack>
+        <Typography variant="caption" color="text.disabled">{lastSyncedAt ? `Synced ${safeDate(lastSyncedAt, 'HH:mm:ss')} WAT` : 'Not synced yet'}</Typography>
+      </Stack>
+    </Stack>
   );
 }
 
