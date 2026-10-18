@@ -561,16 +561,17 @@ router.get('/stats/usage', authenticate, async (req, res) => {
         startDate.setMonth(now.getMonth() - 1);
     }
     
-    // Get transaction count per station with error handling
+    // Get transaction count per station with error handling. Keep the scoped
+    // predicate outside the query try block so the fallback can reuse it.
+    const usageWhere = await scopedTransactionWhere(req.user, { startTime: { [Op.gte]: startDate } });
     let stationUsage = [];
     try {
-      const usageWhere = await scopedTransactionWhere(req.user, { startTime: { [Op.gte]: startDate } });
       stationUsage = await Transaction.findAll({
         where: usageWhere,
         attributes: [
           'chargePointId',
-          [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
-          [sequelize.fn('SUM', sequelize.col('energyDelivered')), 'totalEnergy']
+          [sequelize.literal('COUNT("transaction"."id")'), 'count'],
+          [sequelize.literal('SUM("transaction"."energyDelivered")'), 'totalEnergy']
         ],
         include: [
           {
@@ -592,7 +593,7 @@ router.get('/stats/usage', authenticate, async (req, res) => {
           where: usageWhere,
           attributes: [
             'chargePointId',
-            [sequelize.fn('COUNT', sequelize.col('id')), 'count']
+            [sequelize.literal('COUNT("transaction"."id")'), 'count']
           ],
           group: ['chargePointId'],
           order: [[sequelize.literal('count'), 'DESC']]
