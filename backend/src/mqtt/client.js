@@ -172,5 +172,11 @@ module.exports = {
   connect,
   subscribe,
   publish,
-  disconnect
+  disconnect,
+  // Expose the live connection state for health checks and diagnostics.
+  // The MQTT client reconnects internally, so this must be read dynamically
+  // rather than captured when the module is first loaded.
+  get connected() {
+    return Boolean(client && client.connected)
+  }
 };
