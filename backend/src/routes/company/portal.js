@@ -2,7 +2,7 @@ const express = require('express');
 const { Op } = require('sequelize');
 const {
   SubscriptionCompany, CompanyUser, CompanyWallet, CompanyWalletTransaction, CompanyFundingRule,
-  MobileUser, Wallet, AuthorizedTag, PaymentSettings, Location, ChargingStation, Connector, Transaction, sequelize
+  MobileUser, Wallet, PaymentTransaction, AuthorizedTag, PaymentSettings, Location, ChargingStation, Connector, Transaction, sequelize
 } = require('../../models');
 const { companyAuthenticate, companyAuthorize } = require('../../middleware/companyAuth');
 const { getPartnerDateRange } = require('../../utils/partnerDateRange');
