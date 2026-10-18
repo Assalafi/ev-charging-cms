@@ -96,9 +96,103 @@ router.get('/users', async (req, res) => {
     const { page, limit, offset } = parsePage(req.query); const where = { companyId: req.companyId };
     if (req.query.status && req.query.status !== 'all') where.status = req.query.status;
     if (req.query.search) { const search = `%${String(req.query.search).trim()}%`; where[Op.or] = [{ name: { [Op.iLike]: search } }, { email: { [Op.iLike]: search } }, { phone: { [Op.iLike]: search } }, { tagId: { [Op.iLike]: search } }]; }
-    const result = await MobileUser.findAndCountAll({ where, attributes: { exclude: ['password'] }, include: [{ model: Wallet, as: 'wallet', attributes: ['id', 'balance', 'currency', 'isActive'], required: false }], order: [['name', 'ASC']], limit, offset, distinct: true });
-    res.json({ success: true, users: result.rows, pagination: { page, limit, total: result.count, pages: Math.ceil(result.count / limit) } });
+    const [result, statusRows] = await Promise.all([
+      MobileUser.findAndCountAll({ where, attributes: { exclude: ['password'] }, include: [{ model: Wallet, as: 'wallet', attributes: ['id', 'balance', 'currency', 'isActive'], required: false }], order: [['name', 'ASC']], limit, offset, distinct: true }),
+      MobileUser.findAll({ where: { companyId: req.companyId }, attributes: ['status', [sequelize.fn('COUNT', sequelize.col('id')), 'count']], group: ['status'], raw: true })
+    ]);
+    const stats = statusRows.reduce((summary, row) => {
+      const count = Number(row.count) || 0;
+      summary.total += count;
+      if (row.status === 'active') summary.active = count;
+      if (row.status === 'suspended') summary.suspended = count;
+      if (row.status === 'deleted') summary.deleted = count;
+      return summary;
+    }, { total: 0, active: 0, suspended: 0, deleted: 0 });
+    res.json({ success: true, users: result.rows, stats, pagination: { page, limit, total: result.count, pages: Math.ceil(result.count / limit) } });
   } catch (error) { res.status(500).json({ success: false, message: 'Failed to load company users' }); }
+});
+
+/**
+ * Driver activity is deliberately scoped through the authenticated company.
+ * Each activity stream has its own pagination so a busy driver does not make
+ * the users page download an unbounded transaction history.
+ */
+router.get('/users/:userId/activity', async (req, res) => {
+  try {
+    const user = await MobileUser.findOne({
+      where: { id: req.params.userId, companyId: req.companyId },
+      attributes: { exclude: ['password'] },
+      include: [{ model: Wallet, as: 'wallet', attributes: ['id', 'balance', 'currency', 'isActive'], required: false }]
+    });
+    if (!user) return res.status(404).json({ success: false, message: 'Company mobile user not found' });
+
+    const section = ['charging', 'funding', 'wallet'].includes(String(req.query.section))
+      ? String(req.query.section)
+      : 'all';
+    const { page, limit, offset } = parsePage(req.query);
+    // Include manually stopped sessions as well: they are billable records and
+    // should remain part of the driver's lifetime energy and spend totals.
+    const billableStatuses = { [Op.in]: ['Completed', 'Stopped', 'InProgress'] };
+    const transactionWhere = { idTag: user.tagId };
+    const fundingWhere = { companyId: req.companyId, beneficiaryUserId: user.id, status: 'SUCCESS' };
+    const walletWhere = { userId: user.id };
+
+    const pageResult = async kind => {
+      if (kind === 'charging') {
+        const result = await Transaction.findAndCountAll({
+          where: transactionWhere,
+          // Transaction history is keyed by chargePointId. Resolve stations
+          // separately instead of relying on the legacy chargingStationId
+          // association, which is not present in every production schema.
+          include: [{ model: Location, as: 'location', attributes: ['id', 'name', 'city', 'state'], required: false }],
+          order: [['startTime', 'DESC']], limit, offset, distinct: true
+        });
+        const ids = [...new Set(result.rows.map(row => row.chargePointId).filter(Boolean))];
+        const stations = ids.length ? await ChargingStation.findAll({ where: { chargePointId: { [Op.in]: ids } }, attributes: ['chargePointId', 'name', 'status'] }) : [];
+        const stationById = new Map(stations.map(station => [station.chargePointId, station.toJSON()]));
+        return { ...result, rows: result.rows.map(row => ({ ...row.toJSON(), charging_station: stationById.get(row.chargePointId) || null })) };
+      }
+      if (kind === 'funding') {
+        return CompanyWalletTransaction.findAndCountAll({ where: fundingWhere, order: [['createdAt', 'DESC']], limit, offset });
+      }
+      return PaymentTransaction.findAndCountAll({ where: walletWhere, order: [['createdAt', 'DESC']], limit, offset });
+    };
+
+    const [sessions, energyWh, chargingValue, activeSessions, companyFunded, fundingCount, walletCredits, walletDebits] = await Promise.all([
+      Transaction.count({ where: transactionWhere }),
+      Transaction.sum('energyDelivered', { where: { ...transactionWhere, status: billableStatuses } }),
+      Transaction.sum('amount', { where: { ...transactionWhere, status: billableStatuses } }),
+      Transaction.count({ where: { ...transactionWhere, status: 'InProgress' } }),
+      CompanyWalletTransaction.sum('amount', { where: { ...fundingWhere, type: 'DEBIT' } }),
+      CompanyWalletTransaction.count({ where: { ...fundingWhere, type: 'DEBIT' } }),
+      PaymentTransaction.sum('amount', { where: { ...walletWhere, type: 'CREDIT', status: 'SUCCESS' } }),
+      PaymentTransaction.sum('amount', { where: { ...walletWhere, type: 'DEBIT', status: 'SUCCESS' } })
+    ]);
+
+    const summary = {
+      sessions,
+      activeSessions,
+      energyWh: Number(energyWh) || 0,
+      chargingValue: Number(chargingValue) || 0,
+      companyFunded: Number(companyFunded) || 0,
+      fundingCount,
+      walletCredits: Number(walletCredits) || 0,
+      walletDebits: Number(walletDebits) || 0
+    };
+    const baseResponse = { success: true, user, summary, generatedAt: new Date().toISOString() };
+
+    if (section === 'all') {
+      const [charging, funding, wallet] = await Promise.all([pageResult('charging'), pageResult('funding'), pageResult('wallet')]);
+      const serialize = result => ({ rows: result.rows, pagination: { page: 1, limit, total: result.count, pages: Math.ceil(result.count / limit) } });
+      return res.json({ ...baseResponse, activities: { charging: serialize(charging), funding: serialize(funding), wallet: serialize(wallet) } });
+    }
+
+    const result = await pageResult(section);
+    res.json({ ...baseResponse, activities: { [section]: { rows: result.rows, pagination: { page, limit, total: result.count, pages: Math.ceil(result.count / limit) } } } });
+  } catch (error) {
+    logger.error('Company driver activity error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load driver activity' });
+  }
 });
 
 router.post('/users', ...companyAuthorize(['owner', 'manager']), async (req, res) => {

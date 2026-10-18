@@ -59,12 +59,23 @@ router.get('/summary', authenticate, requirePermission('dashboard.view'), async 
       },
       type: sequelize.QueryTypes.SELECT
     });
-    const [totalClients, activeClients] = await Promise.all([
+    const [totalClients, activeClients, companyDebtRows] = await Promise.all([
       MobileUser.count({ where: { status: { [Op.ne]: 'deleted' } } }),
-      MobileUser.count({ where: { status: 'active' } })
+      MobileUser.count({ where: { status: 'active' } }),
+      sequelize.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE COALESCE(wallet.balance, 0) < 0) AS owing_companies,
+          COALESCE(SUM(GREATEST(-COALESCE(wallet.balance, 0), 0)), 0) AS outstanding,
+          COUNT(*) FILTER (WHERE company."debtEnabled" = TRUE) AS debt_enabled_companies
+        FROM subscription_companies company
+        LEFT JOIN company_wallets wallet ON wallet."companyId" = company.id
+        WHERE company.status <> 'inactive'
+      `, { type: sequelize.QueryTypes.SELECT })
     ]);
+    const companyDebt = companyDebtRows[0] || {};
 
     const number = key => Number(summary?.[key]) || 0;
+    const numeric = value => Number(value) || 0;
     res.json({
       success: true,
       summary: {
@@ -96,6 +107,11 @@ router.get('/summary', authenticate, requirePermission('dashboard.view'), async 
         clients: {
           total: totalClients,
           active: activeClients
+        },
+        companyDebt: {
+          outstanding: numeric(companyDebt.outstanding),
+          companies: numeric(companyDebt.owing_companies),
+          enabled: numeric(companyDebt.debt_enabled_companies)
         }
       }
     });

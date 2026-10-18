@@ -19,6 +19,14 @@ const pricingValidationMiddleware = require('./middleware/pricingValidationMiddl
 const app = express();
 const server = http.createServer(app);
 
+// Nginx terminates TLS and forwards the original client address. Trust the
+// single proxy hop so authentication rate limits are applied per client,
+// rather than placing every user behind the server's proxy address.
+const configuredProxyHops = process.env.TRUST_PROXY === 'false'
+  ? false
+  : Number.parseInt(process.env.TRUST_PROXY || '1', 10);
+app.set('trust proxy', configuredProxyHops === false || Number.isFinite(configuredProxyHops) ? configuredProxyHops : 1);
+
 // ======================
 // Security Middleware
 // ======================
@@ -130,22 +138,27 @@ app.use(apiPrefix, routes);
 // ======================
 // Health Check
 // ======================
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  let databaseStatus = 'disconnected';
+  try {
+    await sequelize.authenticate();
+    databaseStatus = 'connected';
+  } catch (error) {
+    logger.warn(`Health check database probe failed: ${error.message}`);
+  }
+
+  const ocppInitialized = typeof ocppServer._isInitialized === 'function'
+    ? ocppServer._isInitialized()
+    : Boolean(ocppServer.initialized);
   const healthcheck = {
     uptime: process.uptime(),
-    message: 'OK',
+    message: databaseStatus === 'connected' ? 'OK' : 'DEGRADED',
     timestamp: Date.now(),
-    database: {
-      status: sequelize.authenticate() ? 'connected' : 'disconnected'
-    },
-    mqtt: {
-      status: mqttClient.connected ? 'connected' : 'disconnected'
-    },
-    ocpp: {
-      status: ocppServer.initialized ? 'initialized' : 'not initialized'
-    }
+    database: { status: databaseStatus },
+    mqtt: { status: mqttClient.connected ? 'connected' : 'disconnected' },
+    ocpp: { status: ocppInitialized ? 'initialized' : 'not initialized' }
   };
-  res.status(200).json(healthcheck);
+  res.status(databaseStatus === 'connected' ? 200 : 503).json(healthcheck);
 });
 
 // ======================
@@ -223,8 +236,9 @@ async function startServer() {
     initializeMQTT();
 
     // Reconcile any unbilled charging transactions from before crash/restart
-    const { billUnbilledTransactions } = require('./services/billingService');
-    billUnbilledTransactions().catch(err => logger.error('Billing reconciliation startup error:', err));
+    const billingService = require('./services/billingService');
+    billingService.billUnbilledTransactions().catch(err => logger.error('Billing reconciliation startup error:', err));
+    billingService.startBillingReconciliation();
 
     // Start HTTP server
     server.listen(process.env.PORT, process.env.HOST, () => {
@@ -237,6 +251,12 @@ async function startServer() {
       path: process.env.OCPP_SERVER_PATH,
       supportedProtocols: process.env.OCPP_SUPPORTED_VERSIONS?.split(',')
     });
+
+    // Recover active sessions that were left behind by a socket loss or
+    // backend restart. This worker is database-backed, not timer-only.
+    const offlineRecovery = require('./services/offlineTransactionRecovery');
+    offlineRecovery.configure({ connectionChecker: ocppServer.isConnected });
+    offlineRecovery.start();
 
     wsServer.listen(process.env.OCPP_SERVER_PORT, process.env.OCPP_SERVER_HOST, () => {
       logger.info(`OCPP WebSocket server running on ws://${process.env.OCPP_SERVER_HOST}:${process.env.OCPP_SERVER_PORT}${process.env.OCPP_SERVER_PATH}`);

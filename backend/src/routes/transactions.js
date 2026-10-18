@@ -1,10 +1,12 @@
 const express = require('express');
-const { Transaction, ChargingStation, MeterValue, sequelize, Location, Wallet, MobileUser, PaymentTransaction } = require('../models');
+const { Transaction, ChargingStation, MeterValue, sequelize, Wallet, MobileUser, PaymentTransaction } = require('../models');
 const { Op } = require('sequelize');
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const logger = require('../utils/logger');
 const { completeTransaction } = require('../services/completeTransactionService');
+const { getChargingPricing } = require('../services/chargingPricingService');
+const { calculatePartnerRevenue } = require('../services/partnerRevenueService');
 const { scopedTransactionWhere } = require('../middleware/adminScope');
 
 const router = express.Router();
@@ -370,7 +372,10 @@ router.get('/:id', authenticate, async (req, res) => {
     
     // Get meter values for this transaction
     const meterValues = await MeterValue.findAll({
-      where: { transactionId: transaction.transactionId },
+      // MeterValue.transactionId stores the internal transactions.id. The
+      // public OCPP transactionId is deliberately different and is not the
+      // foreign key used by the meter history table.
+      where: { transactionId: transaction.id },
       order: [['timestamp', 'ASC']]
     });
     
@@ -724,7 +729,7 @@ router.post('/complete', authenticate, requirePermission('stations.remote_contro
 
 /**
  * @route   POST /api/transactions/:id/reconcile
- * @desc    Reconcile a transaction using location-based pricing (fixes Wh to kWh errors)
+ * @desc    Reconcile a transaction using its effective tariff (company or location)
  * @access  Private
  */
 router.post('/:id/reconcile', authenticate, requirePermission('transactions.manage'), async (req, res) => {
@@ -755,33 +760,28 @@ router.post('/:id/reconcile', authenticate, requirePermission('transactions.mana
       });
     }
     
-    // Get station to find location
+    // Confirm the station still exists. Pricing itself is resolved centrally so
+    // company subscriptions do not get silently reconciled at a location rate.
     const station = await ChargingStation.findOne({
       where: { chargePointId: transaction.chargePointId },
       transaction: t
     });
     
-    if (!station || !station.locationId) {
+    if (!station) {
       await t.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Station or location not found'
+        message: 'Station not found'
       });
     }
-    
-    // Get location pricing
-    const location = await Location.findByPk(station.locationId, { transaction: t });
-    
-    if (!location) {
-      await t.rollback();
-      return res.status(400).json({
-        success: false,
-        message: 'Location not found'
-      });
-    }
-    
-    const pricePerKwh = location.pricePerWh * 1000; // Convert from per Wh to per kWh
-    const minimumCharge = location.minimumCharge || 0;
+
+    const pricing = await getChargingPricing({
+      chargePointId: transaction.chargePointId,
+      idTag: transaction.idTag
+    });
+    const pricePerWh = Number(pricing.pricePerWh) || 0;
+    const pricePerKwh = pricePerWh * 1000;
+    const minimumCharge = Number(pricing.minimumCharge) || 0;
     const currentEnergy = parseFloat(transaction.energyDelivered) || 0; // in Wh
     const currentAmount = parseFloat(transaction.amount) || 0;
     
@@ -789,6 +789,13 @@ router.post('/:id/reconcile', authenticate, requirePermission('transactions.mana
     const energyInKwh = currentEnergy / 1000;
     const baseAmount = energyInKwh * pricePerKwh;
     const correctAmount = Math.max(baseAmount, minimumCharge);
+    const reconciledRevenue = await calculatePartnerRevenue({
+      chargePointId: transaction.chargePointId,
+      energyWh: currentEnergy,
+      billableAmount: correctAmount,
+      idTag: transaction.idTag,
+      pricing
+    });
     
     logger.info(`Reconciling transaction ${transactionId}:`, {
       currentEnergy,
@@ -802,7 +809,23 @@ router.post('/:id/reconcile', authenticate, requirePermission('transactions.mana
     // Update transaction amount if pricing is wrong
     const amountChanged = Math.abs(currentAmount - correctAmount) >= 0.01;
     if (amountChanged) {
-      await transaction.update({ amount: correctAmount }, { transaction: t });
+      await transaction.update({
+        amount: correctAmount,
+        ...(!transaction.settlementId && {
+          grossAmount: reconciledRevenue.grossAmount,
+          sellingPricePerWh: reconciledRevenue.sellingPricePerWh,
+          productionCostPerWh: reconciledRevenue.productionCostPerWh,
+          partnerSharePercent: reconciledRevenue.partnerSharePercent,
+          minimumChargeApplied: reconciledRevenue.minimumChargeApplied,
+          productionCostAmount: reconciledRevenue.productionCostAmount,
+          profitAmount: reconciledRevenue.profitAmount,
+          partnerEarning: reconciledRevenue.partnerEarning,
+          companyEarning: reconciledRevenue.companyEarning,
+          partnerId: reconciledRevenue.partnerId,
+          locationId: reconciledRevenue.locationId,
+          settlementStatus: reconciledRevenue.settlementStatus
+        })
+      }, { transaction: t });
       logger.info(`Reconcile: TX${transactionId} amount updated from ₦${currentAmount.toFixed(2)} to ₦${correctAmount.toFixed(2)}`);
     }
     
@@ -875,7 +898,14 @@ router.post('/:id/reconcile', authenticate, requirePermission('transactions.mana
                 wallet_adjustment: walletAdjustment,
                 previous_balance: parseFloat(wallet.balance),
                 new_balance: newBalance,
-                location_pricing: { pricePerKwh, minimumCharge }
+                pricing: {
+                  source: pricing.source,
+                  pricePerWh,
+                  pricePerKwh,
+                  minimumCharge,
+                  companyId: pricing.companyId,
+                  locationId: pricing.locationId
+                }
               })
             }, { transaction: t });
             

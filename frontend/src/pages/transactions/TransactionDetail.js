@@ -224,6 +224,8 @@ function TransactionDetail() {
   // Process meter values for charts
   const processChartData = (values) => {
     if (!values || values.length === 0) {
+      setEnergyChartData({ labels: [], datasets: [] });
+      setPowerChartData({ labels: [], datasets: [] });
       return;
     }
     
@@ -232,59 +234,56 @@ function TransactionDetail() {
       new Date(a.timestamp) - new Date(b.timestamp)
     );
     
-    // Extract timestamps and format them nicely
-    const timestamps = sortedValues.map(val => {
+    // The API has returned both direct MeterValue rows and legacy nested OCPP
+    // samples. Normalize both forms to kWh before charting; billing/storage
+    // use Wh, but the chart labels are explicitly kWh.
+    const toKwh = (value, unit) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return 0;
+      return String(unit || 'Wh').toLowerCase() === 'wh' ? numeric / 1000 : numeric;
+    };
+    const getEnergyKwh = value => {
+      if (value && value.value !== undefined && !Array.isArray(value.value)) {
+        if (value.measurand && value.measurand !== 'Energy.Active.Import.Register') return null;
+        return toKwh(value.value, value.unit);
+      }
+      const nested = Array.isArray(value?.value)
+        ? value.value.find(sample => sample.measurand === 'Energy.Active.Import.Register')
+        : null;
+      return nested ? toKwh(nested.value, nested.unit) : null;
+    };
+
+    // MeterValue history also contains power, SoC, and other measurands. Only
+    // energy-register samples belong on the cumulative energy/power charts;
+    // treating power rows as zero-energy readings creates false drops.
+    const energySamples = sortedValues.filter(value => getEnergyKwh(value) !== null);
+    if (energySamples.length === 0) {
+      setEnergyChartData({ labels: [], datasets: [] });
+      setPowerChartData({ labels: [], datasets: [] });
+      return;
+    }
+    const timestamps = energySamples.map(val => {
       const date = new Date(val.timestamp);
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     });
-    
-    // Check if we have the new structure with direct value property or old structure with nested values
-    const hasDirectValues = typeof sortedValues[0].value === 'number';
-    
-    // Extract energy values
-    const energyValues = sortedValues.map(val => {
-      if (hasDirectValues) {
-        // New structure with direct value property
-        // Convert to kWh if readings are in Wh
-        return val.unit === 'Wh' ? val.value / 1000 : val.value;
-      } else {
-        // Old structure with nested values array
-        const energyValue = val.value.find(v => v.measurand === 'Energy.Active.Import.Register');
-        return energyValue ? parseFloat(energyValue.value) : 0;
-      }
-    });
+    const energyValues = energySamples.map(getEnergyKwh);
     
     // Calculate power values (rate of change of energy)
     const powerValues = [];
-    for (let i = 1; i < sortedValues.length; i++) {
-      const current = sortedValues[i];
-      const previous = sortedValues[i-1];
+    for (let i = 1; i < energySamples.length; i++) {
+      const current = energySamples[i];
+      const previous = energySamples[i - 1];
       
-      // Get values based on structure
-      let currentValue, previousValue;
-      
-      if (hasDirectValues) {
-        currentValue = current.value;
-        previousValue = previous.value;
-      } else {
-        const currentEnergyValue = current.value.find(v => v.measurand === 'Energy.Active.Import.Register');
-        const previousEnergyValue = previous.value.find(v => v.measurand === 'Energy.Active.Import.Register');
-        currentValue = currentEnergyValue ? parseFloat(currentEnergyValue.value) : 0;
-        previousValue = previousEnergyValue ? parseFloat(previousEnergyValue.value) : 0;
-      }
+      const currentValue = getEnergyKwh(current);
+      const previousValue = getEnergyKwh(previous);
       
       const timeDiff = (new Date(current.timestamp) - new Date(previous.timestamp)) / 1000; // seconds
       
       if (timeDiff > 0) {
         const energyDiff = currentValue - previousValue;
         
-        // Convert to kW based on structure
-        let power;
-        if (hasDirectValues && current.unit === 'Wh') {
-          power = (energyDiff / timeDiff) * (3600 / 1000); // convert Wh to kWh and to hourly rate
-        } else {
-          power = (energyDiff / timeDiff) * 3600; // convert to hourly rate
-        }
+        // Values are already normalized to kWh, so this gives kW.
+        const power = (energyDiff / timeDiff) * 3600;
         
         powerValues.push(Math.max(0, parseFloat(power.toFixed(2))));
       } else {
@@ -407,60 +406,38 @@ function TransactionDetail() {
     }
   };
   
-  // Generate meter values from transaction data when no meter values are available
+  // Build a minimal summary only from persisted transaction meters. Never
+  // fabricate readings: a synthetic 352 kWh curve could mislead operators
+  // about energy consumed and the amount charged.
   const generateMeterValuesFromTransaction = (transaction) => {
-    console.log('Generating fallback meter values for transaction:', transaction);
-    
-    // Use fallback values if transaction data is incomplete
-    const defaultEnergyDelivered = 352; // Default to 352 kWh as in the Dashboard
-    
-    // Ensure we have valid start and end times
-    const startTime = transaction?.startTime ? new Date(transaction.startTime) : new Date(Date.now() - 3600000); // 1 hour ago if no start time
+    const startMeter = Number(transaction?.startMeterValue);
+    const stopMeter = Number(transaction?.stopMeterValue);
+    const energyDelivered = Number(transaction?.energyDelivered);
+    if (!Number.isFinite(startMeter)) return [];
+
+    const endMeter = Number.isFinite(stopMeter) && stopMeter >= startMeter
+      ? stopMeter
+      : startMeter + (Number.isFinite(energyDelivered) ? Math.max(0, energyDelivered) : 0);
+    const startTime = transaction?.startTime ? new Date(transaction.startTime) : null;
     const endTime = transaction?.stopTime ? new Date(transaction.stopTime) : new Date();
-    const duration = Math.max(3600, (endTime - startTime) / 1000); // at least 1 hour in seconds
-    
-    // Use transaction energy if available, otherwise use default
-    const energy = (transaction?.energyDelivered && transaction.energyDelivered > 0) ? 
-                   transaction.energyDelivered : defaultEnergyDelivered;
-    
-    console.log('Using energy value for simulation:', energy, 'kWh');
-    console.log('Duration for simulation:', duration / 3600, 'hours');
-    
-    // Generate enough points for a smooth chart
-    const numPoints = Math.min(30, Math.max(10, Math.floor(duration / 300))); // At least 10, at most 30 points
-    const interval = duration / (numPoints - 1);
-    
-    // Generate meter values
-    const values = [];
-    
-    for (let i = 0; i < numPoints; i++) {
-      const timestamp = new Date(startTime.getTime() + i * interval * 1000);
-      
-      // Realistic energy delivery pattern (S-curve)
-      let progress;
-      if (i / numPoints < 0.3) {
-        // Slow start
-        progress = 0.2 * Math.pow(i / numPoints / 0.3, 2);
-      } else if (i / numPoints > 0.7) {
-        // Slow end
-        progress = 0.8 + 0.2 * (1 - Math.pow((1 - (i / numPoints - 0.7) / 0.3), 2));
-      } else {
-        // Linear middle
-        progress = 0.2 + 0.6 * ((i / numPoints - 0.3) / 0.4);
-      }
-      
-      const currentEnergy = energy * progress;
-      
+    if (!startTime || Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) return [];
+
+    const values = [{
+      timestamp: startTime.toISOString(),
+      value: startMeter,
+      unit: 'Wh',
+      measurand: 'Energy.Active.Import.Register',
+      context: 'Transaction.Summary'
+    }];
+    if (endMeter !== startMeter) {
       values.push({
-        timestamp: timestamp.toISOString(),
-        value: parseFloat(currentEnergy.toFixed(3)),
-        unit: 'kWh',
+        timestamp: endTime.toISOString(),
+        value: endMeter,
+        unit: 'Wh',
         measurand: 'Energy.Active.Import.Register',
-        context: 'Sample.Periodic'
+        context: 'Transaction.Summary'
       });
     }
-    
-    console.log('Generated', values.length, 'fallback meter values');
     return values;
   };
   
@@ -674,10 +651,10 @@ function TransactionDetail() {
                 
                 <Grid item xs={6}>
                   <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                    <EnergyIcon color="primary" sx={{ mr: 1 }} />
+                      <EnergyIcon color="primary" sx={{ mr: 1 }} />
                     <Box>
                       <Typography variant="h6">
-                        {transaction.energyDelivered?.toFixed(2) || '0.00'} kWh
+                        {(Number(transaction.energyDelivered || 0) / 1000).toFixed(2)} kWh
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
                         Energy Delivered

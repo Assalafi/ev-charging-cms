@@ -24,6 +24,12 @@ import {
   Tab,
   Tabs,
   TextField,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   Typography
 } from '@mui/material';
 import {
@@ -31,12 +37,18 @@ import {
   AddRounded,
   ArrowBackRounded,
   AutorenewRounded,
+  BoltRounded,
   BusinessRounded,
+  CheckCircleOutlineRounded,
   CloseRounded,
   DeleteOutlineRounded,
   EditRounded,
+  FilterAltRounded,
   GroupAddRounded,
+  HistoryRounded,
+  PaymentsRounded,
   PeopleAltRounded,
+  PendingRounded,
   RefreshRounded,
   SendRounded,
   TimelineRounded
@@ -45,7 +57,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import companyService from '../../services/companyService';
 import mobileUserService from '../../services/mobileUserService';
-import { todayKey } from '../../utils/timezone';
+import { formatDateTime, todayKey } from '../../utils/timezone';
 
 const money = value => new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(Number(value || 0));
 const statusColor = { active: 'success', suspended: 'warning', inactive: 'default', deleted: 'error' };
@@ -67,6 +79,10 @@ export default function CompanyDetail() {
   const [users, setUsers] = useState([]);
   const [userPage, setUserPage] = useState({ page: 1, limit: 20, total: 0 });
   const [transactions, setTransactions] = useState([]);
+  const [activity, setActivity] = useState(null);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityFilters, setActivityFilters] = useState({ range: 'monthly', startDate: '', endDate: '', paymentStatus: '', sessionStatus: '', ledgerStatus: '' });
+  const activityFiltersRef = React.useRef(activityFilters);
   const [rules, setRules] = useState([]);
   const [portalUsers, setPortalUsers] = useState([]);
   const [tab, setTab] = useState(0);
@@ -100,6 +116,20 @@ export default function CompanyDetail() {
     const result = await companyService.transactions(id, { page: 1, limit: 30 });
     setTransactions(result.transactions || []);
   }, [id]);
+  useEffect(() => { activityFiltersRef.current = activityFilters; }, [activityFilters]);
+  const loadActivity = useCallback(async (filters = activityFiltersRef.current) => {
+    setActivityLoading(true);
+    try {
+      const result = await companyService.activity(id, { ...filters, limit: 8, page: 1 });
+      setActivity(result);
+      return result;
+    } catch (error) {
+      setNotice({ type: 'error', text: error.serverMessage || error.message || 'Failed to refresh company activity' });
+      throw error;
+    } finally {
+      setActivityLoading(false);
+    }
+  }, [id]);
   const loadPortalUsers = useCallback(async () => {
     const result = await companyService.portalUsers(id);
     setPortalUsers(result.users || []);
@@ -107,10 +137,10 @@ export default function CompanyDetail() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { await Promise.all([loadCompany(), loadUsers(), loadTransactions(), loadPortalUsers()]); setNotice({ type: '', text: '' }); }
+    try { await Promise.all([loadCompany(), loadUsers(), loadTransactions(), loadPortalUsers(), loadActivity()]); setNotice({ type: '', text: '' }); }
     catch (err) { setNotice({ type: 'error', text: err.serverMessage || err.message || 'Failed to load company workspace' }); }
     finally { setLoading(false); }
-  }, [loadCompany, loadUsers, loadTransactions, loadPortalUsers]);
+  }, [loadCompany, loadUsers, loadTransactions, loadPortalUsers, loadActivity]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { if (tab === 3) companyService.rules(id).then(result => setRules(result.rules || [])).catch(() => {}); }, [id, tab]);
@@ -123,6 +153,7 @@ export default function CompanyDetail() {
           setNotice({ type: 'success', text: 'Company wallet payment verified and applied.' });
           loadCompany();
           loadTransactions();
+          loadActivity();
         }
       })
       .catch(error => {
@@ -132,11 +163,11 @@ export default function CompanyDetail() {
         if (!cancelled) setSearchParams({}, { replace: true });
       });
     return () => { cancelled = true; };
-  }, [id, loadCompany, loadTransactions, paymentReference, setSearchParams]);
+  }, [id, loadActivity, loadCompany, loadTransactions, paymentReference, setSearchParams]);
 
   const action = async (callback, successMessage) => {
     setBusy(true);
-    try { await callback(); setNotice({ type: 'success', text: successMessage }); await loadCompany(); await loadUsers(); await loadTransactions(); return true; }
+    try { await callback(); setNotice({ type: 'success', text: successMessage }); await loadCompany(); await loadUsers(); await loadTransactions(); await loadActivity(); return true; }
     catch (err) { setNotice({ type: 'error', text: err.serverMessage || err.message || 'Action failed' }); return false; }
     finally { setBusy(false); }
   };
@@ -210,9 +241,9 @@ export default function CompanyDetail() {
         <Tabs value={tab} onChange={(_, value) => setTab(value)} variant="scrollable" scrollButtons="auto" sx={{ px: { xs: .5, sm: 1.5 }, minHeight: 62, '& .MuiTab-root': { minHeight: 62, minWidth: 'auto', mr: { xs: .5, sm: 1.5 }, fontWeight: 750, textTransform: 'none' } }}><Tab icon={<TimelineRounded />} iconPosition="start" label="Overview" /><Tab icon={<PeopleAltRounded />} iconPosition="start" label={`Users (${company.userCount || company.mobileUsers?.length || 0})`} /><Tab icon={<AccountBalanceWalletRounded />} iconPosition="start" label="Wallet" /><Tab icon={<AutorenewRounded />} iconPosition="start" label="Auto funding" /><Tab icon={<BusinessRounded />} iconPosition="start" label="Portal access" /></Tabs>
       </Paper>
 
-      {tab === 0 && <Overview company={company} canSuspend={canSuspend} onStatus={status => action(() => companyService.setStatus(id, status), `Company marked ${status}`)} />}
+      {tab === 0 && <Overview company={company} activity={activity} activityLoading={activityLoading} activityFilters={activityFilters} setActivityFilters={setActivityFilters} onActivityRefresh={() => loadActivity().catch(() => null)} canSuspend={canSuspend} onStatus={status => action(() => companyService.setStatus(id, status), `Company marked ${status}`)} />}
       {tab === 1 && <UsersTab users={companyUsers} page={userPage} search={userSearch} canManage={canManageUsers} setSearch={value => { setUserSearch(value); setUserPage(previous => ({ ...previous, page: 1 })); }} onPage={page => setUserPage(previous => ({ ...previous, page }))} onCreate={() => setDialogs(previous => ({ ...previous, createUser: true }))} onAssign={openAssign} onTransfer={user => { setTransferForm({ mobileUserId: user.id, amount: '', description: '' }); setDialogs(previous => ({ ...previous, transfer: true })); }} onStatus={(user, status) => action(() => companyService.setUserStatus(id, user.id, status), `User ${status}`)} onUnassign={user => action(() => companyService.unassignUser(id, user.id), 'User unassigned')} />}
-      {tab === 2 && <WalletTab company={company} transactions={transactions} canManage={canManageWallet} onFund={() => setDialogs(previous => ({ ...previous, fund: true }))} onTransfer={() => setDialogs(previous => ({ ...previous, transfer: true }))} />}
+      {tab === 2 && <WalletTab company={company} transactions={transactions} canManage={canManageWallet} onFund={() => setDialogs(previous => ({ ...previous, fund: true }))} onTransfer={() => setDialogs(previous => ({ ...previous, transfer: true }))} onVerify={reference => action(() => companyService.verifyPaystackFunding(id, reference), 'Paystack payment status refreshed')} />}
       {tab === 3 && <RulesTab rules={rules} users={companyUsers} canManage={canManageFunding} onCreate={() => setDialogs(previous => ({ ...previous, rule: true }))} onDisable={rule => action(() => companyService.disableRule(id, rule.id), 'Funding rule disabled')} />}
       {tab === 4 && <PortalUsersTab users={portalUsers} canManage={canManageUsers} onCreate={() => setDialogs(previous => ({ ...previous, portalUser: true }))} onStatus={(portalUser, status) => action(() => companyService.updatePortalUser(id, portalUser.id, { status }), `Portal account ${status}`)} onDelete={portalUser => action(() => companyService.deletePortalUser(id, portalUser.id), 'Portal account removed')} />}
 
@@ -240,16 +271,121 @@ function BillingPolicy({ company }) {
   return <Card variant="outlined" sx={{ borderRadius: 3.5 }}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box><Typography variant="h6" fontWeight={800}>Billing policy</Typography><Typography color="text.secondary">Drivers use this company tariff while charging at any station.</Typography></Box><Chip size="small" color={company.debtEnabled ? 'warning' : 'default'} label={company.debtEnabled ? 'Debt funding enabled' : 'Debt funding disabled'} /></Stack><Divider sx={{ my: 2 }} /><Grid container spacing={2}><Grid item xs={12} sm={4}><Typography variant="caption" color="text.secondary">Charging price</Typography><Typography fontWeight={800}>{hasTariff ? `${money(Number(company.pricePerWh) * 1000)} / kWh` : 'Location tariff'}</Typography></Grid><Grid item xs={12} sm={4}><Typography variant="caption" color="text.secondary">Minimum charge</Typography><Typography fontWeight={800}>{company.minimumCharge !== null && company.minimumCharge !== undefined ? money(company.minimumCharge) : 'Location minimum'}</Typography></Grid><Grid item xs={12} sm={4}><Typography variant="caption" color="text.secondary">Debt outstanding</Typography><Typography fontWeight={800} color={debt > 0 ? 'warning.main' : 'text.primary'}>{money(debt)}</Typography></Grid></Grid></CardContent></Card>;
 }
 
-function Overview({ company, canSuspend, onStatus }) {
+function Overview({ company, activity, activityLoading, activityFilters, setActivityFilters, onActivityRefresh, canSuspend, onStatus }) {
   const stats = company.stats || {};
-  return <Stack spacing={2.5}><BillingPolicy company={company} /><Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' }, gap: 1.5 }}><Metric icon={<AccountBalanceWalletRounded />} label="Wallet balance" value={money(company.walletBalance)} color="#2563EB" /><Metric icon={<PeopleAltRounded />} label="Active users" value={stats.activeUsers || 0} color="#059669" /><Metric icon={<SendRounded />} label="User funding" value={money(stats.totalUserFunding)} color="#7C3AED" /><Metric icon={<AutorenewRounded />} label="Active rules" value={stats.activeRules || 0} color="#D97706" /></Box><Card variant="outlined" sx={{ borderRadius: 3.5 }}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}><Box><Typography variant="h6" fontWeight={800}>Company controls</Typography><Typography color="text.secondary">Suspending a company immediately blocks its users from mobile authentication and charging.</Typography></Box>{canSuspend && <Stack direction="row" spacing={1}><Button size="small" color="warning" variant={company.status === 'suspended' ? 'contained' : 'outlined'} onClick={() => onStatus(company.status === 'suspended' ? 'active' : 'suspended')}>{company.status === 'suspended' ? 'Reactivate' : 'Suspend'}</Button><Button size="small" color="inherit" variant="outlined" onClick={() => onStatus(company.status === 'inactive' ? 'active' : 'inactive')}>{company.status === 'inactive' ? 'Activate' : 'Archive'}</Button></Stack>}</Stack><Divider sx={{ my: 2 }} /><Grid container spacing={2}><Grid item xs={12} md={6}><Typography variant="caption" color="text.secondary">Contact</Typography><Typography fontWeight={700}>{company.email || 'No email'}</Typography><Typography color="text.secondary">{company.phone || 'No phone'}</Typography></Grid><Grid item xs={12} md={6}><Typography variant="caption" color="text.secondary">Address</Typography><Typography fontWeight={700}>{company.address || 'No address provided'}</Typography><Typography color="text.secondary">{[company.city, company.state, company.country].filter(Boolean).join(', ')}</Typography></Grid></Grid></CardContent></Card></Stack>;
+  const applyActivityFilters = () => onActivityRefresh();
+  const updateFilter = (key, value) => setActivityFilters(current => ({ ...current, [key]: value }));
+  const resetFilters = () => {
+    setActivityFilters({ range: 'monthly', startDate: '', endDate: '', paymentStatus: '', sessionStatus: '', ledgerStatus: '' });
+    setTimeout(onActivityRefresh, 0);
+  };
+  return <Stack spacing={2.5}>
+    <BillingPolicy company={company} />
+    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' }, gap: 1.5 }}>
+      <Metric icon={<AccountBalanceWalletRounded />} label="Wallet balance" value={money(company.walletBalance)} color="#2563EB" />
+      <Metric icon={<PeopleAltRounded />} label="Active users" value={stats.activeUsers || 0} color="#059669" />
+      <Metric icon={<SendRounded />} label="User funding" value={money(stats.totalUserFunding)} color="#7C3AED" />
+      <Metric icon={<AutorenewRounded />} label="Active rules" value={stats.activeRules || 0} color="#D97706" />
+    </Box>
+    <ActivityFilters filters={activityFilters} onChange={updateFilter} onApply={applyActivityFilters} onReset={resetFilters} loading={activityLoading} />
+    <ActivityOverview activity={activity} loading={activityLoading} />
+    <Card variant="outlined" sx={{ borderRadius: 3.5 }}>
+      <CardContent>
+        <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}>
+          <Box><Typography variant="h6" fontWeight={800}>Company controls</Typography><Typography color="text.secondary">Suspending a company immediately blocks its users from mobile authentication and charging.</Typography></Box>
+          {canSuspend && <Stack direction="row" spacing={1}><Button size="small" color="warning" variant={company.status === 'suspended' ? 'contained' : 'outlined'} onClick={() => onStatus(company.status === 'suspended' ? 'active' : 'suspended')}>{company.status === 'suspended' ? 'Reactivate' : 'Suspend'}</Button><Button size="small" color="inherit" variant="outlined" onClick={() => onStatus(company.status === 'inactive' ? 'active' : 'inactive')}>{company.status === 'inactive' ? 'Activate' : 'Archive'}</Button></Stack>}
+        </Stack>
+        <Divider sx={{ my: 2 }} />
+        <Grid container spacing={2}><Grid item xs={12} md={6}><Typography variant="caption" color="text.secondary">Contact</Typography><Typography fontWeight={700}>{company.email || 'No email'}</Typography><Typography color="text.secondary">{company.phone || 'No phone'}</Typography></Grid><Grid item xs={12} md={6}><Typography variant="caption" color="text.secondary">Address</Typography><Typography fontWeight={700}>{company.address || 'No address provided'}</Typography><Typography color="text.secondary">{[company.city, company.state, company.country].filter(Boolean).join(', ')}</Typography></Grid></Grid>
+      </CardContent>
+    </Card>
+  </Stack>;
+}
+
+const energyDisplay = value => {
+  const kwh = Number(value || 0) / 1000;
+  return `${kwh >= 1000 ? (kwh / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' MWh' : kwh.toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' kWh'}`;
+};
+
+function ActivityFilters({ filters, onChange, onApply, onReset, loading }) {
+  return <Card variant="outlined" sx={{ borderRadius: 3.5, background: 'linear-gradient(180deg, rgba(37,99,235,.045), transparent)' }}>
+    <CardContent sx={{ pb: '16px !important' }}>
+      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ md: 'center' }} gap={1.5} sx={{ mb: 2 }}>
+        <Stack direction="row" spacing={1} alignItems="center"><Box sx={{ width: 38, height: 38, borderRadius: 2, bgcolor: 'primary.main', color: 'primary.contrastText', display: 'grid', placeItems: 'center' }}><FilterAltRounded fontSize="small" /></Box><Box><Typography variant="h6" fontWeight={800}>Activity explorer</Typography><Typography variant="body2" color="text.secondary">Review charging, payments and company wallet movement by West Africa time.</Typography></Box></Stack>
+        <Stack direction="row" spacing={1}><Button size="small" onClick={onReset}>Reset</Button><Button size="small" variant="contained" startIcon={<RefreshRounded />} onClick={onApply} disabled={loading || (filters.range === 'custom' && (!filters.startDate || !filters.endDate))}>{loading ? 'Refreshing…' : 'Apply filters'}</Button></Stack>
+      </Stack>
+      <Grid container spacing={1.5}>
+        <Grid item xs={12} sm={6} md={filters.range === 'custom' ? 2 : 3}><FormControl fullWidth size="small"><InputLabel>Period</InputLabel><Select label="Period" value={filters.range} onChange={event => onChange('range', event.target.value)}><MenuItem value="daily">Today</MenuItem><MenuItem value="weekly">This week</MenuItem><MenuItem value="monthly">This month</MenuItem><MenuItem value="yearly">This year</MenuItem><MenuItem value="custom">Custom dates</MenuItem></Select></FormControl></Grid>
+        {filters.range === 'custom' && <><Grid item xs={12} sm={6} md={2}><TextField fullWidth size="small" type="date" label="From" InputLabelProps={{ shrink: true }} value={filters.startDate} onChange={event => onChange('startDate', event.target.value)} /></Grid><Grid item xs={12} sm={6} md={2}><TextField fullWidth size="small" type="date" label="To" InputLabelProps={{ shrink: true }} value={filters.endDate} onChange={event => onChange('endDate', event.target.value)} /></Grid></>}
+        <Grid item xs={12} sm={6} md={3}><FormControl fullWidth size="small"><InputLabel>Payment status</InputLabel><Select label="Payment status" value={filters.paymentStatus} onChange={event => onChange('paymentStatus', event.target.value)}><MenuItem value="">All payments</MenuItem><MenuItem value="SUCCESS">Successful</MenuItem><MenuItem value="PENDING">Pending</MenuItem><MenuItem value="FAILED">Failed</MenuItem><MenuItem value="REVERSED">Reversed</MenuItem></Select></FormControl></Grid>
+        <Grid item xs={12} sm={6} md={3}><FormControl fullWidth size="small"><InputLabel>Session status</InputLabel><Select label="Session status" value={filters.sessionStatus} onChange={event => onChange('sessionStatus', event.target.value)}><MenuItem value="">All sessions</MenuItem><MenuItem value="InProgress">In progress</MenuItem><MenuItem value="Completed">Completed</MenuItem><MenuItem value="Stopped">Stopped</MenuItem></Select></FormControl></Grid>
+        <Grid item xs={12} sm={6} md={3}><FormControl fullWidth size="small"><InputLabel>Ledger status</InputLabel><Select label="Ledger status" value={filters.ledgerStatus} onChange={event => onChange('ledgerStatus', event.target.value)}><MenuItem value="">All wallet activity</MenuItem><MenuItem value="SUCCESS">Successful</MenuItem><MenuItem value="PENDING">Pending</MenuItem><MenuItem value="FAILED">Failed</MenuItem><MenuItem value="REVERSED">Reversed</MenuItem></Select></FormControl></Grid>
+      </Grid>
+    </CardContent>
+  </Card>;
+}
+
+function ActivityOverview({ activity, loading }) {
+  if (loading && !activity) return <Card variant="outlined" sx={{ borderRadius: 3.5 }}><CardContent sx={{ minHeight: 240, display: 'grid', placeItems: 'center' }}><CircularProgress /></CardContent></Card>;
+  if (!activity) return <Alert severity="info">No activity has been loaded for this company yet.</Alert>;
+  const selected = activity.summary?.selected || {};
+  const periods = activity.summary || {};
+  const payments = selected.payments || {};
+  const paymentRows = activity.payments || [];
+  const walletRows = activity.walletTransactions || [];
+  const wallet = selected.wallet || {};
+  const sessionRows = activity.sessions || [];
+  const paymentStatus = (status) => ({ SUCCESS: 'success', PENDING: 'warning', FAILED: 'error', REVERSED: 'default' }[status] || 'default');
+  const periodCards = [{ key: 'today', label: 'Today' }, { key: 'week', label: 'This week' }, { key: 'month', label: 'This month' }, { key: 'year', label: 'This year' }, { key: 'lifetime', label: 'Lifetime' }];
+  return <Stack spacing={2.5}>
+    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', xl: 'repeat(6, minmax(0, 1fr))' }, gap: 1.5 }}>
+      <Metric icon={<BoltRounded />} label="Sessions" value={Number(selected.sessions || 0).toLocaleString()} color="#2563EB" />
+      <Metric icon={<HistoryRounded />} label="Energy consumed" value={energyDisplay(selected.energyWh)} color="#0891B2" />
+      <Metric icon={<PaymentsRounded />} label="Charging value" value={money(selected.chargingValue)} color="#7C3AED" />
+      <Metric icon={<AccountBalanceWalletRounded />} label="Wallet debits" value={money(wallet.debits)} color="#059669" />
+      <Metric icon={<CheckCircleOutlineRounded />} label="Successful payments" value={money(payments.successfulAmount)} color="#16A34A" />
+      <Metric icon={<PendingRounded />} label="Pending payments" value={money(payments.pendingAmount)} color="#D97706" />
+    </Box>
+
+    <Card variant="outlined" sx={{ borderRadius: 3.5 }}><CardContent><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1}><Box><Typography variant="h6" fontWeight={800}>Periodic summary</Typography><Typography variant="body2" color="text.secondary">A quick comparison of this company’s activity across standard periods.</Typography></Box><Chip size="small" color="primary" variant="outlined" label={`${activity.period?.range || 'period'} · ${activity.period?.start ? formatDateTime(activity.period.start, { dateStyle: 'medium', timeStyle: undefined }) : ''}`} /></Stack><Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(5, minmax(0, 1fr))' }, gap: 1, mt: 2 }}>{periodCards.map(period => { const data = periods[period.key] || {}; return <Paper key={period.key} variant="outlined" sx={{ p: 1.5, borderRadius: 2.5, bgcolor: period.key === 'month' ? 'action.hover' : 'transparent' }}><Typography variant="caption" color="text.secondary" fontWeight={750}>{period.label}</Typography><Typography fontWeight={850}>{energyDisplay(data.energyWh)}</Typography><Typography variant="caption" color="text.secondary">{Number(data.sessions || 0).toLocaleString()} sessions · {money(data.chargingValue)}</Typography></Paper>; })}</Box></CardContent></Card>
+
+    <Grid container spacing={2.5}>
+      <Grid item xs={12} lg={5}><Card variant="outlined" sx={{ borderRadius: 3.5, height: '100%' }}><CardContent><Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}><Box><Typography variant="h6" fontWeight={800}>Payment status</Typography><Typography variant="body2" color="text.secondary">Gateway activity for the selected period.</Typography></Box><Chip size="small" label={`${payments.total || 0} records`} /></Stack><Stack spacing={1}><PaymentStatusRow label="Successful" count={payments.successful} amount={payments.successfulAmount} color="success" /><PaymentStatusRow label="Pending" count={payments.pending} amount={payments.pendingAmount} color="warning" /><PaymentStatusRow label="Failed" count={payments.failed} amount={payments.failedAmount} color="error" /><PaymentStatusRow label="Reversed" count={payments.reversed} amount={payments.reversedAmount} color="default" /></Stack>{paymentRows.length > 0 && <><Divider sx={{ my: 2 }} /><Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>Recent payment records</Typography><Stack divider={<Divider />}>{paymentRows.slice(0, 5).map(payment => <Stack key={payment.id} direction="row" spacing={1} alignItems="center" sx={{ py: .9 }}><Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="body2" fontWeight={750} noWrap>{payment.user?.name || payment.user?.email || 'Mobile user'}</Typography><Typography variant="caption" color="text.secondary" noWrap>{payment.description || payment.gateway || 'Wallet payment'} · {formatDateTime(payment.createdAt)}</Typography></Box><Stack alignItems="flex-end" spacing={.25}><Chip size="small" label={payment.status} color={paymentStatus(payment.status)} /><Typography variant="body2" fontWeight={800}>{money(payment.amount)}</Typography></Stack></Stack>)}</Stack></>}</CardContent></Card></Grid>
+      <Grid item xs={12} lg={7}><Card variant="outlined" sx={{ borderRadius: 3.5, height: '100%' }}><CardContent sx={{ pb: '12px !important' }}><Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}><Box><Typography variant="h6" fontWeight={800}>Charging activity</Typography><Typography variant="body2" color="text.secondary">Energy and earnings from this company’s mobile users.</Typography></Box><Chip size="small" label={`${sessionRows.length} shown`} /></Stack>{sessionRows.length === 0 ? <Typography color="text.secondary" sx={{ py: 3 }}>No charging sessions match the selected filters.</Typography> : <TableContainer><Table size="small"><TableHead><TableRow><TableCell>User tag / station</TableCell><TableCell>Status</TableCell><TableCell align="right">Energy</TableCell><TableCell align="right">Value</TableCell><TableCell align="right">When</TableCell></TableRow></TableHead><TableBody>{sessionRows.map(session => <TableRow key={session.id} hover><TableCell><Typography variant="body2" fontWeight={750}>{session.idTag || 'Unknown tag'}</Typography><Typography variant="caption" color="text.secondary">{session.chargePointId || 'Station unavailable'}</Typography></TableCell><TableCell><Chip size="small" label={session.status} color={session.status === 'InProgress' ? 'primary' : session.status === 'Completed' ? 'success' : 'default'} /></TableCell><TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{energyDisplay(session.energyDelivered)}</TableCell><TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{money(session.grossAmount || session.amount)}</TableCell><TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{formatDateTime(session.stopTime || session.startTime)}</TableCell></TableRow>)}</TableBody></Table></TableContainer>}</CardContent></Card></Grid>
+    </Grid>
+    <Card variant="outlined" sx={{ borderRadius: 3.5 }}><CardContent sx={{ pb: '12px !important' }}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1} sx={{ mb: 1.5 }}><Box><Typography variant="h6" fontWeight={800}>Company wallet & funding ledger</Typography><Typography variant="body2" color="text.secondary">Offline credits, Paystack funding and user transfers, including their processing status.</Typography></Box><Stack direction="row" spacing={1}><Chip size="small" color="success" variant="outlined" label={`Credits ${money(wallet.credits)}`} /><Chip size="small" color="warning" variant="outlined" label={`Debits ${money(wallet.debits)}`} /></Stack></Stack>{walletRows.length === 0 ? <Typography color="text.secondary" sx={{ py: 2 }}>No wallet entries match the selected period.</Typography> : <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Activity</TableCell><TableCell>Method / beneficiary</TableCell><TableCell>Status</TableCell><TableCell align="right">Amount</TableCell><TableCell align="right">When</TableCell></TableRow></TableHead><TableBody>{walletRows.map(entry => <TableRow key={entry.id} hover><TableCell><Typography variant="body2" fontWeight={750}>{entry.description || `${entry.type === 'CREDIT' ? 'Wallet credit' : 'User transfer'}`}</Typography><Typography variant="caption" color="text.secondary">{entry.reference || 'No reference'}</Typography></TableCell><TableCell><Typography variant="body2">{entry.method || 'Internal'}</Typography><Typography variant="caption" color="text.secondary">{entry.beneficiary?.name ? `For ${entry.beneficiary.name}` : 'Company wallet'}</Typography></TableCell><TableCell><Chip size="small" label={entry.status} color={paymentStatus(entry.status)} /></TableCell><TableCell align="right" sx={{ whiteSpace: 'nowrap', color: entry.type === 'CREDIT' ? 'success.main' : 'warning.main', fontWeight: 800 }}>{entry.type === 'CREDIT' ? '+' : '-'}{money(entry.amount)}</TableCell><TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{formatDateTime(entry.createdAt)}</TableCell></TableRow>)}</TableBody></Table></TableContainer>}</CardContent></Card>
+  </Stack>;
+}
+
+function PaymentStatusRow({ label, count, amount, color }) {
+  return <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ py: .8, px: 1, borderRadius: 2, bgcolor: 'action.hover' }}><Stack direction="row" spacing={1} alignItems="center"><Chip size="small" color={color} label={count || 0} /><Typography variant="body2" fontWeight={700}>{label}</Typography></Stack><Typography variant="body2" fontWeight={800}>{money(amount)}</Typography></Stack>;
 }
 
 function UsersTab({ users, page, search, canManage, setSearch, onPage, onCreate, onAssign, onTransfer, onStatus, onUnassign }) {
   return <Stack spacing={2.5}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1.5}><Box><Typography variant="h6" fontWeight={800}>Company mobile users</Typography><Typography color="text.secondary">Create users, assign existing users, control status and fund individual wallets.</Typography></Box>{canManage && <Stack direction="row" spacing={1}><Button variant="outlined" startIcon={<GroupAddRounded />} onClick={onAssign}>Assign existing</Button><Button variant="contained" startIcon={<AddRounded />} onClick={onCreate}>Create user</Button></Stack>}</Stack><TextField size="small" value={search} onChange={event => setSearch(event.target.value)} label="Search users" placeholder="Name, email, phone or tag" /><Card variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}>{users.length === 0 ? <EmptyUsers /> : <Stack divider={<Divider />}><Box sx={{ display: { xs: 'none', md: 'grid' }, gridTemplateColumns: '2fr 1.5fr 1fr 1fr 1.5fr', px: 2, py: 1.5, bgcolor: 'action.hover' }}><Typography variant="caption" fontWeight={800}>USER</Typography><Typography variant="caption" fontWeight={800}>CONTACT</Typography><Typography variant="caption" fontWeight={800}>STATUS</Typography><Typography variant="caption" fontWeight={800}>BALANCE</Typography><Typography variant="caption" fontWeight={800} textAlign="right">ACTIONS</Typography></Box>{users.map(user => <Box key={user.id} sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '2fr 1.5fr 1fr 1fr 1.5fr' }, gap: { xs: 1, md: 2 }, alignItems: 'center', px: 2, py: 1.75 }}><Box><Typography fontWeight={750}>{user.name}</Typography><Typography variant="caption" color="text.secondary">{user.tagId || 'No tag'}</Typography></Box><Box><Typography variant="body2">{user.email}</Typography><Typography variant="caption" color="text.secondary">{user.phone}</Typography></Box><Chip size="small" label={user.status} color={statusColor[user.status] || 'default'} sx={{ justifySelf: 'flex-start' }} /><Typography fontWeight={750}>{money(user.wallet?.balance)}</Typography>{canManage && <Stack direction="row" justifyContent={{ xs: 'flex-start', md: 'flex-end' }} spacing={.5}><Button size="small" startIcon={<SendRounded />} onClick={() => onTransfer(user)}>Fund</Button><Button size="small" color={user.status === 'active' ? 'warning' : 'success'} onClick={() => onStatus(user, user.status === 'active' ? 'suspended' : 'active')}>{user.status === 'active' ? 'Suspend' : 'Activate'}</Button><IconButton size="small" color="error" onClick={() => onUnassign(user)}><CloseRounded fontSize="small" /></IconButton></Stack>}</Box>)}</Stack>}<TablePager page={page} onPage={onPage} /></Card></Stack>;
 }
 
-function WalletTab({ company, transactions, onFund, onTransfer }) { return <Stack spacing={2.5}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1.5}><Box><Typography variant="h6" fontWeight={800}>Company wallet</Typography><Typography color="text.secondary">Offline credits and transfers to employee wallets are fully auditable.</Typography></Box><Stack direction="row" spacing={1}><Button variant="outlined" startIcon={<SendRounded />} onClick={onTransfer}>Fund user</Button><Button variant="contained" startIcon={<AddRounded />} onClick={onFund}>Add funds</Button></Stack></Stack><Card variant="outlined" sx={{ borderRadius: 3.5, background: 'linear-gradient(135deg, #0F3D70, #2563EB)', color: 'white' }}><CardContent><Typography sx={{ opacity: .75 }}>Available company balance</Typography><Typography variant="h3" fontWeight={850} sx={{ mt: .5 }}>{money(company.walletBalance)}</Typography><Typography sx={{ opacity: .7, mt: 1 }}>{company.wallet?.currency || 'NGN'} · {company.stats?.walletTransactions || 0} ledger entries</Typography></CardContent></Card><Card variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}><CardContent><Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>Recent wallet activity</Typography>{transactions.length === 0 ? <Typography color="text.secondary">No wallet activity yet.</Typography> : <Stack divider={<Divider />}>{transactions.map(tx => <Stack key={tx.id} direction="row" spacing={1.5} alignItems="center" sx={{ py: 1.25 }}><Box sx={{ width: 36, height: 36, borderRadius: 2, bgcolor: tx.type === 'CREDIT' ? 'success.light' : 'warning.light', color: tx.type === 'CREDIT' ? 'success.dark' : 'warning.dark', display: 'grid', placeItems: 'center' }}>{tx.type === 'CREDIT' ? <AddRounded fontSize="small" /> : <SendRounded fontSize="small" />}</Box><Box sx={{ flex: 1, minWidth: 0 }}><Typography fontWeight={700}>{tx.description || tx.method}</Typography><Typography variant="caption" color="text.secondary">{tx.beneficiary?.name ? `For ${tx.beneficiary.name} · ` : ''}{new Date(tx.createdAt).toLocaleString()}</Typography></Box><Typography fontWeight={800} color={tx.type === 'CREDIT' ? 'success.main' : 'warning.main'}>{tx.type === 'CREDIT' ? '+' : '-'}{money(tx.amount)}</Typography></Stack>)}</Stack>}</CardContent></Card></Stack>; }
+function WalletTab({ company, transactions, onFund, onTransfer, onVerify }) {
+  const ledgerStatusColor = status => ({ SUCCESS: 'success', PENDING: 'warning', FAILED: 'error', REVERSED: 'default' }[status] || 'default');
+  const pendingGatewayCount = transactions.filter(tx => String(tx.method || '').toLowerCase() === 'paystack' && tx.status === 'PENDING').length;
+  const [verifying, setVerifying] = useState('');
+  const verify = async reference => {
+    setVerifying(reference);
+    try { await onVerify(reference); } finally { setVerifying(''); }
+  };
+  return <Stack spacing={2.5}>
+    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1.5}>
+      <Box><Typography variant="h6" fontWeight={800}>Company wallet</Typography><Typography color="text.secondary">Every offline credit, Paystack attempt and user transfer is retained with its processing status.</Typography></Box>
+      <Stack direction="row" spacing={1}><Button variant="outlined" startIcon={<SendRounded />} onClick={onTransfer}>Fund user</Button><Button variant="contained" startIcon={<AddRounded />} onClick={onFund}>Add funds</Button></Stack>
+    </Stack>
+    <Card variant="outlined" sx={{ borderRadius: 3.5, background: 'linear-gradient(135deg, #0F3D70, #2563EB)', color: 'white' }}>
+      <CardContent><Typography sx={{ opacity: .75 }}>Available company balance</Typography><Typography variant="h3" fontWeight={850} sx={{ mt: .5 }}>{money(company.walletBalance)}</Typography><Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.25 }}><Chip size="small" label={`${money(company.debtOutstanding)} debt outstanding`} sx={{ color: 'white', bgcolor: company.debtOutstanding > 0 ? 'rgba(245,158,11,.3)' : 'rgba(255,255,255,.12)' }} /><Typography variant="body2" sx={{ opacity: .7, alignSelf: 'center' }}>{company.wallet?.currency || 'NGN'} · {company.stats?.walletTransactions || 0} ledger entries</Typography></Stack></CardContent>
+    </Card>
+    <Card variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}>
+      <CardContent><Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>Recent wallet activity</Typography>{pendingGatewayCount > 0 && <Alert severity="warning" sx={{ mb: 1.5 }}>There {pendingGatewayCount === 1 ? 'is' : 'are'} {pendingGatewayCount} Paystack funding attempt{pendingGatewayCount === 1 ? '' : 's'} still pending. Pending credits are not added to the balance until Paystack verification succeeds.</Alert>}{transactions.length === 0 ? <Typography color="text.secondary">No wallet activity yet.</Typography> : <Stack divider={<Divider />}>{transactions.map(tx => <Stack key={tx.id} direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }} sx={{ py: 1.35 }}><Box sx={{ width: 36, height: 36, borderRadius: 2, bgcolor: tx.type === 'CREDIT' ? 'success.light' : 'warning.light', color: tx.type === 'CREDIT' ? 'success.dark' : 'warning.dark', display: 'grid', placeItems: 'center', flexShrink: 0 }}>{tx.type === 'CREDIT' ? <AddRounded fontSize="small" /> : <SendRounded fontSize="small" />}</Box><Box sx={{ flex: 1, minWidth: 0 }}><Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap><Typography fontWeight={700}>{tx.description || tx.method || 'Wallet activity'}</Typography><Chip size="small" label={tx.status || 'SUCCESS'} color={ledgerStatusColor(tx.status)} />{String(tx.method || '').toLowerCase() === 'paystack' && tx.status === 'PENDING' && tx.reference && <Button size="small" variant="outlined" startIcon={<RefreshRounded />} onClick={() => verify(tx.reference)} disabled={Boolean(verifying)}>{verifying === tx.reference ? 'Checking…' : 'Verify'}</Button>}</Stack><Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{tx.method || 'Internal'}{tx.beneficiary?.name ? ` · For ${tx.beneficiary.name}` : ''} · {formatDateTime(tx.createdAt)}</Typography>{tx.reference && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontFamily: 'monospace', wordBreak: 'break-all' }}>{tx.reference}</Typography>}</Box><Typography fontWeight={800} color={tx.type === 'CREDIT' ? 'success.main' : 'warning.main'}>{tx.type === 'CREDIT' ? '+' : '-'}{money(tx.amount)}</Typography></Stack>)}</Stack>}</CardContent>
+    </Card>
+  </Stack>;
+}
 
 function RulesTab({ rules, users, onCreate, onDisable }) { return <Stack spacing={2.5}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1.5}><Box><Typography variant="h6" fontWeight={800}>Automatic funding</Typography><Typography color="text.secondary">Create company-wide or user-specific daily, weekly, monthly or yearly allowances.</Typography></Box><Button variant="contained" startIcon={<AddRounded />} onClick={onCreate}>Create rule</Button></Stack>{rules.length === 0 ? <Card variant="outlined" sx={{ borderRadius: 3.5 }}><CardContent><Stack alignItems="center" spacing={1}><AutorenewRounded sx={{ fontSize: 46, color: 'text.disabled' }} /><Typography fontWeight={750}>No funding routines configured</Typography><Typography color="text.secondary">The scheduler will run active rules automatically when their next run is due.</Typography></Stack></CardContent></Card> : <Stack spacing={1.25}>{rules.map(rule => <Card key={rule.id} variant="outlined" sx={{ borderRadius: 3.5 }}><CardContent><Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }}><Box sx={{ flex: 1 }}><Stack direction="row" spacing={1} alignItems="center"><Chip size="small" label={rule.active ? 'Active' : 'Disabled'} color={rule.active ? 'success' : 'default'} /><Typography fontWeight={800}>{money(rule.amount)} · {rule.frequency}</Typography></Stack><Typography variant="body2" color="text.secondary" sx={{ mt: .75 }}>{rule.mobileUser?.name || 'All active company users'} · Next run {new Date(rule.nextRunAt).toLocaleString()}</Typography>{rule.notes && <Typography variant="caption" color="text.secondary">{rule.notes}</Typography>}</Box>{rule.active && <Button color="error" size="small" startIcon={<DeleteOutlineRounded />} onClick={() => onDisable(rule)}>Disable</Button>}</Stack></CardContent></Card>)}</Stack>}</Stack>; }
 

@@ -4,6 +4,7 @@ const companyPortalService = {
   dashboard: () => companyApi.get('/company/dashboard'),
   monitor: () => companyApi.get('/company/monitor'),
   users: (params = {}) => companyApi.get('/company/users', { params }),
+  userActivity: (id, params = {}) => companyApi.get(`/company/users/${id}/activity`, { params }),
   createUser: payload => companyApi.post('/company/users', payload),
   setUserStatus: (id, status) => companyApi.put(`/company/users/${id}/status`, { status }),
   fundUser: (id, payload) => companyApi.post(`/company/users/${id}/fund`, payload),
@@ -18,4 +19,3 @@ const companyPortalService = {
 };
 
 export default companyPortalService;
-

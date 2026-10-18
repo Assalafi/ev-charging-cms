@@ -74,6 +74,27 @@ module.exports = (sequelize) => {
             allowNull: true,
             comment: 'Timestamp when wallet was debited. NULL means not yet billed.'
         },
+        billingAttempts: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            defaultValue: 0,
+            comment: 'Number of billing attempts made for this transaction'
+        },
+        billingLastError: {
+            type: DataTypes.TEXT,
+            allowNull: true,
+            comment: 'Last billing failure; retained for retry diagnostics'
+        },
+        billingNextAttemptAt: {
+            type: DataTypes.DATE,
+            allowNull: true,
+            comment: 'Earliest time at which a failed billing attempt may be retried'
+        },
+        offlineSince: {
+            type: DataTypes.DATE,
+            allowNull: true,
+            comment: 'When the station connection was lost while this transaction was active'
+        },
         sellingPricePerWh: {
             type: DataTypes.FLOAT,
             allowNull: true,

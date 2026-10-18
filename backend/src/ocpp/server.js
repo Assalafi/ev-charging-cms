@@ -6,6 +6,7 @@ const { ChargingStation, OcppMessage } = require('../models');
 const mqttClient = require('../mqtt/client');
 const messageHandlers = require('./messageHandlers');
 const config = require('../../../config/backend').backend;
+const offlineRecovery = require('../services/offlineTransactionRecovery');
 const fs = require('fs');
 const https = require('https');
 const http = require('http');
@@ -36,6 +37,11 @@ function createServerState() {
         
         // Timers for offline auto-stop (chargePointId -> timeoutId)
         disconnectTimers: new Map(),
+
+        // In-flight inbound requests keyed by charge point/message ID. This
+        // prevents a station retry from creating a second transaction while
+        // the first copy is still being processed.
+        inboundProcessing: new Map(),
         
         // OCPP Configuration
         heartbeatInterval: config.ocpp.heartbeatInterval,
@@ -65,6 +71,8 @@ function init(server) {
         logger.info('OCPP WebSocket server already initialized');
         return;
     }
+
+    offlineRecovery.configure({ connectionChecker: isConnected });
     
     // We'll set the initialized flag at the end of this method
 
@@ -162,6 +170,9 @@ function init(server) {
                 serverState.disconnectTimers.delete(chargePointId);
                 logger.info(`Station ${chargePointId} reconnected — cancelled offline auto-stop timer`);
             }
+            offlineRecovery.markStationOnline(chargePointId).catch(error => {
+                logger.warn(`Could not clear offline recovery marker for ${chargePointId}: ${error.message}`);
+            });
             
             // Immediately add to connection map
             serverState.connectedStations.set(chargePointId, ws);
@@ -324,6 +335,12 @@ function init(server) {
                     return;
                 }
                 serverState.connectedStations.delete(chargePointId);
+
+                // Persist the disconnect marker. The periodic recovery worker
+                // will use it even if this Node process restarts.
+                offlineRecovery.markStationOffline(chargePointId).catch(error => {
+                    logger.warn(`Could not persist offline recovery marker for ${chargePointId}: ${error.message}`);
+                });
                 updateStationConnectionStatus(chargePointId, false).catch(err => {
                     logger.error(`Error updating connection status for ${chargePointId}:`, err);
                 });
@@ -441,94 +458,26 @@ function init(server) {
                     }));
                 }
 
-                // Start 2-minute offline auto-stop timer
-                // Give charger time to reconnect before completing transactions
-                // The charger will send the real StopTransaction with correct meterStop on reconnect
+                // Keep a short local fast path for the normal disconnect case.
+                // The database-backed worker is the durable safety net.
                 if (!serverState.disconnectTimers.has(chargePointId)) {
-                    logger.info(`Starting 120s offline auto-stop timer for ${chargePointId}`);
+                    const graceMs = Number.parseInt(process.env.OCPP_OFFLINE_GRACE_MS || '120000', 10);
+                    logger.info(`Starting ${graceMs}ms offline recovery timer for ${chargePointId}`);
                     const timer = setTimeout(async () => {
                         serverState.disconnectTimers.delete(chargePointId);
-                        // Check if station is still offline
                         if (isConnected(chargePointId)) {
-                            logger.info(`Station ${chargePointId} is back online — skipping auto-stop`);
+                            logger.info(`Station ${chargePointId} is back online — skipping offline recovery`);
                             return;
                         }
-                        logger.warn(`Station ${chargePointId} offline for 120s — auto-completing active transactions`);
                         try {
-                            const { Transaction, ChargingStation, Connector } = require('../models');
-
-                            const activeTxs = await Transaction.findAll({
-                                where: { chargePointId, status: 'InProgress' }
-                            });
-                            for (const tx of activeTxs) {
-                                const { getChargingPricing } = require('../services/chargingPricingService');
-                                const pricing = await getChargingPricing({ chargePointId, idTag: tx.idTag });
-                                // Calculate amount: energy-based if kWh > 0, otherwise minimum charge
-                                let txAmount = parseFloat(tx.amount);
-                                if (!(txAmount > 0)) {
-                                    const energy = parseFloat(tx.energyDelivered) || 0;
-                                    if (energy > 0) {
-                                        const energyKwh = energy / 1000;
-                                        const ratePerKwh = pricing.pricePerWh * 1000;
-                                        txAmount = energyKwh * ratePerKwh;
-                                    }
-                                    txAmount = Math.max(txAmount || 0, pricing.minimumCharge);
-                                }
-                                // Mark as completed but DO NOT bill yet — defer billing 60s
-                                // to allow the charger to reconnect and send StopTransaction with real meterStop
-                                const { calculatePartnerRevenue } = require('../services/partnerRevenueService');
-                                const revenue = await calculatePartnerRevenue({
-                                    chargePointId,
-                                    energyWh: parseFloat(tx.energyDelivered) || 0,
-                                    billableAmount: txAmount,
-                                    idTag: tx.idTag,
-                                    pricing
-                                });
-                                await tx.update({
-                                    status: 'Completed',
-                                    stopTime: new Date(),
-                                    amount: txAmount,
-                                    grossAmount: revenue.grossAmount,
-                                    sellingPricePerWh: revenue.sellingPricePerWh,
-                                    productionCostPerWh: revenue.productionCostPerWh,
-                                    partnerSharePercent: revenue.partnerSharePercent,
-                                    minimumChargeApplied: revenue.grossAmount < txAmount,
-                                    productionCostAmount: revenue.productionCostAmount,
-                                    profitAmount: revenue.profitAmount,
-                                    partnerEarning: revenue.partnerEarning,
-                                    companyEarning: revenue.companyEarning,
-                                    partnerId: revenue.partnerId,
-                                    locationId: revenue.locationId,
-                                    settlementStatus: revenue.settlementStatus
-                                });
-                                logger.warn(`Auto-completed transaction ${tx.transactionId} (station ${chargePointId} offline) — amount: ₦${txAmount} (billing deferred 60s)`);
-                                
-                                // Defer billing to give charger time to send real StopTransaction
-                                const txId = tx.transactionId;
-                                setTimeout(async () => {
-                                    try {
-                                        const { billTransaction } = require('../services/billingService');
-                                        const freshTx = await Transaction.findOne({ where: { transactionId: txId } });
-                                        if (freshTx && !freshTx.billedAt) {
-                                            await billTransaction(txId);
-                                            logger.info(`Deferred billing completed for offline tx ${txId}`);
-                                        } else {
-                                            logger.info(`Deferred billing skipped for tx ${txId} (already billed or reconciled)`);
-                                        }
-                                    } catch (billErr) {
-                                        logger.warn(`Deferred billing failed for offline tx ${txId}: ${billErr.message}`);
-                                    }
-                                }, 60000);
+                            const result = await offlineRecovery.recoverOfflineTransactions({ chargePointId });
+                            if (result.recovered) {
+                                logger.warn(`Recovered ${result.recovered} offline transaction(s) for ${chargePointId}`);
                             }
-                            // Update connectors to Available
-                            await Connector.update(
-                                { status: 'Available', transactionId: null },
-                                { where: { chargePointId } }
-                            );
                         } catch (err) {
-                            logger.error(`Error in offline auto-stop for ${chargePointId}: ${err.message}`);
+                            logger.error(`Error in offline transaction recovery for ${chargePointId}: ${err.message}`);
                         }
-                    }, 120000);
+                    }, graceMs);
                     serverState.disconnectTimers.set(chargePointId, timer);
                 }
             });
@@ -539,6 +488,9 @@ function init(server) {
 
                 // Clean up on error
                 serverState.connectedStations.delete(chargePointId);
+                offlineRecovery.markStationOffline(chargePointId).catch(markerError => {
+                    logger.warn(`Could not persist offline marker after socket error for ${chargePointId}: ${markerError.message}`);
+                });
                 await updateStationConnectionStatus(chargePointId, false);
             });
 
@@ -628,34 +580,84 @@ async function handleOcppMessage(chargePointId, data, ws) {
                 // Process based on message type
                 switch (messageTypeId) {
                     case 2: // Request from charging station
-                        // Log the incoming request
-                        await OcppMessage.create({
-                            messageId: uniqueId,
-                            chargePointId: chargePointId,
-                            message_type: action,
-                            status: 'Received',
-                            payload: JSON.stringify(payload),
-                            direction: 'Inbound',
-                            timestamp: new Date()
-                        });
+                        {
+                            const dedupeKey = `inbound:${chargePointId}:${uniqueId}`;
+                            const parsePayload = value => {
+                                if (!value) return null;
+                                if (typeof value === 'string') {
+                                    try { return JSON.parse(value); } catch (_) { return null; }
+                                }
+                                return value;
+                            };
 
-                        // Process the request
-                        const response = await messageHandlers.handleRequest(chargePointId, action, uniqueId, payload);
-
-                        // Send response back to charging station
-                        if (response) {
-                            ws.send(JSON.stringify(response));
-
-                            // Log the response
-                            await OcppMessage.create({
-                                messageId: uniqueId,
-                                chargePointId: chargePointId,
-                                message_type: action,
-                                status: 'Sent',
-                                payload: JSON.stringify(response[2] || {}),
-                                direction: 'Outbound',
-                                timestamp: new Date()
+                            // If this is a retry after the response was already
+                            // persisted, replay the exact response instead of
+                            // creating another transaction.
+                            const previous = await OcppMessage.findOne({
+                                where: { dedupeKey, direction: 'Inbound' },
+                                order: [['createdAt', 'DESC']]
                             });
+                            if (previous?.responsePayload) {
+                                const cached = parsePayload(previous.responsePayload) || {};
+                                if (ws.readyState === WebSocket.OPEN) {
+                                    ws.send(JSON.stringify([3, uniqueId, cached]));
+                                }
+                                break;
+                            }
+
+                            let processing = serverState.inboundProcessing.get(dedupeKey);
+                            if (!processing) {
+                                processing = (async () => {
+                                    const inbound = previous || await OcppMessage.create({
+                                        messageId: uniqueId,
+                                        chargePointId,
+                                        message_type: action,
+                                        status: 'Received',
+                                        payload,
+                                        direction: 'Inbound',
+                                        timestamp: new Date(),
+                                        dedupeKey
+                                    });
+                                    try {
+                                        const result = await messageHandlers.handleRequest(chargePointId, action, uniqueId, payload);
+                                        const responsePayload = result?.[2] || {};
+                                        await inbound.update({
+                                            status: 'Received',
+                                            processedAt: new Date(),
+                                            processingError: null,
+                                            responsePayload
+                                        });
+                                        await OcppMessage.create({
+                                            messageId: uniqueId,
+                                            chargePointId,
+                                            message_type: action,
+                                            status: 'Sent',
+                                            payload: responsePayload,
+                                            direction: 'Outbound',
+                                            timestamp: new Date()
+                                        });
+                                        return result;
+                                    } catch (error) {
+                                        await inbound.update({
+                                            status: 'Failed',
+                                            processingError: String(error.message || error).slice(0, 2000)
+                                        }).catch(() => {});
+                                        throw error;
+                                    }
+                                })();
+                                serverState.inboundProcessing.set(dedupeKey, processing);
+                            }
+
+                            try {
+                                const response = await processing;
+                                if (response && ws.readyState === WebSocket.OPEN) {
+                                    ws.send(JSON.stringify(response));
+                                }
+                            } finally {
+                                if (serverState.inboundProcessing.get(dedupeKey) === processing) {
+                                    serverState.inboundProcessing.delete(dedupeKey);
+                                }
+                            }
                         }
                         break;
 

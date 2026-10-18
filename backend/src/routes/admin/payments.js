@@ -4,8 +4,18 @@ const { Wallet, PaymentTransaction, MobileUser, PaymentSettings } = require('../
 const { authenticate } = require('../../middleware/auth');
 const { requirePermission } = require('../../middleware/permissions');
 const logger = require('../../utils/logger');
+const { parseLagosDate } = require('../../utils/timezone');
 
 const router = express.Router();
+
+// Date-only filters represent a West Africa calendar date. Complete ISO
+// timestamps already identify an instant and must be preserved as-is.
+const parseDateFilter = (value, endOfDay = false) => {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return parseLagosDate(value, endOfDay);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new Error('Invalid date filter');
+  return parsed;
+};
 
 // Apply authentication middleware
 router.use(authenticate);
@@ -107,12 +117,10 @@ router.get('/transactions', requirePermission('payments.view'), async (req, res)
     if (startDate || endDate) {
       whereClause.createdAt = {};
       if (startDate) {
-        whereClause.createdAt[Op.gte] = new Date(startDate);
+        whereClause.createdAt[Op.gte] = parseDateFilter(startDate);
       }
       if (endDate) {
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        whereClause.createdAt[Op.lte] = end;
+        whereClause.createdAt[Op.lte] = parseDateFilter(endDate, true);
       }
     }
     

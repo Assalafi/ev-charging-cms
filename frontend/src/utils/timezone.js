@@ -65,4 +65,16 @@ export const dateKey = (value = new Date()) => {
   return `${parts.year}-${parts.month}-${parts.day}`;
 };
 
+// Return the exact UTC instants for one West Africa calendar day. The API
+// stores timestamps as instants, so callers must not append `Z` directly to
+// a Lagos calendar date (midnight WAT is 23:00 UTC on the previous day).
+export const dayRangeUtc = (value = new Date()) => {
+  const key = dateKey(value);
+  if (!key) return { start: '', end: '' };
+  const [year, month, day] = key.split('-').map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day) - (60 * 60 * 1000));
+  const end = new Date(Date.UTC(year, month - 1, day + 1) - (60 * 60 * 1000) - 1);
+  return { start: start.toISOString(), end: end.toISOString() };
+};
+
 export const todayKey = () => dateKey(new Date());

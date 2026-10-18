@@ -81,6 +81,10 @@ const companyService = {
     const response = await api.get(`/admin/companies/${id}/wallet/transactions`, { params });
     return response.data;
   },
+  activity: async (id, params = {}) => {
+    const response = await api.get(`/admin/companies/${id}/activity`, { params });
+    return response.data;
+  },
   rules: async (id) => {
     const response = await api.get(`/admin/companies/${id}/funding-rules`);
     return response.data;

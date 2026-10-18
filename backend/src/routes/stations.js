@@ -684,8 +684,13 @@ router.get('/:id/status', authenticate, requireStationStateAccess(), async (req,
         
         if (updatedStatus === 'Charging' && activeTransaction) {
             try {
-                // Try to get energy consumption from the active transaction
-                energyConsumption = activeTransaction.energyDelivered || '0.00';
+                // Transaction energy is normalized to Wh throughout the
+                // backend. This station-status response is a UI contract, so
+                // expose the display value in kWh and retain the raw Wh value
+                // explicitly for clients that need it.
+                const energyWh = Math.max(Number(activeTransaction.energyDelivered) || 0, 0);
+                const energyKwh = energyWh / 1000;
+                energyConsumption = energyKwh;
                 
                 // Calculate charging duration in seconds
                 if (activeTransaction.startTime) {
@@ -695,11 +700,10 @@ router.get('/:id/status', authenticate, requireStationStateAccess(), async (req,
                     logger.debug(`Calculated charging duration: ${chargingDuration} seconds`);
                     
                     // Estimate charging power (kW) - if we have energy and duration
-                    if (parseFloat(energyConsumption) > 0 && chargingDuration > 0) {
-                        // energyDelivered is usually in kWh, convert duration to hours
+                    if (energyKwh > 0 && chargingDuration > 0) {
                         const durationHours = chargingDuration / 3600;
                         if (durationHours > 0) {
-                            chargingPower = parseFloat(energyConsumption) / durationHours;
+                            chargingPower = energyKwh / durationHours;
                             logger.debug(`Estimated charging power: ${chargingPower} kW`);
                         }
                     }
@@ -712,7 +716,7 @@ router.get('/:id/status', authenticate, requireStationStateAccess(), async (req,
                 const chargingRange = 60; // from 20% to 80% = 60% range
                 
                 // Calculate estimated percentage gain from energy delivered
-                const percentageGain = (parseFloat(energyConsumption) / typicalEVBattery) * 100;
+                const percentageGain = (energyKwh / typicalEVBattery) * 100;
                 batteryPercentage = Math.min(80, Math.max(20, Math.round(startingPercentage + percentageGain)));
                 logger.debug(`Estimated battery percentage: ${batteryPercentage}%`);
                 
@@ -729,6 +733,9 @@ router.get('/:id/status', authenticate, requireStationStateAccess(), async (req,
                 status: updatedStatus, // Use the latest status even if DB update failed
                 isConnected,
                 energyConsumption,
+                energyConsumptionWh: updatedStatus === 'Charging' && activeTransaction
+                    ? Math.max(Number(activeTransaction.energyDelivered) || 0, 0)
+                    : 0,
                 chargingDuration,
                 batteryPercentage,
                 chargingPower,

@@ -9,8 +9,7 @@
  */
 
 const logger = require('../utils/logger');
-const { Transaction, MobileUser, Wallet, ChargingStation, sequelize } = require('../models');
-const { getChargingPricing } = require('./chargingPricingService');
+const { Transaction, MobileUser, Wallet } = require('../models');
 
 let intervalHandle = null;
 let ocppServerRef = null;
@@ -182,7 +181,7 @@ async function stopSession(session) {
  * Force-complete a transaction via database when charger is offline or rejects
  */
 async function offlineStop(session) {
-  const { transactionId, chargePointId, energyDelivered, amount } = session;
+  const { transactionId } = session;
 
   try {
     const transaction = await Transaction.findOne({
@@ -194,81 +193,18 @@ async function offlineStop(session) {
       return;
     }
 
-    // Calculate final amount using the driver's effective company/location tariff.
-    let finalAmount = parseFloat(amount) || 0;
-    let pricingForRevenue = null;
-    const energy = parseFloat(energyDelivered) || 0;
-
-    try {
-      const pricing = await getChargingPricing({ chargePointId, idTag: transaction.idTag });
-      pricingForRevenue = pricing;
-      const energyInKwh = energy / 1000;
-      const ratePerKwh = pricing.pricePerWh * 1000;
-      finalAmount = Math.max(energyInKwh * ratePerKwh, pricing.minimumCharge);
-    } catch (priceErr) {
-      logger.error(`WalletMonitor offlineStop: Price calc error for tx ${transactionId}:`, priceErr.message);
-    }
-
-    const { calculatePartnerRevenue } = require('./partnerRevenueService');
-    const partnerRevenue = await calculatePartnerRevenue({
-      chargePointId,
-      energyWh: energy,
-      billableAmount: finalAmount,
-      idTag: transaction.idTag,
-      pricing: pricingForRevenue
-    });
-
-    await transaction.update({
-      status: 'Completed',
-      stopTime: new Date(),
-      amount: finalAmount,
-      grossAmount: partnerRevenue.grossAmount,
-      reason: 'WalletExhausted',
-      stopReason: 'Wallet exhausted',
-      sellingPricePerWh: partnerRevenue.sellingPricePerWh,
-      productionCostPerWh: partnerRevenue.productionCostPerWh,
-      partnerSharePercent: partnerRevenue.partnerSharePercent,
-      minimumChargeApplied: partnerRevenue.grossAmount < finalAmount,
-      productionCostAmount: partnerRevenue.productionCostAmount,
-      profitAmount: partnerRevenue.profitAmount,
-      partnerEarning: partnerRevenue.partnerEarning,
-      companyEarning: partnerRevenue.companyEarning,
-      partnerId: partnerRevenue.partnerId,
-      locationId: partnerRevenue.locationId,
-      settlementStatus: partnerRevenue.settlementStatus
-    });
-
-    logger.info(
-      `WalletMonitor offlineStop: tx ${transactionId} completed via DB. ` +
-      `Energy: ${energy} Wh, Amount: ₦${finalAmount.toFixed(2)}`
+    // Use the same conditional, meter-aware completion path as network-loss
+    // recovery. This prevents two workers from billing or resetting a
+    // different connector when wallet exhaustion and socket loss overlap.
+    const offlineRecovery = require('./offlineTransactionRecovery');
+    const result = await offlineRecovery.completeOfflineTransaction(
+      transaction,
+      new Date(),
+      { reason: 'WalletExhausted', stopReason: 'Wallet exhausted' }
     );
 
-    // Bill the transaction (idempotent - billingService checks billedAt to prevent double billing)
-    // We must bill here because the charger is offline and will never send StopTransaction
-    try {
-      const { billTransaction } = require('./billingService');
-      const billingResult = await billTransaction(transactionId);
-      if (billingResult.success) {
-        logger.info(`WalletMonitor offlineStop: Billing completed for tx ${transactionId}: ${billingResult.message}`);
-      } else {
-        logger.warn(`WalletMonitor offlineStop: Billing not completed for tx ${transactionId}: ${billingResult.message}`);
-      }
-    } catch (billErr) {
-      logger.error(`WalletMonitor offlineStop: Billing error for tx ${transactionId}:`, billErr.message);
-    }
-
-    // Update station/connector status
-    try {
-      await ChargingStation.update(
-        { status: 'Available', currentTransaction: null },
-        { where: { chargePointId } }
-      );
-      await sequelize.query(
-        `UPDATE connectors SET status = 'Available', "transactionId" = NULL, "updatedAt" = NOW() WHERE "chargePointId" = $1`,
-        { bind: [chargePointId], type: sequelize.QueryTypes.UPDATE }
-      );
-    } catch (statusErr) {
-      logger.error(`WalletMonitor: Status update error for ${chargePointId}:`, statusErr.message);
+    if (result.completed) {
+      logger.info(`WalletMonitor offlineStop: tx ${transactionId} completed via shared recovery path`);
     }
   } catch (error) {
     logger.error(`WalletMonitor offlineStop error for tx ${transactionId}:`, error.message);

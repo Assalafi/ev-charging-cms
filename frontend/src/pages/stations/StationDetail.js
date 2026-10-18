@@ -1029,27 +1029,25 @@ function StationDetail() {
             const energyValue = parseFloat(activeTransaction.energyDelivered);
             if (!isNaN(energyValue)) {
               // Update the state with the transaction's energy value
-              setEnergyConsumption(energyValue.toFixed(2));
+              const energyKwh = energyValue / 1000;
+              setEnergyConsumption(energyKwh.toFixed(2));
 
               console.log(
-                `Transaction energy updated to ${energyValue.toFixed(2)} kWh`
+                `Transaction energy updated to ${energyKwh.toFixed(2)} kWh (${energyValue} Wh)`
               );
             }
           }
 
-          // Also update power - should be around 11-16 kW for a standard charging station
-          setCurrentPower(11 + Math.random() * 5);
-
-          // Update battery percentage if it exists (simulated)
-          if (batteryPercentage !== null) {
-            setBatteryPercentage(Math.min(100, batteryPercentage + 1));
-          } else {
-            // Start at a reasonable level
-            setBatteryPercentage(20);
+          // Do not fabricate power, battery, or duration values while the
+          // charger is offline. Those values must come from OCPP samples or
+          // the station-status endpoint.
+          if (activeTransaction.startTime) {
+            const elapsedSeconds = Math.max(
+              0,
+              Math.floor((Date.now() - new Date(activeTransaction.startTime).getTime()) / 1000)
+            );
+            setChargingDuration(elapsedSeconds);
           }
-
-          // Update charging duration - increment by 10 seconds
-          setChargingDuration(prev => prev + 10);
         }
       }, 10000); // Update every 10 seconds
 
@@ -1081,11 +1079,12 @@ function StationDetail() {
           if (activeTransaction.energyDelivered) {
             const energyValue = parseFloat(activeTransaction.energyDelivered);
             if (!isNaN(energyValue)) {
-              setEnergyConsumption(energyValue.toFixed(2));
+              const energyKwh = energyValue / 1000;
+              setEnergyConsumption(energyKwh.toFixed(2));
               console.log(
                 'Energy consumption updated from transaction:',
-                energyValue.toFixed(2),
-                'kWh'
+                energyKwh.toFixed(2),
+                'kWh (raw:', energyValue, 'Wh)'
               );
             }
           }
@@ -1341,11 +1340,9 @@ function StationDetail() {
           }
 
           if (!isNaN(energyValue)) {
-            // Convert to kWh if necessary (our backend now ensures proper units)
-            const finalValue =
-              energyValue > 1000
-                ? (energyValue / 1000).toFixed(2)
-                : energyValue.toFixed(2);
+            // The station-status endpoint exposes energyConsumption in kWh;
+            // never infer units from the magnitude of the number.
+            const finalValue = energyValue.toFixed(2);
             console.log(`Setting energy consumption to ${finalValue} kWh`);
             setEnergyConsumption(finalValue);
           }
@@ -2527,9 +2524,9 @@ function StationDetail() {
                                   variant="body2"
                                   color="text.secondary"
                                 >
-                                  Energy:{' '}
-                                  {transaction.energyDelivered?.toFixed(2) || 0}
-                                  kWh{' '}
+                                Energy:{' '}
+                                  {(Number(transaction.energyDelivered || 0) / 1000).toFixed(2)}
+                                  kWh (raw Wh: {Number(transaction.energyDelivered || 0).toFixed(0)}){' '}
                                 </Typography>{' '}
                               </Grid>{' '}
                             </Grid>

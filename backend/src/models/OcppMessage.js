@@ -1,5 +1,6 @@
 const {
-    DataTypes
+    DataTypes,
+    Op
 } = require('sequelize');
 
 module.exports = (sequelize) => {
@@ -50,6 +51,26 @@ module.exports = (sequelize) => {
         direction: {
             type: DataTypes.ENUM('Inbound', 'Outbound'),
             allowNull: false
+        },
+        processedAt: {
+            type: DataTypes.DATE,
+            allowNull: true,
+            comment: 'When an inbound request finished processing'
+        },
+        processingError: {
+            type: DataTypes.TEXT,
+            allowNull: true,
+            comment: 'Processing error retained for retry diagnostics'
+        },
+        responsePayload: {
+            type: DataTypes.JSONB,
+            allowNull: true,
+            comment: 'Cached OCPP response for idempotent request replay'
+        },
+        dedupeKey: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            comment: 'Inbound request idempotency key; existing history remains nullable'
         }
     }, {
         tableName: 'ocpp_messages',
@@ -68,6 +89,16 @@ module.exports = (sequelize) => {
             },
             {
                 fields: ['createdAt']
+            },
+            {
+                name: 'ocpp_messages_dedupe_key_unique',
+                unique: true,
+                fields: ['dedupeKey'],
+                where: {
+                    dedupeKey: {
+                        [Op.ne]: null
+                    }
+                }
             }
         ]
     });

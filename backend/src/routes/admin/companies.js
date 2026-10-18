@@ -8,6 +8,8 @@ const {
   CompanyUser,
   MobileUser,
   Wallet,
+  PaymentTransaction,
+  Transaction,
   AuthorizedTag,
   PaymentSettings,
   sequelize
@@ -16,6 +18,7 @@ const { authenticate } = require('../../middleware/auth');
 const { requirePermission } = require('../../middleware/permissions');
 const logger = require('../../utils/logger');
 const { parseLagosDate } = require('../../utils/timezone');
+const { getPartnerDateRange } = require('../../utils/partnerDateRange');
 const {
   fundCompanyWallet,
   initializeCompanyGatewayFunding,
@@ -32,6 +35,100 @@ function parsePage(query) {
   const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
   const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 20, 1), 100);
   return { page, limit, offset: (page - 1) * limit };
+}
+
+function activityRange(query = {}) {
+  const aliases = { today: 'daily', daily: 'daily', week: 'weekly', weekly: 'weekly', month: 'monthly', monthly: 'monthly', year: 'yearly', yearly: 'yearly' };
+  const requested = String(query.range || 'monthly').toLowerCase();
+  return getPartnerDateRange({
+    range: aliases[requested] || 'monthly',
+    startDate: query.startDate,
+    endDate: query.endDate
+  });
+}
+
+const activityNumber = value => Number(value) || 0;
+
+async function companyActivitySummary({ tagIds, userIds, companyId, start, end }) {
+  if (!tagIds.length && !userIds.length) {
+    return {
+      sessions: 0, activeSessions: 0, energyWh: 0, chargingValue: 0, companyEarning: 0,
+      payments: { total: 0, successful: 0, pending: 0, failed: 0, reversed: 0, successfulAmount: 0, pendingAmount: 0, failedAmount: 0, reversedAmount: 0 },
+      wallet: { credits: 0, debits: 0, pending: 0, failed: 0 }
+    };
+  }
+
+  const transactionDate = start && end ? 'AND (COALESCE("stopTime", "startTime") BETWEEN :startDate AND :endDate OR (status = \'InProgress\' AND "startTime" <= :endDate))' : '';
+  const paymentDate = start && end ? 'AND "createdAt" BETWEEN :startDate AND :endDate' : '';
+  const ledgerDate = start && end ? 'AND "createdAt" BETWEEN :startDate AND :endDate' : '';
+  const replacements = { tagIds: tagIds.length ? tagIds : [-1], userIds: userIds.length ? userIds : [-1], companyId };
+  if (start && end) {
+    replacements.startDate = start;
+    replacements.endDate = end;
+  }
+  const [transactionRows, paymentRows, ledgerRows] = await Promise.all([
+    sequelize.query(`
+      SELECT
+        COUNT(*) AS sessions,
+        COUNT(*) FILTER (WHERE status = 'InProgress') AS active_sessions,
+        COALESCE(SUM("energyDelivered"), 0) AS energy_wh,
+        COALESCE(SUM(COALESCE(NULLIF("grossAmount", 0), amount, 0)), 0) AS charging_value,
+        COALESCE(SUM("companyEarning") FILTER (WHERE status = 'Completed'), 0) AS company_earning
+      FROM transactions
+      WHERE "idTag" IN (:tagIds) ${transactionDate}
+    `, { replacements, type: sequelize.QueryTypes.SELECT }),
+    sequelize.query(`
+      SELECT
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE status = 'SUCCESS') AS successful,
+        COUNT(*) FILTER (WHERE status = 'PENDING') AS pending,
+        COUNT(*) FILTER (WHERE status = 'FAILED') AS failed,
+        COUNT(*) FILTER (WHERE status = 'REVERSED') AS reversed,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'SUCCESS'), 0) AS successful_amount,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'PENDING'), 0) AS pending_amount,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'FAILED'), 0) AS failed_amount,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'REVERSED'), 0) AS reversed_amount
+      FROM payment_transactions
+      WHERE "userId" IN (:userIds) ${paymentDate}
+    `, { replacements, type: sequelize.QueryTypes.SELECT }),
+    sequelize.query(`
+      SELECT
+        COALESCE(SUM(amount) FILTER (WHERE type = 'CREDIT' AND status = 'SUCCESS'), 0) AS credits,
+        COALESCE(SUM(amount) FILTER (WHERE type = 'DEBIT' AND status = 'SUCCESS'), 0) AS debits,
+        COUNT(*) FILTER (WHERE status = 'PENDING') AS pending,
+        COUNT(*) FILTER (WHERE status = 'FAILED') AS failed
+      FROM company_wallet_transactions
+      WHERE "companyId" = :companyId ${ledgerDate}
+    `, { replacements, type: sequelize.QueryTypes.SELECT })
+  ]);
+
+  const transaction = transactionRows[0] || {};
+  const payments = paymentRows[0] || {};
+  const wallet = ledgerRows[0] || {};
+  return {
+    sessions: activityNumber(transaction.sessions),
+    activeSessions: activityNumber(transaction.active_sessions),
+    energyWh: activityNumber(transaction.energy_wh),
+    chargingValue: activityNumber(transaction.charging_value),
+    companyEarning: activityNumber(transaction.company_earning),
+    payments: {
+      total: activityNumber(payments.total),
+      successful: activityNumber(payments.successful),
+      pending: activityNumber(payments.pending),
+      failed: activityNumber(payments.failed),
+      reversed: activityNumber(payments.reversed),
+      successfulAmount: activityNumber(payments.successful_amount),
+      pendingAmount: activityNumber(payments.pending_amount),
+      failedAmount: activityNumber(payments.failed_amount),
+      reversedAmount: activityNumber(payments.reversed_amount)
+    },
+    wallet: {
+      credits: activityNumber(wallet.credits),
+      debits: activityNumber(wallet.debits),
+      pending: activityNumber(wallet.pending),
+      failed: activityNumber(wallet.failed)
+    }
+  };
 }
 
 function cleanCompanyPayload(body = {}) {
@@ -401,6 +498,93 @@ router.delete('/:companyId/portal-users/:userId', authenticate, requirePermissio
   } catch (error) {
     logger.error('Error deleting company portal user:', error);
     res.status(500).json({ success: false, message: 'Failed to remove company portal account' });
+  }
+});
+
+// A company workspace needs one consistent, period-aware view of charging,
+// wallet and gateway activity. Charging rows are scoped by the company's
+// currently assigned mobile-user identities, while wallet/payment records are
+// retained independently for audit history.
+router.get('/:companyId/activity', authenticate, requirePermission('companies.view'), async (req, res) => {
+  try {
+    const company = await SubscriptionCompany.findByPk(req.params.companyId, { attributes: ['id', 'name'] });
+    if (!company) return res.status(404).json({ success: false, message: 'Company not found' });
+
+    const { page, limit, offset } = parsePage(req.query);
+    const selectedRange = activityRange(req.query);
+    const [today, week, month, year, users] = await Promise.all([
+      getPartnerDateRange({ range: 'daily' }),
+      getPartnerDateRange({ range: 'weekly' }),
+      getPartnerDateRange({ range: 'monthly' }),
+      getPartnerDateRange({ range: 'yearly' }),
+      MobileUser.findAll({ where: { companyId: company.id }, attributes: ['id', 'tagId', 'name', 'email', 'phone'], raw: true })
+    ]);
+    const userIds = users.map(user => user.id).filter(Number.isInteger);
+    const tagIds = users.map(user => user.tagId).filter(Boolean);
+
+    const [todaySummary, weekSummary, monthSummary, yearSummary, lifetimeSummary, selectedSummary] = await Promise.all([
+      companyActivitySummary({ tagIds, userIds, companyId: company.id, start: today.start, end: today.end }),
+      companyActivitySummary({ tagIds, userIds, companyId: company.id, start: week.start, end: week.end }),
+      companyActivitySummary({ tagIds, userIds, companyId: company.id, start: month.start, end: month.end }),
+      companyActivitySummary({ tagIds, userIds, companyId: company.id, start: year.start, end: year.end }),
+      companyActivitySummary({ tagIds, userIds, companyId: company.id }),
+      companyActivitySummary({ tagIds, userIds, companyId: company.id, start: selectedRange.start, end: selectedRange.end })
+    ]);
+
+    const sessionWhere = tagIds.length ? {
+      idTag: { [Op.in]: tagIds },
+      [Op.or]: [
+        { stopTime: { [Op.between]: [selectedRange.start, selectedRange.end] } },
+        { startTime: { [Op.between]: [selectedRange.start, selectedRange.end] } },
+        { status: 'InProgress', startTime: { [Op.lte]: selectedRange.end } }
+      ],
+      ...(req.query.sessionStatus && req.query.sessionStatus !== 'all' ? { status: req.query.sessionStatus } : {})
+    } : { id: { [Op.in]: [-1] } };
+    const paymentWhere = userIds.length ? {
+      userId: { [Op.in]: userIds },
+      createdAt: { [Op.between]: [selectedRange.start, selectedRange.end] },
+      ...(req.query.paymentStatus && req.query.paymentStatus !== 'all' ? { status: req.query.paymentStatus } : {})
+    } : { id: { [Op.in]: [-1] } };
+    const ledgerWhere = {
+      companyId: company.id,
+      createdAt: { [Op.between]: [selectedRange.start, selectedRange.end] },
+      ...(req.query.ledgerStatus && req.query.ledgerStatus !== 'all' ? { status: req.query.ledgerStatus } : {})
+    };
+
+    const [sessions, payments, ledger] = await Promise.all([
+      Transaction.findAndCountAll({
+        where: sessionWhere,
+        attributes: ['id', 'transactionId', 'chargePointId', 'connectorId', 'idTag', 'startTime', 'stopTime', 'energyDelivered', 'amount', 'grossAmount', 'companyEarning', 'status'],
+        order: [['startTime', 'DESC']], limit, offset
+      }),
+      PaymentTransaction.findAndCountAll({
+        where: paymentWhere,
+        attributes: ['id', 'userId', 'walletId', 'type', 'amount', 'currency', 'reference', 'gateway', 'status', 'description', 'createdAt'],
+        include: [{ model: MobileUser, as: 'user', attributes: ['id', 'name', 'email', 'phone'], required: false }],
+        order: [['createdAt', 'DESC']], limit, offset, distinct: true
+      }),
+      CompanyWalletTransaction.findAndCountAll({
+        where: ledgerWhere,
+        attributes: ['id', 'type', 'amount', 'currency', 'reference', 'method', 'status', 'description', 'beneficiaryUserId', 'createdAt'],
+        include: [{ model: MobileUser, as: 'beneficiary', attributes: ['id', 'name', 'email'], required: false }],
+        order: [['createdAt', 'DESC']], limit, offset, distinct: true
+      })
+    ]);
+
+    const pagination = result => ({ page, limit, total: result.count, pages: Math.ceil(result.count / limit) });
+    res.json({
+      success: true,
+      company,
+      period: { range: selectedRange.range, start: selectedRange.start, end: selectedRange.end },
+      summary: { today: todaySummary, week: weekSummary, month: monthSummary, year: yearSummary, lifetime: lifetimeSummary, selected: selectedSummary },
+      sessions: sessions.rows,
+      payments: payments.rows,
+      walletTransactions: ledger.rows,
+      pagination: { sessions: pagination(sessions), payments: pagination(payments), wallet: pagination(ledger) }
+    });
+  } catch (error) {
+    logger.error('Error fetching company activity:', error);
+    res.status(400).json({ success: false, message: error.message || 'Failed to fetch company activity' });
   }
 });
 

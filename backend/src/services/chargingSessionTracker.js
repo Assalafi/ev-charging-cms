@@ -5,6 +5,18 @@
 const logger = require('../utils/logger');
 const eventEmitter = require('../utils/eventEmitter');
 
+function energyToKwh(value, unit) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return String(unit || 'Wh').toLowerCase() === 'wh' ? numeric / 1000 : numeric;
+}
+
+function powerToKw(value, unit) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return String(unit || 'W').toLowerCase() === 'w' ? numeric / 1000 : numeric;
+}
+
 class ChargingSessionTracker {
   constructor() {
     this.activeTransactions = new Map(); // transactionId -> session data
@@ -53,14 +65,9 @@ class ChargingSessionTracker {
       const previousEnergy = session.currentEnergy;
       
       // Extract value and handle unit conversion if present
-      let energyValue = parseFloat(energyEntry.value);
-      const unit = energyEntry.unit?.toLowerCase() || '';
-      
-      // Convert to kWh if in Wh
-      if (unit === 'wh') {
-        energyValue = energyValue / 1000;
-        logger.info(`Converting energy from Wh to kWh: ${energyValue} kWh`);
-      }
+      const unit = energyEntry.unit || 'Wh';
+      const energyValue = energyToKwh(energyEntry.value, unit);
+      logger.info(`Normalizing energy reading ${energyEntry.value} ${unit} to ${energyValue} kWh`);
       
       session.currentEnergy = energyValue;
       session.energyConsumed = session.currentEnergy - session.startEnergy;
@@ -88,7 +95,7 @@ class ChargingSessionTracker {
     );
     
     if (powerEntry) {
-      session.currentPower = parseFloat(powerEntry.value);
+      session.currentPower = powerToKw(powerEntry.value, powerEntry.unit);
       logger.info(`Transaction ${transactionId}: Direct power reading: ${session.currentPower.toFixed(2)} kW`);
     }
     
@@ -133,11 +140,12 @@ class ChargingSessionTracker {
     
     let startEnergy = 0;
     if (energyEntry) {
-      startEnergy = parseFloat(energyEntry.value);
+      startEnergy = energyToKwh(energyEntry.value, energyEntry.unit);
       logger.info(`Found starting energy in meter values: ${startEnergy} kWh`);
     } else if (startMeterValue !== undefined && startMeterValue !== null) {
-      startEnergy = parseFloat(startMeterValue);
-      logger.info(`Using provided start meter value: ${startEnergy} kWh`);
+      // Transaction.startMeterValue is stored in Wh across the backend.
+      startEnergy = energyToKwh(startMeterValue, 'Wh');
+      logger.info(`Using provided start meter value: ${startMeterValue} Wh (${startEnergy} kWh)`);
     } else {
       logger.warn(`No energy value found for transaction ${transactionId}, initializing at 0`);
     }

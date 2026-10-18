@@ -19,7 +19,8 @@ import {
   RefreshRounded as RefreshIcon,
   SavingsRounded as PartnerIcon,
   ScheduleRounded as ScheduleIcon,
-  TrendingUpRounded as TrendingIcon
+  TrendingUpRounded as TrendingIcon,
+  WarningAmberRounded as DebtIcon
 } from '@mui/icons-material';
 import {
   BarElement, CategoryScale, Chart as ChartJS, Filler, Legend, LinearScale,
@@ -27,7 +28,7 @@ import {
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
 import api from '../services/api';
-import { dateKey, formatDateTime, formatWeekday } from '../utils/timezone';
+import { dayRangeUtc, formatDateTime, formatWeekday } from '../utils/timezone';
 import { useMQTT } from '../contexts/MQTTContext';
 import DashboardMetricTile from '../components/ui/DashboardMetricTile';
 import DashboardSkeleton from '../components/ui/DashboardSkeleton';
@@ -76,6 +77,7 @@ function Dashboard() {
     walletFundingCount: 0,
     totalClients: 0,
     activeClients: 0,
+    companyDebt: { outstanding: 0, companies: 0, enabled: 0 },
     stationUptime: 0,
     transactionSuccessRate: 0
   });
@@ -97,10 +99,10 @@ function Dashboard() {
     setRefreshing(true);
 
     try {
-      const today = dateKey();
+      const { start: todayStart, end: todayEnd } = dayRangeUtc();
       const [dashboardSummary, payments, stationStats, stationList, recent, energy, usage] = await Promise.all([
         api.get('/admin/monitor/summary'),
-        canViewPayments ? api.get('/admin/payments/transactions', { params: { startDate: `${today}T00:00:00.000Z`, endDate: `${today}T23:59:59.999Z`, status: 'SUCCESS', type: 'CREDIT', gateway: 'paystack', limit: 10000 } }) : Promise.resolve({ data: { transactions: [] } }),
+        canViewPayments ? api.get('/admin/payments/transactions', { params: { startDate: todayStart, endDate: todayEnd, status: 'SUCCESS', type: 'CREDIT', gateway: 'paystack', limit: 10000 } }) : Promise.resolve({ data: { transactions: [] } }),
         api.get('/stations/stats/summary'),
         api.get('/stations'),
         api.get('/transactions?limit=10'),
@@ -126,6 +128,11 @@ function Dashboard() {
         walletFundingCount: paymentRows.length,
         totalClients: Number(totals.clients?.total) || 0,
         activeClients: Number(totals.clients?.active) || 0,
+        companyDebt: {
+          outstanding: Number(totals.companyDebt?.outstanding) || 0,
+          companies: Number(totals.companyDebt?.companies) || 0,
+          enabled: Number(totals.companyDebt?.enabled) || 0
+        },
         stationUptime: totalStations ? ((Number(apiStats.connectedStations ?? onlineCount) || 0) / totalStations) * 100 : 0,
         transactionSuccessRate: recentRows.length ? (completed / recentRows.length) * 100 : 0
       });
@@ -251,7 +258,7 @@ function Dashboard() {
         <Grid item xs={6} md={3}><DashboardMetricTile emphasis label="Energy today" value={formatEnergy(reporting.today.energyWh)} helper={`${formatNaira(reporting.today.chargingValue)} value - includes live`} icon={<EnergyIcon />} color="primary" /></Grid>
         <Grid item xs={6} md={3}><DashboardMetricTile label="Sessions today" value={Number(reporting.today.sessions || 0).toLocaleString()} helper={`${formatEnergy(reporting.today.sessions ? reporting.today.energyWh / reporting.today.sessions : 0)} average`} icon={<TrendingIcon />} color="info" onClick={() => navigate('/transactions')} /></Grid>
         <Grid item xs={6} md={3}><DashboardMetricTile label="Active sessions" value={summary.activeTransactions.toLocaleString()} helper={`${formatEnergy(reporting.activeEnergyWh)} - ${formatNaira(reporting.activeChargingValue)} live`} icon={<ChargingIcon />} color="success" onClick={() => navigate('/transactions')} /></Grid>
-        <Grid item xs={6} md={3}><DashboardMetricTile label="Wallet funding" value={formatNaira(summary.walletFundingToday)} helper={`${summary.walletFundingCount} successful payment${summary.walletFundingCount === 1 ? '' : 's'}`} icon={<PaymentsIcon />} color="warning" onClick={() => navigate('/payments')} /></Grid>
+        <Grid item xs={6} md={3}><DashboardMetricTile label="Wallet funding (Paystack)" value={formatNaira(summary.walletFundingToday)} helper={`${summary.walletFundingCount} successful Paystack top-up${summary.walletFundingCount === 1 ? '' : 's'}`} icon={<PaymentsIcon />} color="warning" onClick={() => navigate('/payments')} /></Grid>
       </Grid>
 
       <Typography variant="h5" sx={{ mb: 1.5 }}>Network totals</Typography>
@@ -262,9 +269,10 @@ function Dashboard() {
         <Grid item xs={6} md={4}><DashboardMetricTile label="This month energy" value={formatEnergy(reporting.month.energyWh)} helper={`${formatNaira(reporting.month.chargingValue)} charging value`} icon={<MonthIcon />} color="success" /></Grid>
         <Grid item xs={6} md={4}><DashboardMetricTile label="This month sessions" value={Number(reporting.month.sessions || 0).toLocaleString()} helper={`${formatNaira(reporting.month.sessions ? reporting.month.chargingValue / reporting.month.sessions : 0)} average value`} icon={<TrendingIcon />} color="success" /></Grid>
         <Grid item xs={6} md={4}><DashboardMetricTile label="This year energy" value={formatEnergy(reporting.year.energyWh)} helper={`${formatNaira(reporting.year.chargingValue)} charging value`} icon={<EnergyIcon />} color="warning" /></Grid>
-        <Grid item xs={6} md={4}><DashboardMetricTile label="Stations online" value={`${effectiveConnected}/${summary.totalStations}`} helper={`${uptime.toFixed(1)}% availability`} icon={<StationIcon />} color="success" onClick={() => navigate('/stations')} /></Grid>
-        <Grid item xs={6} md={4}><DashboardMetricTile label="Partner earnings" value={formatNaira(reporting.lifetime.partnerEarning)} helper="All completed sessions" icon={<PartnerIcon />} color="warning" onClick={() => navigate('/partners')} /></Grid>
-        <Grid item xs={6} md={4}><DashboardMetricTile label={`${branding.shortName || branding.systemName} earnings`} value={formatNaira(reporting.lifetime.companyEarning)} helper="All completed sessions" icon={<CompanyIcon />} color="primary" /></Grid>
+        <Grid item xs={6} md={3}><DashboardMetricTile label="Stations online" value={`${effectiveConnected}/${summary.totalStations}`} helper={`${uptime.toFixed(1)}% availability`} icon={<StationIcon />} color="success" onClick={() => navigate('/stations')} /></Grid>
+        <Grid item xs={6} md={3}><DashboardMetricTile label="Partner earnings" value={formatNaira(reporting.lifetime.partnerEarning)} helper="All completed sessions" icon={<PartnerIcon />} color="warning" onClick={() => navigate('/partners')} /></Grid>
+        <Grid item xs={6} md={3}><DashboardMetricTile label={`${branding.shortName || branding.systemName} earnings`} value={formatNaira(reporting.lifetime.companyEarning)} helper="All completed sessions" icon={<CompanyIcon />} color="primary" /></Grid>
+        <Grid item xs={6} md={3}><DashboardMetricTile label="Company debt" value={formatNaira(summary.companyDebt.outstanding)} helper={`${summary.companyDebt.companies.toLocaleString()} compan${summary.companyDebt.companies === 1 ? 'y' : 'ies'} with outstanding debt`} icon={<DebtIcon />} color="error" onClick={() => navigate('/companies')} /></Grid>
       </Grid>
 
       <Grid container spacing={2.5} sx={{ mb: 2.5 }}>
