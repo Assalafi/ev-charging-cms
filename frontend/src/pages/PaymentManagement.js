@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Autocomplete,
@@ -139,23 +139,30 @@ function UserSearchSelect({ value, onChange, label = 'Find a user', size = 'smal
   const [options, setOptions] = useState(value ? [value] : []);
   const [inputValue, setInputValue] = useState('');
   const [loading, setLoading] = useState(false);
+  const requestNumber = useRef(0);
 
   const loadUsers = useCallback(async query => {
+    const requestId = ++requestNumber.current;
     setLoading(true);
     try {
       const response = await api.get('/admin/payments/users', { params: { q: query || undefined, limit: 40 } });
       const users = response.data?.users || [];
-      setOptions(previous => {
-        const merged = [...previous, ...users];
-        return merged.filter((user, index, list) => list.findIndex(item => item.id === user.id) === index);
-      });
+      // A slower response for an older query must never replace the current
+      // results. Keep the selected user available even when the next query
+      // does not include it.
+      if (requestId === requestNumber.current) {
+        setOptions(previous => {
+          const selected = value && !users.some(user => user.id === value.id) ? [value] : [];
+          return [...selected, ...users].filter((user, index, list) => list.findIndex(item => item.id === user.id) === index);
+        });
+      }
     } catch (error) {
       // The surrounding page already exposes actionable API errors. Keep the
       // select usable if an autocomplete request is briefly unavailable.
     } finally {
-      setLoading(false);
+      if (requestId === requestNumber.current) setLoading(false);
     }
-  }, []);
+  }, [value]);
 
   useEffect(() => {
     const timer = setTimeout(() => loadUsers(inputValue), inputValue ? 250 : 0);
@@ -168,9 +175,12 @@ function UserSearchSelect({ value, onChange, label = 'Find a user', size = 'smal
       options={options}
       value={value || null}
       loading={loading}
+      inputValue={inputValue}
       onOpen={() => loadUsers(inputValue)}
       onChange={(_, next) => onChange(next)}
-      onInputChange={(_, next) => setInputValue(next)}
+      onInputChange={(_, next, reason) => {
+        if (reason === 'input' || reason === 'clear') setInputValue(next);
+      }}
       isOptionEqualToValue={(option, selected) => option.id === selected.id}
       getOptionLabel={user => user ? `${user.name || 'Unnamed user'} · ${user.email || user.tagId || user.phone || ''}` : ''}
       filterOptions={items => items}
