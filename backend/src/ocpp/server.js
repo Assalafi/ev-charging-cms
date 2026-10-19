@@ -7,6 +7,7 @@ const mqttClient = require('../mqtt/client');
 const messageHandlers = require('./messageHandlers');
 const config = require('../../../config/backend').backend;
 const offlineRecovery = require('../services/offlineTransactionRecovery');
+const { buildInboundDedupeKey, buildInboundDedupeWhere } = require('./inboundDedupe');
 const fs = require('fs');
 const https = require('https');
 const http = require('http');
@@ -38,9 +39,9 @@ function createServerState() {
         // Timers for offline auto-stop (chargePointId -> timeoutId)
         disconnectTimers: new Map(),
 
-        // In-flight inbound requests keyed by charge point/message ID. This
-        // prevents a station retry from creating a second transaction while
-        // the first copy is still being processed.
+        // In-flight inbound requests keyed by charge point/action/message ID.
+        // OCPP unique IDs can be reused across different actions, so the
+        // action must be part of this key as well as the persisted dedupe key.
         inboundProcessing: new Map(),
         
         // OCPP Configuration
@@ -581,7 +582,8 @@ async function handleOcppMessage(chargePointId, data, ws) {
                 switch (messageTypeId) {
                     case 2: // Request from charging station
                         {
-                            const dedupeKey = `inbound:${chargePointId}:${uniqueId}`;
+                            const connectionId = ws?.connectionId || null;
+                            const dedupeKey = buildInboundDedupeKey(chargePointId, action, uniqueId, connectionId);
                             const parsePayload = value => {
                                 if (!value) return null;
                                 if (typeof value === 'string') {
@@ -594,7 +596,7 @@ async function handleOcppMessage(chargePointId, data, ws) {
                             // persisted, replay the exact response instead of
                             // creating another transaction.
                             const previous = await OcppMessage.findOne({
-                                where: { dedupeKey, direction: 'Inbound' },
+                                where: buildInboundDedupeWhere(chargePointId, action, uniqueId, connectionId),
                                 order: [['createdAt', 'DESC']]
                             });
                             if (previous?.responsePayload) {
@@ -673,72 +675,26 @@ async function handleOcppMessage(chargePointId, data, ws) {
                             timestamp: new Date()
                         });
 
-                        // Handle rejected RemoteStopTransaction — auto-complete in backend
+                        // A rejected RemoteStopTransaction is not proof that the
+                        // physical session stopped. Never complete or bill the
+                        // database row here: recovery rows may use an internal
+                        // CMS ID while the charger is still running its original
+                        // OCPP transaction. Wait for StopTransaction (or a
+                        // separately verified offline recovery) instead.
                         if (data[2] && data[2].status === 'Rejected') {
                             try {
-                                // Find the original outbound request to check if it was a RemoteStopTransaction
                                 const originalMsg = await OcppMessage.findOne({
                                     where: { messageId: uniqueId, chargePointId, direction: 'Outbound', message_type: 'RemoteStopTransaction' }
                                 });
                                 if (originalMsg) {
-                                    const originalPayload = JSON.parse(originalMsg.payload || '{}');
+                                    const originalPayload = typeof originalMsg.payload === 'string'
+                                        ? JSON.parse(originalMsg.payload || '{}')
+                                        : (originalMsg.payload || {});
                                     const rejectedTxId = originalPayload.transactionId;
-                                    logger.warn(`RemoteStopTransaction rejected by ${chargePointId} for tx ${rejectedTxId} — forcing completion in backend`);
-                                    
-                                    const { Transaction, Connector } = require('../models');
-                                    const { billTransaction } = require('../services/billingService');
-                                    
-                                    const tx = await Transaction.findOne({ where: { transactionId: rejectedTxId, status: 'InProgress' } });
-                                    if (tx) {
-                                        const { getChargingPricing } = require('../services/chargingPricingService');
-                                        const pricing = await getChargingPricing({ chargePointId, idTag: tx.idTag });
-                                        let txAmount = parseFloat(tx.amount);
-                                        if (!(txAmount > 0)) {
-                                            const energy = parseFloat(tx.energyDelivered) || 0;
-                                            if (energy > 0) {
-                                                const energyKwh = energy / 1000;
-                                                txAmount = energyKwh * pricing.pricePerWh * 1000;
-                                            }
-                                            txAmount = Math.max(txAmount || 0, pricing.minimumCharge);
-                                        }
-                                        
-                                        const { calculatePartnerRevenue } = require('../services/partnerRevenueService');
-                                        const revenue = await calculatePartnerRevenue({
-                                            chargePointId,
-                                            energyWh: parseFloat(tx.energyDelivered) || 0,
-                                            billableAmount: txAmount,
-                                            idTag: tx.idTag,
-                                            pricing
-                                        });
-                                        await tx.update({
-                                            status: 'Completed',
-                                            stopTime: new Date(),
-                                            amount: txAmount,
-                                            grossAmount: revenue.grossAmount,
-                                            sellingPricePerWh: revenue.sellingPricePerWh,
-                                            productionCostPerWh: revenue.productionCostPerWh,
-                                            partnerSharePercent: revenue.partnerSharePercent,
-                                            minimumChargeApplied: revenue.grossAmount < txAmount,
-                                            productionCostAmount: revenue.productionCostAmount,
-                                            profitAmount: revenue.profitAmount,
-                                            partnerEarning: revenue.partnerEarning,
-                                            companyEarning: revenue.companyEarning,
-                                            partnerId: revenue.partnerId,
-                                            locationId: revenue.locationId,
-                                            settlementStatus: revenue.settlementStatus
-                                        });
-                                        logger.warn(`Force-completed tx ${rejectedTxId} (charger rejected stop) — amount: ₦${txAmount}`);
-                                        
-                                        try { await billTransaction(rejectedTxId); } catch (e) {
-                                            logger.warn(`Failed to bill force-completed tx ${rejectedTxId}: ${e.message}`);
-                                        }
-                                        
-                                        // Reset connector
-                                        await Connector.update(
-                                            { status: 'Available', transactionId: null },
-                                            { where: { chargePointId, connectorId: tx.connectorId } }
-                                        );
-                                    }
+                                    logger.warn(
+                                        `RemoteStopTransaction rejected by ${chargePointId} for OCPP tx ${rejectedTxId}; ` +
+                                        `leaving the session open until the charger confirms StopTransaction`
+                                    );
                                 }
                             } catch (rejectErr) {
                                 logger.error(`Error handling rejected RemoteStop for ${chargePointId}: ${rejectErr.message}`);
@@ -1177,14 +1133,6 @@ async function fixConnectionMapping(stationId) {
             message: `Error: ${error.message}` 
         };
     }
-}
-
-/**
- * Check if the OCPP server is initialized
- * @returns {boolean} True if initialized
- */
-function _isInitialized() {
-    return serverState.initialized;
 }
 
 module.exports = {

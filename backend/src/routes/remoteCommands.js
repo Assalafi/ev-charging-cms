@@ -9,6 +9,7 @@ const {
 } = require('../middleware/auth');
 const ocppServer = require('../ocpp/server');
 const logger = require('../utils/logger');
+const { resolveCanonicalOcppTransactionId } = require('../services/ocppTransactionResolver');
 
 const router = express.Router();
 
@@ -524,9 +525,31 @@ router.post('/:stationId/remote-stop', authorize(['admin', 'operator']), async (
             });
         }
 
+        // The station record may point at an internal recovery transaction. The
+        // charger only accepts the OCPP transaction ID it returned in
+        // StartTransaction.conf, so resolve it from the latest telemetry.
+        const activeTransaction = await Transaction.findOne({
+            where: {
+                chargePointId: stationId,
+                transactionId: Number(transactionId)
+            },
+            order: [['startTime', 'DESC']]
+        });
+        const commandTransactionId = await resolveCanonicalOcppTransactionId({
+            chargePointId: stationId,
+            connectorId: activeTransaction?.connectorId,
+            fallbackTransactionId: Number(transactionId)
+        });
+        if (!Number.isSafeInteger(Number(commandTransactionId)) || Number(commandTransactionId) <= 0) {
+            return res.status(409).json({
+                success: false,
+                message: 'The charger transaction ID is not available yet; please retry shortly'
+            });
+        }
+
         // Send RemoteStopTransaction command
         const result = await ocppServer.sendOcppRequest(stationId, 'RemoteStopTransaction', {
-            transactionId: parseInt(transactionId)
+            transactionId: Number(commandTransactionId)
         });
 
         if (!result.success) {
@@ -539,6 +562,8 @@ router.post('/:stationId/remote-stop', authorize(['admin', 'operator']), async (
         res.json({
             success: true,
             messageId: result.messageId,
+            transactionId: Number(transactionId),
+            ocppTransactionId: Number(commandTransactionId),
             message: `Remote stop transaction command sent successfully`
         });
     } catch (error) {

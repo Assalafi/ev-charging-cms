@@ -5,6 +5,9 @@ const { MobileUser, AuthorizedTag, ChargingStation, Transaction, Connector, Loca
 const logger = require('../utils/logger');
 const ocppServer = require('../ocpp/server');
 const { getChargingPricing } = require('../services/chargingPricingService');
+const {
+  resolveCanonicalOcppTransactionId,
+} = require('../services/ocppTransactionResolver');
 
 const router = express.Router();
 
@@ -888,11 +891,19 @@ router.post('/charging/stop', mobileAuth, async (req, res) => {
       await activeTx.update({ stopReason: 'Stopped by you' });
     }
 
-    // Get station's actual transactionId from currentTransaction
-    const station = await ChargingStation.findOne({ where: { chargePointId } });
-    const txId = station && station.currentTransaction
-      ? parseInt(station.currentTransaction)
-      : (transaction ? transaction.transactionId : 0);
+    // currentTransaction can point to an internal recovery row. Resolve the
+    // OCPP ID from the latest charger telemetry before sending the stop.
+    const txId = await resolveCanonicalOcppTransactionId({
+      chargePointId,
+      connectorId: activeTx?.connectorId || 1,
+      fallbackTransactionId: activeTx?.transactionId || transaction?.transactionId || 0,
+    });
+    if (!txId) {
+      return res.status(409).json({
+        success: false,
+        message: 'The charger transaction ID is not available yet; please retry shortly',
+      });
+    }
 
     const result = await ocppServer.sendOcppRequest(chargePointId, 'RemoteStopTransaction', {
       transactionId: txId
@@ -904,31 +915,11 @@ router.post('/charging/stop', mobileAuth, async (req, res) => {
 
     logger.info(`Mobile user ${user.email} stopped charging at ${chargePointId}`);
 
-    // Fallback: after 10s, if station still shows Charging, force reset
-    setTimeout(async () => {
-      try {
-        const stationCheck = await ChargingStation.findOne({ where: { chargePointId } });
-        if (stationCheck && stationCheck.status === 'Charging') {
-          await ChargingStation.update(
-            { status: 'Available', currentTransaction: null },
-            { where: { chargePointId } }
-          );
-          // Also reset connector
-          const { Connector } = require('../models');
-          if (Connector) {
-            await Connector.update(
-              { status: 'Available', transactionId: null },
-              { where: { chargePointId, status: 'Charging' } }
-            );
-          }
-          logger.warn(`Fallback: Force-reset station ${chargePointId} to Available (charger did not send StopTransaction within 10s)`);
-        }
-      } catch (e) {
-        logger.error(`Fallback reset error for ${chargePointId}: ${e.message}`);
-      }
-    }, 10000);
-
-    res.json({ success: true, message: 'Stop command sent' });
+    res.json({
+      success: true,
+      transactionId: txId,
+      message: 'Stop command sent; waiting for charger confirmation',
+    });
   } catch (error) {
     logger.error('Mobile stop charging error:', error);
     res.status(500).json({ success: false, message: 'Server error' });

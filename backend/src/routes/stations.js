@@ -3,6 +3,7 @@ const {
     ChargingStation,
     Transaction,
     OcppMessage,
+    Connector,
     sequelize
 } = require('../models');
 const { Op } = require('sequelize');
@@ -12,6 +13,7 @@ const mqttClient = require('../mqtt/client');
 const logger = require('../utils/logger');
 const { requirePermission } = require('../middleware/permissions');
 const { scopedStationWhere, scopedTransactionWhere, accessibleLocationIds } = require('../middleware/adminScope');
+const { resolveCanonicalOcppTransactionId } = require('../services/ocppTransactionResolver');
 
 const router = express.Router();
 
@@ -383,10 +385,11 @@ router.post('/diagnostic/:id/remote-stop', authenticate, requirePermission('stat
             transactionId
         } = req.body;
         const chargePointId = req.params.id;
+        let activeTransaction = null;
 
         // If transactionId is not provided, find the active transaction
         if (!transactionId) {
-            const activeTransaction = await Transaction.findOne({
+            activeTransaction = await Transaction.findOne({
                 where: {
                     chargePointId,
                     status: 'InProgress'
@@ -406,9 +409,30 @@ router.post('/diagnostic/:id/remote-stop', authenticate, requirePermission('stat
             transactionId = activeTransaction.transactionId;
         }
 
-        // Send RemoteStopTransaction command
+        if (!activeTransaction && transactionId) {
+            activeTransaction = await Transaction.findOne({
+                where: {
+                    chargePointId,
+                    transactionId: Number(transactionId)
+                }
+            });
+        }
+
+        const commandTransactionId = await resolveCanonicalOcppTransactionId({
+            chargePointId,
+            connectorId: activeTransaction?.connectorId,
+            fallbackTransactionId: transactionId
+        });
+        if (!Number.isSafeInteger(Number(commandTransactionId)) || Number(commandTransactionId) <= 0) {
+            return res.status(409).json({
+                success: false,
+                message: 'The charger transaction ID is not available yet; please retry shortly'
+            });
+        }
+
+        // Send RemoteStopTransaction command using the ID owned by the charger.
         const result = await ocppServer.sendOcppRequest(chargePointId, 'RemoteStopTransaction', {
-            transactionId: parseInt(transactionId)
+            transactionId: Number(commandTransactionId)
         });
 
         if (!result.success) {
@@ -420,7 +444,9 @@ router.post('/diagnostic/:id/remote-stop', authenticate, requirePermission('stat
 
         res.json({
             success: true,
-            message: `Transaction ${transactionId} stopped`,
+            transactionId: Number(transactionId),
+            ocppTransactionId: Number(commandTransactionId),
+            message: `Transaction ${transactionId} stop command sent`,
             messageId: result.messageId
         });
     } catch (error) {
@@ -994,9 +1020,21 @@ router.post('/:id/remote-stop', authenticate, requirePermission('stations.remote
             // Continue with stop request even if status update fails
         }
 
-        // 4. Send RemoteStopTransaction command
+        const commandTransactionId = await resolveCanonicalOcppTransactionId({
+            chargePointId,
+            connectorId: transaction.connectorId,
+            fallbackTransactionId: transaction.transactionId
+        });
+        if (!Number.isSafeInteger(Number(commandTransactionId)) || Number(commandTransactionId) <= 0) {
+            return res.status(409).json({
+                success: false,
+                message: 'The charger transaction ID is not available yet; please retry shortly'
+            });
+        }
+
+        // 4. Send RemoteStopTransaction command using the charger transaction ID.
         const result = await ocppServer.sendOcppRequest(chargePointId, 'RemoteStopTransaction', {
-            transactionId: parseInt(transactionId)
+            transactionId: Number(commandTransactionId)
         });
 
         // 5. Handle command result
@@ -1038,6 +1076,8 @@ router.post('/:id/remote-stop', authenticate, requirePermission('stations.remote
         res.json({
             success: true,
             messageId: result.messageId,
+            transactionId: Number(transactionId),
+            ocppTransactionId: Number(commandTransactionId),
             message: 'Remote stop command sent',
             status: 'Stopping'
         });

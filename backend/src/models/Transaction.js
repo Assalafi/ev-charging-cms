@@ -42,6 +42,16 @@ module.exports = (sequelize) => {
             type: DataTypes.FLOAT,
             defaultValue: 0
         },
+        startBatteryPercentage: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+            comment: 'First vehicle state-of-charge percentage reported during this session'
+        },
+        endBatteryPercentage: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+            comment: 'Latest vehicle state-of-charge percentage reported for this session'
+        },
         amount: {
             type: DataTypes.FLOAT,
             defaultValue: 0,

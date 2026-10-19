@@ -378,10 +378,42 @@ router.get('/:id', authenticate, async (req, res) => {
       where: { transactionId: transaction.id },
       order: [['timestamp', 'ASC']]
     });
+
+    // SoC is reported as a dedicated OCPP meter value and is deliberately
+    // kept separate from energy readings. Prefer the transaction snapshot,
+    // then fall back to the first/latest real SoC sample for older sessions.
+    const socReadings = meterValues
+      .filter(value => value.measurand === 'SoC')
+      .map(value => ({
+        timestamp: value.timestamp,
+        percentage: Number(value.value)
+      }))
+      .filter(value => Number.isFinite(value.percentage) && value.percentage >= 0 && value.percentage <= 100);
+    const firstSoc = socReadings[0]?.percentage ?? null;
+    const latestSoc = socReadings[socReadings.length - 1]?.percentage ?? null;
+    const transactionJson = transaction.toJSON();
+    const isValidSoc = value => value !== null && value !== undefined && value !== ''
+      && Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 100;
+    const startBatteryPercentage = isValidSoc(transactionJson.startBatteryPercentage)
+      ? Number(transactionJson.startBatteryPercentage)
+      : firstSoc;
+    const endBatteryPercentage = isValidSoc(transactionJson.endBatteryPercentage)
+      ? Number(transactionJson.endBatteryPercentage)
+      : latestSoc;
+    transactionJson.startBatteryPercentage = startBatteryPercentage;
+    transactionJson.endBatteryPercentage = endBatteryPercentage;
+    transactionJson.batteryPercentage = endBatteryPercentage;
     
     res.json({
       success: true,
-      transaction,
+      transaction: transactionJson,
+      battery: {
+        available: endBatteryPercentage !== null || startBatteryPercentage !== null,
+        start: startBatteryPercentage,
+        current: endBatteryPercentage,
+        end: endBatteryPercentage,
+        readings: socReadings
+      },
       meterValues
     });
   } catch (error) {

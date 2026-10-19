@@ -28,6 +28,7 @@ import {
 import {
   AccessTimeRounded,
   ArrowBackRounded,
+  BatteryChargingFullRounded,
   BoltRounded,
   CableRounded,
   CheckCircleRounded,
@@ -106,6 +107,18 @@ const getEnergyWh = row => {
   const value = Number(row.value);
   if (!Number.isFinite(value)) return null;
   return String(row.unit || 'Wh').toLowerCase() === 'kwh' ? value * 1000 : value;
+};
+
+const getBatteryPercentage = row => {
+  if (!row || row.measurand !== 'SoC') return null;
+  const value = Number(row.value);
+  return Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
+};
+
+const parseBatteryPercentage = value => {
+  if (value === null || value === undefined || value === '') return null;
+  const percentage = Number(value);
+  return Number.isFinite(percentage) && percentage >= 0 && percentage <= 100 ? percentage : null;
 };
 
 const flattenMeterValues = values => (Array.isArray(values) ? values : []).flatMap((value, index) => {
@@ -252,29 +265,58 @@ function TransactionDetail() {
     return subscribe(topic, message => {
       const payload = toPlain(message) || {};
       const energyDelivered = Number(payload.energyDelivered ?? payload.energy);
-      if (!Number.isFinite(energyDelivered)) return;
+      const batteryPercentage = parseBatteryPercentage(
+        payload.soc ?? payload.batteryPercentage ?? payload.endBatteryPercentage
+      );
+      if (!Number.isFinite(energyDelivered) && batteryPercentage === null) return;
       const startMeter = Number(transaction.startMeterValue) || 0;
       const meterValue = Number(payload.meterValue);
       const liveMeter = Number.isFinite(meterValue) ? meterValue : startMeter + Math.max(0, energyDelivered);
       const timestamp = payload.timestamp || new Date().toISOString();
 
-      setTransaction(previous => ({
-        ...previous,
-        energyDelivered,
-        currentMeterValue: liveMeter,
-        amount: Number.isFinite(Number(payload.amount)) ? Number(payload.amount) : previous.amount,
-        currentPrice: Number.isFinite(Number(payload.price)) ? Number(payload.price) : previous.currentPrice
-      }));
-      setMeterValues(previous => [...previous, {
-        __live: true,
-        id: `live-${timestamp}-${liveMeter}`,
-        timestamp,
-        value: liveMeter,
-        unit: 'Wh',
-        measurand: 'Energy.Active.Import.Register',
-        context: 'Live update',
-        power: payload.power
-      }].slice(-300));
+      setTransaction(previous => {
+        if (!previous) return previous;
+        return {
+          ...previous,
+          ...(Number.isFinite(energyDelivered) ? {
+            energyDelivered,
+            currentMeterValue: liveMeter
+          } : {}),
+          ...(batteryPercentage !== null ? {
+            batteryPercentage,
+            endBatteryPercentage: batteryPercentage
+          } : {}),
+          ...(Number.isFinite(Number(payload.amount)) ? { amount: Number(payload.amount) } : {}),
+          ...(Number.isFinite(Number(payload.price)) ? { currentPrice: Number(payload.price) } : {})
+        };
+      });
+      setMeterValues(previous => {
+        const liveRows = [];
+        if (Number.isFinite(energyDelivered)) {
+          liveRows.push({
+            __live: true,
+            id: `live-energy-${timestamp}-${liveMeter}`,
+            timestamp,
+            value: liveMeter,
+            unit: 'Wh',
+            measurand: 'Energy.Active.Import.Register',
+            context: 'Live update',
+            power: payload.power
+          });
+        }
+        if (batteryPercentage !== null) {
+          liveRows.push({
+            __live: true,
+            id: `live-soc-${timestamp}-${batteryPercentage}`,
+            timestamp,
+            value: batteryPercentage,
+            unit: 'Percent',
+            measurand: 'SoC',
+            context: 'Live update'
+          });
+        }
+        return [...previous, ...liveRows].slice(-300);
+      });
       setLastLiveAt(new Date(timestamp));
     });
   }, [subscribe, transaction?.status, transaction?.transactionId, transaction?.startMeterValue]);
@@ -308,6 +350,9 @@ function TransactionDetail() {
 
   const normalizedMeterValues = useMemo(() => flattenMeterValues(displayMeterValues), [displayMeterValues]);
   const energyReadings = useMemo(() => normalizedMeterValues.map((row, index) => ({ row, index, wh: getEnergyWh(row) })).filter(item => item.wh !== null), [normalizedMeterValues]);
+  const batteryReadings = useMemo(() => normalizedMeterValues
+    .map((row, index) => ({ row, index, percentage: getBatteryPercentage(row) }))
+    .filter(item => item.percentage !== null), [normalizedMeterValues]);
 
   const chartData = useMemo(() => {
     if (!energyReadings.length) return null;
@@ -357,6 +402,13 @@ function TransactionDetail() {
   const energyKwh = Math.max(0, Number(transaction?.energyDelivered) || 0) / 1000;
   const currentMeter = Number(transaction?.currentMeterValue);
   const sellingPricePerKwh = Number(transaction?.sellingPricePerWh) * 1000;
+  const firstBatteryReading = batteryReadings[0]?.percentage ?? null;
+  const latestBatteryReading = batteryReadings[batteryReadings.length - 1]?.percentage ?? null;
+  const startBatteryPercentage = parseBatteryPercentage(transaction?.startBatteryPercentage) ?? firstBatteryReading;
+  const batteryPercentage = parseBatteryPercentage(transaction?.batteryPercentage)
+    ?? parseBatteryPercentage(transaction?.endBatteryPercentage)
+    ?? latestBatteryReading;
+  const endBatteryPercentage = parseBatteryPercentage(transaction?.endBatteryPercentage) ?? latestBatteryReading;
   const powerKw = useMemo(() => {
     const latest = energyReadings[energyReadings.length - 1]?.row;
     const value = Number(latest?.power ?? latest?.calculatedPower);
@@ -414,11 +466,12 @@ function TransactionDetail() {
         </CardContent>
       </Card>
 
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' }, gap: { xs: 1.25, md: 2 } }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(5, minmax(0, 1fr))' }, gap: { xs: 1.25, md: 2 } }}>
         <Metric icon={<BoltRounded />} label="Energy delivered" value={`${energyKwh.toFixed(2)} kWh`} caption={active ? 'Live cumulative reading' : 'Final recorded energy'} color="primary" />
         <Metric icon={<PaymentsRounded />} label="Amount" value={formatMoney(transaction.amount)} caption={transaction.billedAt ? `Billed ${safeDate(transaction.billedAt, 'd MMM, HH:mm')}` : 'Billing record'} color="success" />
         <Metric icon={<SpeedRounded />} label="Current power" value={powerKw === null ? '—' : `${powerKw.toFixed(2)} kW`} caption={active ? 'Latest meter sample' : 'Peak/sample data'} color="warning" />
         <Metric icon={<TimerRounded />} label="Duration" value={safeDuration(transaction, now)} caption={active ? 'Running now' : 'Session duration'} color="secondary" />
+        <Metric icon={<BatteryChargingFullRounded />} label="Battery level" value={batteryPercentage === null ? '—' : `${batteryPercentage.toFixed(0)}%`} caption={batteryPercentage === null ? 'Not reported by charger' : active ? 'Live vehicle SoC' : 'Final reported SoC'} color="info" />
       </Box>
 
       <Grid container spacing={{ xs: 2, md: 2.5 }}>
@@ -435,6 +488,8 @@ function TransactionDetail() {
               <DetailRow label="Ended" value={transaction.stopTime ? safeDate(transaction.stopTime) : active ? 'Still charging' : 'Not recorded'} />
               <DetailRow label="Start meter" value={Number.isFinite(Number(transaction.startMeterValue)) ? `${Number(transaction.startMeterValue).toLocaleString()} Wh` : '—'} />
               <DetailRow label="Current / stop meter" value={Number.isFinite(Number(transaction.stopMeterValue || currentMeter)) ? `${Number(transaction.stopMeterValue || currentMeter).toLocaleString()} Wh` : '—'} />
+              <DetailRow label="Battery at start" value={startBatteryPercentage === null ? 'Not reported' : `${startBatteryPercentage.toFixed(0)}%`} />
+              <DetailRow label={active ? 'Battery now' : 'Battery at end'} value={(active ? batteryPercentage : endBatteryPercentage) === null ? 'Not reported' : `${(active ? batteryPercentage : endBatteryPercentage).toFixed(0)}%`} />
             </CardContent>
           </Card>
         </Grid>
@@ -476,7 +531,7 @@ function TransactionDetail() {
           </CardContent>
         ) : (
           <TableContainer sx={{ maxHeight: 440, border: 0, borderRadius: 0 }}>
-            {normalizedMeterValues.length ? <Table stickyHeader size="small"><TableHead><TableRow><TableCell>Timestamp</TableCell><TableCell>Meter</TableCell><TableCell>Energy</TableCell><TableCell>Power</TableCell><TableCell>Context</TableCell></TableRow></TableHead><TableBody>{normalizedMeterValues.slice().reverse().map((row, index) => { const energy = getEnergyWh(row); const power = Number(row.power ?? row.calculatedPower); return <TableRow key={row.id || `${row.timestamp}-${index}`} hover><TableCell sx={{ whiteSpace: 'nowrap' }}>{safeDate(row.timestamp, 'd MMM, HH:mm:ss')}</TableCell><TableCell sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{Number(row.value).toLocaleString()} {row.unit || 'Wh'}</TableCell><TableCell>{energy === null ? '—' : `${(energy / 1000).toFixed(3)} kWh`}</TableCell><TableCell>{Number.isFinite(power) ? `${(String(row.powerUnit || '').toLowerCase() === 'kw' ? power : power / 1000).toFixed(2)} kW` : '—'}</TableCell><TableCell><Chip size="small" variant={row.__live ? 'filled' : 'outlined'} color={row.__live ? 'success' : 'default'} label={row.context || 'Sample.Periodic'} /></TableCell></TableRow>; })}</TableBody></Table> : <EmptyChart label="No meter readings available" />}
+            {normalizedMeterValues.length ? <Table stickyHeader size="small"><TableHead><TableRow><TableCell>Timestamp</TableCell><TableCell>Reading</TableCell><TableCell>Energy</TableCell><TableCell>Power</TableCell><TableCell>Battery</TableCell><TableCell>Context</TableCell></TableRow></TableHead><TableBody>{normalizedMeterValues.slice().reverse().map((row, index) => { const energy = getEnergyWh(row); const power = Number(row.power ?? row.calculatedPower); const battery = getBatteryPercentage(row); return <TableRow key={row.id || `${row.timestamp}-${index}`} hover><TableCell sx={{ whiteSpace: 'nowrap' }}>{safeDate(row.timestamp, 'd MMM, HH:mm:ss')}</TableCell><TableCell sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{Number(row.value).toLocaleString()} {row.unit || 'Wh'}</TableCell><TableCell>{energy === null ? '—' : `${(energy / 1000).toFixed(3)} kWh`}</TableCell><TableCell>{Number.isFinite(power) ? `${(String(row.powerUnit || '').toLowerCase() === 'kw' ? power : power / 1000).toFixed(2)} kW` : '—'}</TableCell><TableCell>{battery === null ? '—' : `${battery.toFixed(0)}%`}</TableCell><TableCell><Chip size="small" variant={row.__live ? 'filled' : 'outlined'} color={row.__live ? 'success' : 'default'} label={row.context || 'Sample.Periodic'} /></TableCell></TableRow>; })}</TableBody></Table> : <EmptyChart label="No meter readings available" />}
           </TableContainer>
         )}
       </Card>

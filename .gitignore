@@ -61,6 +61,15 @@ logs/
 *Bad.js
 *'
 
+# Deployment staging, rollback copies and pre-build snapshots. These are
+# generated on a workstation or production host and must never participate in
+# source deployments or overwrite tracked application files.
+/.deploy-*/
+/backups/
+/frontend/build-pre-*/
+/frontend/temp/
+/backend/.deploy-*/
+
 # Production maintenance scripts belong in backend/scripts when intentional.
 # Existing tracked files remain tracked; these rules block loose server scripts.
 /*.js

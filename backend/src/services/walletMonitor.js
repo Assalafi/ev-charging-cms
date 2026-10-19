@@ -10,6 +10,9 @@
 
 const logger = require('../utils/logger');
 const { Transaction, MobileUser, Wallet } = require('../models');
+const {
+  resolveCanonicalOcppTransactionId,
+} = require('./ocppTransactionResolver');
 
 let intervalHandle = null;
 let ocppServerRef = null;
@@ -61,7 +64,10 @@ async function checkAllActiveSessions() {
     // Get all InProgress transactions
     const activeSessions = await Transaction.findAll({
       where: { status: 'InProgress' },
-      attributes: ['transactionId', 'chargePointId', 'idTag', 'amount', 'energyDelivered', 'startMeterValue', 'startTime']
+      attributes: [
+        'transactionId', 'chargePointId', 'connectorId', 'idTag', 'amount',
+        'energyDelivered', 'startMeterValue', 'startTime', 'reason'
+      ]
     });
 
     if (activeSessions.length === 0) return;
@@ -96,8 +102,9 @@ async function checkAllActiveSessions() {
           );
 
           for (const session of sessions) {
-            if (stoppingInProgress.has(session.transactionId)) {
-              logger.info(`WalletMonitor: tx ${session.transactionId} stop already in progress, skipping`);
+            const stopKey = `${session.chargePointId}:${session.connectorId || 1}`;
+            if (stoppingInProgress.has(stopKey)) {
+              logger.info(`WalletMonitor: stop already in progress for ${stopKey}, skipping`);
               continue;
             }
             await stopSession(session);
@@ -116,16 +123,17 @@ async function checkAllActiveSessions() {
  * Stop a single charging session
  */
 async function stopSession(session) {
-  const { transactionId, chargePointId } = session;
+  const { transactionId, chargePointId, connectorId } = session;
+  const stopKey = `${chargePointId}:${connectorId || 1}`;
 
-  stoppingInProgress.add(transactionId);
+  stoppingInProgress.add(stopKey);
   // Auto-clear after 60 seconds in case stop process hangs
-  setTimeout(() => stoppingInProgress.delete(transactionId), 60000);
+  setTimeout(() => stoppingInProgress.delete(stopKey), 60000);
 
   try {
     if (!ocppServerRef) {
       logger.error(`WalletMonitor: No OCPP server reference, cannot stop tx ${transactionId}`);
-      stoppingInProgress.delete(transactionId);
+      stoppingInProgress.delete(stopKey);
       return;
     }
 
@@ -138,42 +146,66 @@ async function stopSession(session) {
       return;
     }
 
-    // Send RemoteStopTransaction
-    logger.info(`WalletMonitor: Sending RemoteStopTransaction for tx ${transactionId} at ${chargePointId}`);
+    // A recovery row can have an internal CMS ID that is different from the
+    // OCPP transaction ID still held by the charger. Always send the latest
+    // canonical ID reported by MeterValues when one is available.
+    const commandTransactionId = await resolveCanonicalOcppTransactionId({
+      chargePointId,
+      connectorId: connectorId || 1,
+      fallbackTransactionId: transactionId,
+    });
+    if (!commandTransactionId) {
+      logger.warn(`WalletMonitor: No canonical OCPP transaction ID for ${chargePointId}; not sending a blind stop`);
+      stoppingInProgress.delete(stopKey);
+      return;
+    }
+
+    // Send RemoteStopTransaction using the charge point's ID, not an
+    // internal recovery transaction ID.
+    logger.info(
+      `WalletMonitor: Sending RemoteStopTransaction for OCPP tx ${commandTransactionId} ` +
+        `(internal tx ${transactionId}) at ${chargePointId}`
+    );
     const result = await ocppServerRef.sendOcppRequest(chargePointId, 'RemoteStopTransaction', {
-      transactionId: transactionId
+      transactionId: commandTransactionId
     });
 
     if (result?.success) {
-      logger.info(`WalletMonitor: RemoteStopTransaction sent for tx ${transactionId}; awaiting StopTransaction`);
+      logger.info(
+        `WalletMonitor: RemoteStopTransaction sent for OCPP tx ${commandTransactionId}; ` +
+          `awaiting StopTransaction`
+      );
       setTimeout(async () => {
         try {
           const stillActive = await Transaction.findOne({
             where: { transactionId, status: 'InProgress' }
           });
-          if (stillActive) {
-            logger.warn(`WalletMonitor: No StopTransaction received for tx ${transactionId}; completing after timeout`);
+          if (stillActive && !ocppServerRef.isConnected(chargePointId)) {
+            logger.warn(
+              `WalletMonitor: Station ${chargePointId} went offline without StopTransaction; ` +
+                `completing internal tx ${transactionId} via offline recovery`
+            );
             await offlineStop(stillActive);
+          } else if (stillActive) {
+            logger.warn(
+              `WalletMonitor: StopTransaction not yet received for OCPP tx ${commandTransactionId}; ` +
+                `leaving session open while station remains connected`
+            );
           }
         } catch (timeoutError) {
-          logger.error(`WalletMonitor: Timeout fallback failed for tx ${transactionId}:`, timeoutError.message);
+          logger.error(`WalletMonitor: StopTransaction timeout check failed for OCPP tx ${commandTransactionId}:`, timeoutError.message);
         }
       }, 30000);
     } else {
       logger.warn(
-        `WalletMonitor: Could not send RemoteStopTransaction for tx ${transactionId}. ` +
-        `Falling back to offline stop.`
+        `WalletMonitor: Could not send RemoteStopTransaction for OCPP tx ${commandTransactionId}. ` +
+          `Keeping the transaction open for retry/reconciliation.`
       );
-      await offlineStop(session);
+      stoppingInProgress.delete(stopKey);
     }
   } catch (error) {
-    logger.error(`WalletMonitor: Error stopping tx ${transactionId}:`, error.message);
-    // Retry with offline stop
-    try {
-      await offlineStop(session);
-    } catch (offlineErr) {
-      logger.error(`WalletMonitor: Offline stop also failed for tx ${transactionId}:`, offlineErr.message);
-    }
+    logger.error(`WalletMonitor: Error stopping OCPP tx for internal tx ${transactionId}:`, error.message);
+    stoppingInProgress.delete(stopKey);
   }
 }
 

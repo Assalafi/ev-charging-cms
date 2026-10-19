@@ -196,30 +196,19 @@ class ChargingSessionTracker {
       transactionId,
       totalEnergy: session.energyConsumed * 1000, // Convert kWh to Wh for consistency
       currentPower: session.currentPower * 1000 || 0, // Convert kW to W
+      batteryPercentage: session.currentSoc ?? null,
+      startBatteryPercentage: session.startSoc ?? null,
       duration,
       startTime: session.startTime,
       lastUpdate: session.lastUpdate
     };
   }
   
-  // Estimate battery percentage based on energy consumed if SoC not available
+  // Battery percentage is only exposed when the charger reports a real SoC
+  // meter value. Vehicle capacity is not known to the CSMS, so estimating it
+  // from energy would be misleading and is intentionally avoided.
   estimateBatteryPercentage(session) {
-    // If we have a real SoC value, use it
-    if (session.currentSoc !== null && session.currentSoc !== undefined) {
-      return session.currentSoc;
-    }
-    
-    // No way to estimate without start SoC
-    if (session.startSoc === null || session.startSoc === undefined) {
-      return null;
-    }
-    
-    // Very rough estimation based on typical EV battery (60kWh)
-    // This is just a placeholder - real vehicles would provide SoC in OCPP messages
-    const typicalEvBatterySize = 60; // kWh
-    const estimatedSoc = Math.max(0, Math.min(100, session.startSoc - (session.energyConsumed / typicalEvBatterySize * 100)));
-    
-    return Math.round(estimatedSoc);
+    return session?.currentSoc ?? null;
   }
 
   emitSessionUpdate(transactionId) {
@@ -285,6 +274,7 @@ class ChargingSessionTracker {
                   energy: sessionData.totalEnergy, // Keep original value (Wh)
                   power: sessionData.currentPower,
                   batteryPercentage: sessionData.batteryPercentage,
+                  startBatteryPercentage: sessionData.startBatteryPercentage,
                   duration: sessionData.duration,
                   amount: calculatedAmount
                 };
@@ -303,6 +293,7 @@ class ChargingSessionTracker {
                   energy: sessionData.totalEnergy,
                   power: sessionData.currentPower,
                   batteryPercentage: sessionData.batteryPercentage,
+                  startBatteryPercentage: sessionData.startBatteryPercentage,
                   duration: sessionData.duration,
                   amount: calculatedAmount,
                   timestamp: new Date().toISOString()
@@ -313,6 +304,8 @@ class ChargingSessionTracker {
                   status: 'InProgress',
                   energy: sessionData.totalEnergy,
                   power: sessionData.currentPower,
+                  batteryPercentage: sessionData.batteryPercentage,
+                  startBatteryPercentage: sessionData.startBatteryPercentage,
                   duration: sessionData.duration,
                   amount: calculatedAmount,
                   timestamp: new Date().toISOString()
@@ -358,6 +351,8 @@ class ChargingSessionTracker {
         totalEnergy: finalStats.totalEnergy,
         currentPower: 0, // Power is 0 at end
         batteryPercentage: finalStats.batteryPercentage,
+        startBatteryPercentage: finalStats.startBatteryPercentage,
+        endBatteryPercentage: finalStats.batteryPercentage,
         sessionDuration: Math.floor((new Date() - finalSession.startTime) / 1000), // seconds
         isCompleted: true
       };
@@ -387,26 +382,16 @@ class ChargingSessionTracker {
       energyConsumed: session.energyConsumed,
       currentPower: session.currentPower,
       currentSoc: session.currentSoc,
+      batteryPercentage: session.currentSoc ?? null,
       sessionDuration: Math.floor((new Date() - session.startTime) / 1000) // seconds
     };
   }
 
   calculateBatteryPercentage(sessionData, vehicleInfo) {
-    // Method 1: Direct from SoC measurement
-    if (sessionData.currentSoc !== null && sessionData.currentSoc !== undefined) {
-      return sessionData.currentSoc; // Already a percentage
-    }
-    
-    // Method 2: Estimate from energy consumed
-    if (vehicleInfo?.batteryCapacity) {
-      const estimatedSoc = Math.min(
-        100,
-        (sessionData.energyConsumed / vehicleInfo.batteryCapacity) * 100
-      );
-      return Math.round(estimatedSoc);
-    }
-    
-    return null; // Not enough data
+    // A vehicle battery capacity is not available in OCPP 1.6 session data.
+    // Return only a charger-reported SoC; never fabricate a percentage from
+    // energy delivered or an optional, unverified vehicle hint.
+    return sessionData?.currentSoc ?? sessionData?.batteryPercentage ?? null;
   }
 }
 

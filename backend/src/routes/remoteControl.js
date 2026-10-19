@@ -4,6 +4,7 @@ const ocppServer = require('../ocpp/server');
 const logger = require('../utils/logger');
 const { Transaction } = require('../models');
 const eventEmitter = require('../utils/eventEmitter');
+const { resolveCanonicalOcppTransactionId } = require('../services/ocppTransactionResolver');
 
 const router = express.Router();
 
@@ -93,6 +94,20 @@ router.post('/stop', authenticate, async (req, res) => {
     }
     
     const chargePointId = transaction.chargePointId;
+
+    // A recovered CMS row can have a different internal ID from the OCPP ID
+    // still held by the charger. Always send the canonical charger ID.
+    const commandTransactionId = await resolveCanonicalOcppTransactionId({
+      chargePointId,
+      connectorId: transaction.connectorId,
+      fallbackTransactionId: transaction.transactionId
+    });
+    if (!Number.isSafeInteger(Number(commandTransactionId)) || Number(commandTransactionId) <= 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'The charger transaction ID is not available yet; please retry shortly'
+      });
+    }
     
     // Check if station is connected
     if (!ocppServer.isConnected(chargePointId)) {
@@ -122,6 +137,7 @@ router.post('/stop', authenticate, async (req, res) => {
     }
     
     // Create a promise that resolves when StopTransaction is received
+    let cancelStopWait = () => {};
     const stopPromise = new Promise((resolve, reject) => {
       // Set a timeout for the operation
       const timeout = setTimeout(() => {
@@ -131,11 +147,16 @@ router.post('/stop', authenticate, async (req, res) => {
       
       // Define handler for stop transaction event
       const handleStopTransaction = (stopData) => {
-        if (stopData.transactionId == transactionId) {
+        if (stopData.transactionId == commandTransactionId || stopData.transactionId == transactionId) {
           clearTimeout(timeout);
           resolve(stopData);
           eventEmitter.removeListener('stop-transaction', handleStopTransaction);
         }
+      };
+
+      cancelStopWait = () => {
+        clearTimeout(timeout);
+        eventEmitter.removeListener('stop-transaction', handleStopTransaction);
       };
       
       // Listen for the stop transaction event
@@ -144,10 +165,12 @@ router.post('/stop', authenticate, async (req, res) => {
     
     // Send RemoteStopTransaction command
     const result = await ocppServer.sendOcppRequest(chargePointId, 'RemoteStopTransaction', {
-      transactionId: parseInt(transactionId, 10)
+      transactionId: Number(commandTransactionId)
     });
     
     if (!result.success) {
+      cancelStopWait();
+      await transaction.update({ status: 'InProgress' }).catch(() => {});
       return res.status(400).json({
         success: false,
         message: result.error || 'Failed to send stop command'
@@ -158,6 +181,7 @@ router.post('/stop', authenticate, async (req, res) => {
     res.json({
       success: true,
       messageId: result.messageId,
+      ocppTransactionId: Number(commandTransactionId),
       message: 'RemoteStopTransaction command sent successfully, waiting for confirmation',
       status: 'Stopping'
     });

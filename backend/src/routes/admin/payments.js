@@ -17,6 +17,107 @@ const parseDateFilter = (value, endOfDay = false) => {
   return parsed;
 };
 
+const normaliseSearch = value => String(value || '').trim();
+
+const userSearchWhere = search => {
+  const term = normaliseSearch(search);
+  if (!term) return undefined;
+  return {
+    [Op.or]: [
+      { name: { [Op.iLike]: `%${term}%` } },
+      { email: { [Op.iLike]: `%${term}%` } },
+      { phone: { [Op.iLike]: `%${term}%` } },
+      { tagId: { [Op.iLike]: `%${term}%` } }
+    ]
+  };
+};
+
+const userInclude = (search, attributes = ['id', 'name', 'email', 'phone', 'tagId'], requireMatch = Boolean(normaliseSearch(search))) => ({
+  model: MobileUser,
+  as: 'user',
+  attributes,
+  required: requireMatch,
+  ...(requireMatch && normaliseSearch(search) ? { where: userSearchWhere(search) } : {})
+});
+
+const paymentWhere = ({ status, userId, type, startDate, endDate, gateway, search } = {}) => {
+  const where = {};
+  if (status) where.status = status;
+  if (userId) where.userId = userId;
+  if (type) where.type = type;
+  if (gateway) where.gateway = gateway;
+  if (startDate || endDate) {
+    where.createdAt = {};
+    if (startDate) where.createdAt[Op.gte] = parseDateFilter(startDate);
+    if (endDate) where.createdAt[Op.lte] = parseDateFilter(endDate, true);
+  }
+  const term = normaliseSearch(search);
+  if (term) {
+    const pattern = `%${term}%`;
+    where[Op.or] = [
+      { reference: { [Op.iLike]: pattern } },
+      { description: { [Op.iLike]: pattern } },
+      { '$user.name$': { [Op.iLike]: pattern } },
+      { '$user.email$': { [Op.iLike]: pattern } },
+      { '$user.phone$': { [Op.iLike]: pattern } },
+      { '$user.tagId$': { [Op.iLike]: pattern } }
+    ];
+  }
+  return { where, search: term };
+};
+
+const summarisePaymentRows = rows => {
+  const summary = {
+    total: rows.length,
+    successful: 0,
+    pending: 0,
+    failed: 0,
+    reversed: 0,
+    totalVolume: 0,
+    successfulVolume: 0,
+    pendingVolume: 0,
+    failedVolume: 0,
+    reversedVolume: 0,
+    creditVolume: 0,
+    debitVolume: 0
+  };
+  rows.forEach(row => {
+    const amount = Number(row.amount) || 0;
+    const status = String(row.status || '').toUpperCase();
+    const type = String(row.type || '').toUpperCase();
+    summary.totalVolume += amount;
+    if (type === 'CREDIT') summary.creditVolume += amount;
+    if (type === 'DEBIT') summary.debitVolume += amount;
+    if (status === 'SUCCESS') {
+      summary.successful += 1;
+      summary.successfulVolume += amount;
+    } else if (status === 'PENDING') {
+      summary.pending += 1;
+      summary.pendingVolume += amount;
+    } else if (status === 'FAILED') {
+      summary.failed += 1;
+      summary.failedVolume += amount;
+    } else if (status === 'REVERSED') {
+      summary.reversed += 1;
+      summary.reversedVolume += amount;
+    }
+  });
+  summary.successRate = summary.total > 0
+    ? Number(((summary.successful / summary.total) * 100).toFixed(2))
+    : 0;
+  return summary;
+};
+
+const loadPaymentSummary = async ({ where, search }) => {
+  const rows = await PaymentTransaction.findAll({
+    where,
+    include: [userInclude(search, [], false)],
+    attributes: ['amount', 'status', 'type'],
+    raw: true
+  });
+  return summarisePaymentRows(rows);
+};
+
 // Apply authentication middleware
 router.use(authenticate);
 
@@ -103,26 +204,13 @@ router.put('/settings', requirePermission('payments.manage'), async (req, res) =
  */
 router.get('/transactions', requirePermission('payments.view'), async (req, res) => {
   try {
-    const { page = 1, limit = 50, status, userId, type, startDate, endDate, gateway } = req.query;
-    
-    const offset = (page - 1) * limit;
-    const whereClause = {};
-    
-    if (status) whereClause.status = status;
-    if (userId) whereClause.userId = userId;
-    if (type) whereClause.type = type;
-    if (gateway) whereClause.gateway = gateway;
-    
-    // Date range filtering with time
-    if (startDate || endDate) {
-      whereClause.createdAt = {};
-      if (startDate) {
-        whereClause.createdAt[Op.gte] = parseDateFilter(startDate);
-      }
-      if (endDate) {
-        whereClause.createdAt[Op.lte] = parseDateFilter(endDate, true);
-      }
-    }
+    const { page = 1, limit = 50, status, userId, type, startDate, endDate, gateway, search } = req.query;
+    const safePage = Math.max(1, parseInt(page, 10) || 1);
+    const safeLimit = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+    const { where: whereClause, search: normalisedSearch } = paymentWhere({
+      status, userId, type, startDate, endDate, gateway, search
+    });
+    const offset = (safePage - 1) * safeLimit;
     
     const transactions = await PaymentTransaction.findAndCountAll({
       where: whereClause,
@@ -132,24 +220,27 @@ router.get('/transactions', requirePermission('payments.view'), async (req, res)
           as: 'wallet'
         },
         {
-          model: MobileUser,
-          as: 'user',
-          attributes: ['id', 'name', 'email', 'phone']
+          ...userInclude(normalisedSearch, ['id', 'name', 'email', 'phone', 'tagId'], false)
         }
       ],
       order: [['createdAt', 'DESC']],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
+      limit: safeLimit,
+      offset,
+      distinct: true
     });
+
+    const summary = await loadPaymentSummary({ where: whereClause, search: normalisedSearch });
 
     res.json({
       success: true,
       transactions: transactions.rows,
+      summary,
+      filters: { status: status || '', userId: userId || '', type: type || '', startDate: startDate || '', endDate: endDate || '', gateway: gateway || '', search: normalisedSearch },
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: safePage,
+        limit: safeLimit,
         total: transactions.count,
-        pages: Math.ceil(transactions.count / limit)
+        pages: Math.max(1, Math.ceil(transactions.count / safeLimit))
       }
     });
   } catch (error) {
@@ -167,38 +258,66 @@ router.get('/transactions', requirePermission('payments.view'), async (req, res)
  */
 router.get('/wallets', requirePermission('payments.view'), async (req, res) => {
   try {
-    const { page = 1, limit = 50 } = req.query;
-    
-    const offset = (page - 1) * limit;
+    const { page = 1, limit = 50, search, status, balanceBand, userId } = req.query;
+    const safePage = Math.max(1, parseInt(page, 10) || 1);
+    const safeLimit = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+    const offset = (safePage - 1) * safeLimit;
+    const where = {};
+    if (userId) where.userId = userId;
+    if (status === 'active') where.isActive = true;
+    if (status === 'inactive') where.isActive = false;
+    if (balanceBand === 'positive') where.balance = { [Op.gt]: 0 };
+    if (balanceBand === 'negative') where.balance = { [Op.lt]: 0 };
+    if (balanceBand === 'zero') where.balance = 0;
+    const normalisedSearch = normaliseSearch(search);
     
     const wallets = await Wallet.findAndCountAll({
+      where,
       include: [
-        {
-          model: MobileUser,
-          as: 'user',
-          attributes: ['id', 'name', 'email', 'phone']
-        }
+        userInclude(normalisedSearch)
       ],
       order: [[{ model: MobileUser, as: 'user' }, 'name', 'ASC']],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
+      limit: safeLimit,
+      offset,
+      distinct: true
     });
 
-    const totalBalance = wallets.rows.reduce((sum, wallet) => sum + parseFloat(wallet.balance || 0), 0);
+    const summaryRows = await Wallet.findAll({
+      where,
+      include: [userInclude(normalisedSearch, [])],
+      attributes: ['balance', 'isActive'],
+      raw: true
+    });
+    const summary = summaryRows.reduce((result, wallet) => {
+      const balance = Number(wallet.balance) || 0;
+      result.totalBalance += balance;
+      if (balance > 0) result.positiveBalance += balance;
+      if (balance < 0) result.debtBalance += Math.abs(balance);
+      if (balance === 0) result.zeroBalance += 1;
+      if (wallet.isActive) result.active += 1;
+      return result;
+    }, {
+      totalWallets: summaryRows.length,
+      active: 0,
+      totalBalance: 0,
+      positiveBalance: 0,
+      debtBalance: 0,
+      zeroBalance: 0,
+      averageBalance: 0
+    });
+    summary.averageBalance = summary.totalWallets > 0
+      ? summary.totalBalance / summary.totalWallets
+      : 0;
 
     res.json({
       success: true,
       wallets: wallets.rows,
-      summary: {
-        totalBalance,
-        totalWallets: wallets.count,
-        averageBalance: wallets.count > 0 ? totalBalance / wallets.count : 0
-      },
+      summary,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: safePage,
+        limit: safeLimit,
         total: wallets.count,
-        pages: Math.ceil(wallets.count / limit)
+        pages: Math.max(1, Math.ceil(wallets.count / safeLimit))
       }
     });
   } catch (error) {
@@ -431,14 +550,21 @@ router.post('/wallets/:walletId/fund', requirePermission('payments.manage'), asy
  */
 router.get('/users', requirePermission('payments.view'), async (req, res) => {
   try {
+    const { q = '', limit = 40 } = req.query;
+    const search = normaliseSearch(q);
+    const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 40));
     const users = await MobileUser.findAll({
-      attributes: ['id', 'name', 'phone', 'email'],
-      order: [['name', 'ASC']]
+      attributes: ['id', 'name', 'phone', 'email', 'tagId'],
+      ...(userSearchWhere(search) ? { where: userSearchWhere(search) } : {}),
+      order: [['name', 'ASC']],
+      limit: safeLimit
     });
 
     res.json({
       success: true,
-      users
+      users,
+      query: search,
+      pagination: { limit: safeLimit, total: users.length, hasMore: users.length === safeLimit }
     });
   } catch (error) {
     logger.error('Get mobile users error:', error);
@@ -455,64 +581,50 @@ router.get('/users', requirePermission('payments.view'), async (req, res) => {
  */
 router.get('/stats', requirePermission('payments.view'), async (req, res) => {
   try {
-    const { period = '30' } = req.query; // Default to last 30 days
-    const daysAgo = new Date();
-    daysAgo.setDate(daysAgo.getDate() - parseInt(period));
-    
-    // Transaction stats
-    const totalTransactions = await PaymentTransaction.count({
-      where: { createdAt: { [Op.gte]: daysAgo } }
+    const { period = '30', startDate, endDate, status, userId, type, gateway, search } = req.query;
+    const baseFilters = paymentWhere({ status, userId, type, startDate, endDate, gateway, search });
+    const whereClause = baseFilters.where;
+    if (!startDate && !endDate) {
+      const days = Math.max(1, parseInt(period, 10) || 30);
+      const daysAgo = new Date();
+      daysAgo.setDate(daysAgo.getDate() - days);
+      whereClause.createdAt = { [Op.gte]: daysAgo };
+    }
+
+    const summary = await loadPaymentSummary({ where: whereClause, search: baseFilters.search });
+    const walletRows = await Wallet.findAll({
+      where: userId ? { userId } : {},
+      include: [userInclude(baseFilters.search, [])],
+      attributes: ['balance', 'isActive'],
+      raw: true
     });
-    
-    const successfulTransactions = await PaymentTransaction.count({
-      where: { 
-        status: 'SUCCESS',
-        createdAt: { [Op.gte]: daysAgo }
-      }
-    });
-    
-    const failedTransactions = await PaymentTransaction.count({
-      where: { 
-        status: 'FAILED',
-        createdAt: { [Op.gte]: daysAgo }
-      }
-    });
-    
-    const totalVolume = await PaymentTransaction.sum('amount', {
-      where: { 
-        status: 'SUCCESS',
-        createdAt: { [Op.gte]: daysAgo }
-      }
-    }) || 0;
-    
-    // Wallet stats
-    const totalWallets = await Wallet.count();
-    const totalWalletBalance = await Wallet.sum('balance') || 0;
-    const activeWallets = await Wallet.count({
-      where: { 
-        balance: { [Op.gt]: 0 },
-        isActive: true
-      }
-    });
+    const walletSummary = walletRows.reduce((result, wallet) => {
+      const balance = Number(wallet.balance) || 0;
+      result.totalBalance += balance;
+      if (wallet.isActive && balance > 0) result.active += 1;
+      return result;
+    }, { total: walletRows.length, active: 0, totalBalance: 0 });
+    walletSummary.averageBalance = walletSummary.total > 0
+      ? walletSummary.totalBalance / walletSummary.total
+      : 0;
 
     res.json({
       success: true,
       stats: {
         transactions: {
-          total: totalTransactions,
-          successful: successfulTransactions,
-          failed: failedTransactions,
-          pending: totalTransactions - successfulTransactions - failedTransactions,
-          successRate: totalTransactions > 0 ? (successfulTransactions / totalTransactions * 100).toFixed(2) : 0,
-          totalVolume: parseFloat(totalVolume)
+          ...summary,
+          // Preserve the original meaning of totalVolume as successful volume.
+          totalVolume: summary.successfulVolume,
+          grossVolume: summary.totalVolume
         },
         wallets: {
-          total: totalWallets,
-          active: activeWallets,
-          totalBalance: parseFloat(totalWalletBalance),
-          averageBalance: totalWallets > 0 ? (totalWalletBalance / totalWallets).toFixed(2) : 0
+          total: walletSummary.total,
+          active: walletSummary.active,
+          totalBalance: walletSummary.totalBalance,
+          averageBalance: walletSummary.averageBalance
         },
-        period: `${period} days`
+        period: startDate || endDate ? 'Custom range' : `${Math.max(1, parseInt(period, 10) || 30)} days`,
+        filters: { status: status || '', userId: userId || '', type: type || '', gateway: gateway || '', search: baseFilters.search, startDate: startDate || '', endDate: endDate || '' }
       }
     });
   } catch (error) {

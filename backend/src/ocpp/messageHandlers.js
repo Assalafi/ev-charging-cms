@@ -5,9 +5,11 @@ const {
   Transaction,
   MeterValue,
   ChargingStation,
+  Connector,
   MobileUser,
   Wallet,
   PaymentTransaction,
+  OcppMessage,
   sequelize,
 } = require("../models")
 const mqttClient = require("../mqtt/client")
@@ -17,10 +19,336 @@ const { validatePricingSettings } = require("../utils/pricingValidator")
 const { billTransaction } = require("../services/billingService")
 const { calculatePartnerRevenue } = require("../services/partnerRevenueService")
 const { getChargingPricing } = require("../services/chargingPricingService")
+const {
+  resolveCanonicalOcppTransactionId,
+} = require("../services/ocppTransactionResolver")
 
 // Track pending remote starts so we can accept StartTransaction from stations
 // that use their own default idTag instead of the one from RemoteStartTransaction
 const pendingRemoteStarts = new Map()
+// Prevent a wallet stop check from issuing a new command for every MeterValues
+// frame while the charger is processing the previous stop request.
+const automaticStopRequests = new Map()
+const AUTOMATIC_STOP_RETRY_MS = 60 * 1000
+
+function parseBatteryPercentage(value) {
+  if (value === null || value === undefined || value === "") return null
+  const percentage = Number(value)
+  return Number.isFinite(percentage) && percentage >= 0 && percentage <= 100
+    ? percentage
+    : null
+}
+
+function parseMeterValueWh(sampledValues) {
+  const energy = (Array.isArray(sampledValues) ? sampledValues : []).find(
+    (sampledValue) =>
+      sampledValue?.measurand === "Energy.Active.Import.Register" ||
+      !sampledValue?.measurand
+  )
+  if (!energy) return null
+
+  const value = Number(energy.value)
+  if (!Number.isFinite(value)) return null
+  return String(energy.unit || "Wh").toLowerCase() === "kwh"
+    ? value * 1000
+    : value
+}
+
+async function nextRecoveryTransactionId() {
+  // OCPP 1.6 transaction IDs are integers. Keep the generated ID in the same
+  // range as the rest of this application and check the unique index before
+  // returning it so a recovered session is never acknowledged twice.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidate = Math.floor(Math.random() * 900000) + 100000
+    const exists = await Transaction.findOne({
+      where: { transactionId: candidate },
+      attributes: ["id"]
+    })
+    if (!exists) return candidate
+  }
+  throw new Error("Unable to allocate a unique recovery transaction ID")
+}
+
+/**
+ * Resolve a MeterValues transaction without ever attaching a reading to a
+ * different customer's completed record. Some chargers keep transmitting
+ * their old OCPP transaction ID after a reconnect or after the CSMS completed
+ * the record while the cable remained physically active. In that case:
+ *   1. Prefer an active transaction on this exact station/connector.
+ *   2. If the reported ID is a completed record and the connector is Charging,
+ *      create a new continuation for that record's user, starting at the
+ *      first meter reading of the continuation.
+ *   3. If neither is safe, return null; raw OCPP telemetry remains available
+ *      for audit but is not billed to an arbitrary user.
+ */
+async function resolveMeterValuesTransaction({
+  chargePointId,
+  connectorId,
+  reportedTransactionId,
+  meterValueWh,
+  meterTimestamp,
+  chargingSignal = false
+}) {
+  const reported = reportedTransactionId
+    ? await Transaction.findOne({
+        where: { transactionId: reportedTransactionId, chargePointId }
+      })
+    : null
+
+  if (reported?.status === "InProgress") {
+    return { transaction: reported, reportedTransactionId, recovered: false }
+  }
+
+  // A charger can change its transaction ID while the CSMS is still handling
+  // the previous message. Never let that stale ID override an active session
+  // on the same physical connector.
+  const active = await Transaction.findOne({
+    where: { chargePointId, connectorId, status: "InProgress" },
+    order: [["startTime", "DESC"]]
+  })
+  if (active) {
+    // A recovery row can be created from the old OCPP transaction before the
+    // durable RemoteStart history is consulted. When the charger clock is
+    // stale, the latest RemoteStart received by the CSMS is stronger user
+    // evidence than the idTag attached to that old transaction.
+    const remoteStartIntent = await findRecentRemoteStartIntent({
+      chargePointId,
+      connectorId,
+      meterTimestamp,
+    })
+    const remoteStartMatchesActive = Boolean(
+      remoteStartIntent?.idTag &&
+      String(remoteStartIntent.idTag) === String(active.idTag)
+    )
+    const remoteStartSupersedesActive = Boolean(
+      active.reason === "OCPP_STALE_TRANSACTION_RECOVERY" &&
+      chargingSignal &&
+      remoteStartIntent?.idTag &&
+      String(remoteStartIntent.idTag) !== String(active.idTag) &&
+      remoteStartIntent.createdAt <= new Date(active.startTime)
+    )
+    if (remoteStartSupersedesActive) {
+      await active.update({ idTag: remoteStartIntent.idTag })
+      active.idTag = remoteStartIntent.idTag
+      logger.warn(
+        `Reassigned recovery transaction ${active.transactionId} on ${chargePointId}:${connectorId} ` +
+          `to RemoteStart user ${remoteStartIntent.idTag}`
+      )
+    }
+    const activeReadingTime = meterTimestamp ? new Date(meterTimestamp) : null
+    const activeStartMeter = Number(active.startMeterValue)
+    const activeLatestMeter = Math.max(
+      Number.isFinite(activeStartMeter) ? activeStartMeter : 0,
+      Number(active.stopMeterValue) || 0
+    )
+    const reportedUserMatchesActive =
+      !reported?.idTag || !active.idTag || String(reported.idTag) === String(active.idTag)
+    const monotonicLiveRecovery =
+      active.reason === "OCPP_STALE_TRANSACTION_RECOVERY" &&
+      chargingSignal &&
+      Number.isFinite(meterValueWh) &&
+      meterValueWh >= activeLatestMeter &&
+      (reportedUserMatchesActive || remoteStartMatchesActive || remoteStartSupersedesActive)
+    if (
+      active.startTime &&
+      activeReadingTime &&
+      !Number.isNaN(activeReadingTime.getTime()) &&
+      activeReadingTime < new Date(active.startTime)
+    ) {
+      if (!monotonicLiveRecovery) {
+        logger.warn(
+          `Ignoring delayed MeterValues ${reportedTransactionId || "(none)"} from ` +
+            `${chargePointId}:${connectorId}: sample predates active transaction ${active.transactionId}`
+        )
+        return { transaction: null, reportedTransactionId, recovered: false }
+      }
+
+      // Some chargers keep an incorrect RTC after reconnecting. For a
+      // recovery session, the server receipt order plus positive power and a
+      // non-decreasing register are stronger evidence than that device clock.
+      logger.warn(
+        `Accepting live stale-clock MeterValues ${reportedTransactionId || "(none)"} from ` +
+          `${chargePointId}:${connectorId} for recovery transaction ${active.transactionId}: ` +
+          `${meterValueWh} Wh >= ${activeLatestMeter} Wh with positive power`
+      )
+    }
+    if (reportedTransactionId && String(active.transactionId) !== String(reportedTransactionId)) {
+      logger.warn(
+        `MeterValues ${reportedTransactionId} from ${chargePointId}:${connectorId} ` +
+          `mapped to active transaction ${active.transactionId} (reported ID is stale)`
+      )
+    }
+    return { transaction: active, reportedTransactionId, recovered: false }
+  }
+
+  // The offline worker may complete the CSMS row while the charge point keeps
+  // charging during a short network outage. When the charger reconnects it
+  // continues reporting the original OCPP transaction ID. Reuse that record
+  // so the normal session-resume path can reopen it and, crucially, so future
+  // RemoteStopTransaction commands use the ID the charger actually knows.
+  if (
+    reported &&
+    ["Completed", "Stopped"].includes(reported.status) &&
+    reported.reason === "NetworkDisconnected" &&
+    chargingSignal &&
+    Number.isFinite(meterValueWh) &&
+    meterValueWh >= (Number(reported.stopMeterValue) || Number(reported.startMeterValue) || 0)
+  ) {
+    const remoteStartIntent = await findRecentRemoteStartIntent({
+      chargePointId,
+      connectorId,
+      meterTimestamp,
+    })
+    const newerDifferentUser = Boolean(
+      remoteStartIntent?.idTag &&
+      String(remoteStartIntent.idTag) !== String(reported.idTag) &&
+      reported.stopTime &&
+      remoteStartIntent.createdAt > new Date(reported.stopTime)
+    )
+
+    if (!newerDifferentUser) {
+      logger.warn(
+        `Resuming network-recovered transaction ${reported.transactionId} on ` +
+          `${chargePointId}:${connectorId} from live MeterValues at ${meterValueWh} Wh`
+      )
+      return { transaction: reported, reportedTransactionId, recovered: true }
+    }
+  }
+
+  if (!reported || !["Completed", "Stopped"].includes(reported.status)) {
+    return { transaction: null, reportedTransactionId, recovered: false }
+  }
+
+  const remoteStartIntent = await findRecentRemoteStartIntent({
+    chargePointId,
+    connectorId,
+    meterTimestamp,
+  })
+  if (remoteStartIntent?.blocked) {
+    logger.warn(
+      `Ignoring delayed MeterValues ${reportedTransactionId || "(none)"} from ` +
+        `${chargePointId}:${connectorId}: sample predates RemoteStart for ${remoteStartIntent.idTag}`
+    )
+    return { transaction: null, reportedTransactionId, recovered: false }
+  }
+
+  const connector = await Connector.findOne({
+    where: { chargePointId, connectorId },
+    attributes: ["status"]
+  })
+  // Some chargers leave the connector row as Available after reconnecting.
+  // A positive power/current reading is sufficient physical evidence, but only
+  // when the sample timestamp is newer than the completed transaction (the
+  // guard below rejects delayed offline samples from the old session).
+  if (
+    (connector?.status !== "Charging" && !chargingSignal) ||
+    !Number.isFinite(meterValueWh)
+  ) {
+    return { transaction: null, reportedTransactionId, recovered: false }
+  }
+
+  const readingTime = meterTimestamp ? new Date(meterTimestamp) : new Date()
+  if (
+    reported.stopTime &&
+    !Number.isNaN(readingTime.getTime()) &&
+    readingTime <= new Date(reported.stopTime)
+  ) {
+    logger.warn(
+      `Ignoring stale MeterValues ${reportedTransactionId} from ${chargePointId}:` +
+        `${connectorId}: meter timestamp predates the completed transaction stop`
+    )
+    return { transaction: null, reportedTransactionId, recovered: false }
+  }
+
+  // When the charger continues reporting a previous customer's transactionId
+  // after a new RemoteStart, use the new request's idTag. The sample must be
+  // newer than both the previous stop and the new RemoteStart (checked above),
+  // and must carry positive power/current evidence (checked before recovery).
+  const continuationTag = remoteStartIntent?.idTag || reported.idTag
+  const supersededUser = remoteStartIntent && remoteStartIntent.idTag !== reported.idTag
+  if (supersededUser) {
+    logger.warn(
+      `Correlating stale MeterValues ${reportedTransactionId} on ${chargePointId}:${connectorId} ` +
+        `to newer RemoteStart user ${remoteStartIntent.idTag} instead of completed user ${reported.idTag}`
+    )
+  }
+  const startTime = Number.isNaN(readingTime.getTime()) ? new Date() : readingTime
+  const recoveryTransactionId = await nextRecoveryTransactionId()
+  const continuation = await Transaction.create({
+    transactionId: recoveryTransactionId,
+    chargePointId,
+    connectorId,
+    idTag: continuationTag,
+    startTime,
+    startMeterValue: meterValueWh,
+    energyDelivered: 0,
+    amount: 0,
+    status: "InProgress",
+    reason: "OCPP_STALE_TRANSACTION_RECOVERY"
+  })
+
+  await updateConnectorStatus(chargePointId, connectorId, "Charging", continuation.transactionId)
+  await ChargingStation.update(
+    { status: "Charging", currentTransaction: continuation.transactionId },
+    { where: { chargePointId } }
+  )
+  if (chargingSessionTracker) {
+    chargingSessionTracker.startSession(
+      continuation.transactionId,
+      [],
+      continuation.startMeterValue
+    )
+  }
+
+  if (remoteStartIntent) pendingRemoteStarts.delete(chargePointId)
+
+  logger.warn(
+    `Recovered orphan MeterValues on ${chargePointId}:${connectorId}: ` +
+      `reported completed tx ${reported.transactionId} (${reported.idTag}) → ` +
+      `new continuation tx ${continuation.transactionId} at ${meterValueWh} Wh`
+  )
+  return { transaction: continuation, reportedTransactionId, recovered: true }
+}
+
+function extractBatteryPercentage(values) {
+  const entries = Array.isArray(values) ? values : []
+  for (const entry of entries) {
+    const sampledValues = Array.isArray(entry?.sampledValue)
+      ? entry.sampledValue
+      : entry?.measurand
+        ? [entry]
+        : []
+    for (const sampledValue of sampledValues) {
+      if (sampledValue?.measurand === "SoC") {
+        const percentage = parseBatteryPercentage(sampledValue.value)
+        if (percentage !== null) return percentage
+      }
+    }
+  }
+  return null
+}
+
+async function getLatestTransactionBatteryPercentage(transaction) {
+  if (!transaction?.id) return null
+  const latest = await MeterValue.findOne({
+    where: { transactionId: transaction.id, measurand: "SoC" },
+    order: [["timestamp", "DESC"]],
+    attributes: ["value"]
+  })
+  return parseBatteryPercentage(latest?.value)
+}
+
+async function persistTransactionBatteryPercentage(transactionId, chargePointId, percentage) {
+  if (!transactionId || percentage === null) return
+  const transaction = await Transaction.findOne({ where: { transactionId, chargePointId } })
+  if (!transaction) return
+
+  const updates = { endBatteryPercentage: percentage }
+  if (parseBatteryPercentage(transaction.startBatteryPercentage) === null) {
+    updates.startBatteryPercentage = percentage
+  }
+  await transaction.update(updates)
+}
 
 /**
  * Register a pending remote start for a station
@@ -35,6 +363,83 @@ function registerPendingRemoteStart(chargePointId, idTag, connectorId) {
       logger.info(`Expired pending remote start for ${chargePointId}`)
     }
   }, 60000)
+}
+
+/**
+ * Find the most recent RemoteStart intent for this connector. A few OCPP 1.6
+ * chargers keep sending their previous transactionId after reconnecting and
+ * never send a fresh StartTransaction. In that case the outbound
+ * RemoteStartTransaction is the only authoritative link to the new user.
+ *
+ * This is deliberately conservative: the meter sample must be newer than the
+ * RemoteStart request. If it is older (a delayed/offline replay), return a
+ * blocked result so the sample cannot fall back to the previous customer's
+ * completed transaction.
+ */
+async function findRecentRemoteStartIntent({ chargePointId, connectorId, meterTimestamp }) {
+  const pending = pendingRemoteStarts.get(chargePointId)
+  const sampleTime = meterTimestamp ? new Date(meterTimestamp) : null
+  const validSampleTime = sampleTime && !Number.isNaN(sampleTime.getTime())
+    ? sampleTime
+    : null
+
+  const candidates = []
+  if (pending) {
+    candidates.push({
+      idTag: pending.idTag,
+      connectorId: pending.connectorId,
+      createdAt: new Date(pending.timestamp),
+    })
+  }
+
+  // Keep the correlation durable across a PM2 reload/reconnect. The in-memory
+  // intent is normally enough, but the OCPP audit row is needed when a charger
+  // delivers its buffered meter values after the backend restarts.
+  try {
+    const recent = await OcppMessage.findAll({
+      where: {
+        chargePointId,
+        message_type: "RemoteStartTransaction",
+        direction: "Outbound",
+        // A charging session can legitimately run for more than 30 minutes;
+        // retain enough RemoteStart history to correlate a stale transaction
+        // ID after a charger reconnects later in the same session.
+        createdAt: { [Op.gte]: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      },
+      order: [["createdAt", "DESC"]],
+      limit: 10,
+      attributes: ["payload", "createdAt"],
+    })
+
+    for (const row of recent) {
+      const payload = typeof row.payload === "string"
+        ? (() => {
+            try { return JSON.parse(row.payload) } catch { return null }
+          })()
+        : row.payload
+      if (!payload) continue
+      const requestedConnector = Number(payload.connectorId ?? payload.ConnectorId ?? connectorId)
+      if (requestedConnector !== Number(connectorId)) continue
+      const idTag = payload.idTag || payload.IdTag
+      if (!idTag) continue
+      candidates.push({ idTag, connectorId: requestedConnector, createdAt: new Date(row.createdAt) })
+    }
+  } catch (error) {
+    logger.warn(`Could not load recent RemoteStart history for ${chargePointId}: ${error.message}`)
+  }
+
+  candidates.sort((a, b) => b.createdAt - a.createdAt)
+  const intent = candidates[0]
+  if (!intent || !intent.idTag || Number(intent.connectorId) !== Number(connectorId)) return null
+
+  if (
+    validSampleTime &&
+    validSampleTime.getTime() < intent.createdAt.getTime() - 5000
+  ) {
+    return { ...intent, blocked: true }
+  }
+
+  return intent
 }
 
 /**
@@ -800,6 +1205,7 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
       timestamp: payload.timestamp || new Date().toISOString(),
       reason: payload.reason || "Local",
       idTag: payload.idTag || null,
+      transactionData: payload.transactionData,
     }
 
     // Validate required fields
@@ -1190,6 +1596,22 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         null
       )
 
+      // StopTransaction may include a final SoC sample. If it does not, use
+      // the latest persisted SoC sample for this transaction. A missing value
+      // remains null; never infer battery percentage from energy delivered.
+      const transactionDataBatteryPercentage = extractBatteryPercentage(normalizedPayload.transactionData)
+      const finalBatteryPercentage = transactionDataBatteryPercentage !== null
+        ? transactionDataBatteryPercentage
+        : await getLatestTransactionBatteryPercentage(transaction)
+      const batteryUpdate = finalBatteryPercentage === null
+        ? {}
+        : {
+            endBatteryPercentage: finalBatteryPercentage,
+            ...(parseBatteryPercentage(transaction.startBatteryPercentage) === null
+              ? { startBatteryPercentage: finalBatteryPercentage }
+              : {})
+          }
+
       // Update the transaction with all fields including partner revenue
       await transaction.update({
         status: "Completed",
@@ -1210,7 +1632,8 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
         companyEarning: partnerRevenue.companyEarning,
         partnerId: partnerRevenue.partnerId,
         locationId: partnerRevenue.locationId,
-        settlementStatus: partnerRevenue.settlementStatus
+        settlementStatus: partnerRevenue.settlementStatus,
+        ...batteryUpdate
       })
 
       logger.info(
@@ -1290,6 +1713,9 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
             energyDelivered,
             amount: transactionAmount,
             reason: normalizedPayload.reason,
+            batteryPercentage: finalBatteryPercentage,
+            startBatteryPercentage: transaction.startBatteryPercentage,
+            endBatteryPercentage: finalBatteryPercentage,
             status: "Completed",
           })
         )
@@ -1304,6 +1730,8 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
             chargePointId,
             transactionId: normalizedPayload.transactionId,
             connectorId: transaction.connectorId,
+            batteryPercentage: finalBatteryPercentage,
+            endBatteryPercentage: finalBatteryPercentage,
             status: "Completed",
           })
         )
@@ -1422,17 +1850,43 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
     )
 
     // Extract data from payload
-    const connectorId = payload.connectorId
-    const transactionId = payload.transactionId
+    const connectorId = payload.connectorId || 1
+    const reportedTransactionId = payload.transactionId || null
+    let transactionId = reportedTransactionId
     const meterValues = payload.meterValue || []
     let internalTransactionId = null
 
-    if (transactionId) {
-      const linkedTransaction = await Transaction.findOne({
-        where: { transactionId },
-        attributes: ["id"]
+    if (meterValues.length > 0) {
+      const firstSampledValues = meterValues[0]?.sampledValue || []
+      const firstMeterValueWh = parseMeterValueWh(firstSampledValues)
+      const chargingSignal = meterValues.some((meterValue) =>
+        (meterValue?.sampledValue || []).some((sampledValue) => {
+          if (sampledValue?.measurand === "Power.Active.Import") {
+            return Number(sampledValue.value) > 0
+          }
+          if (sampledValue?.measurand === "Current.Import") {
+            return Number(sampledValue.value) > 0
+          }
+          return false
+        })
+      )
+      const resolution = await resolveMeterValuesTransaction({
+        chargePointId,
+        connectorId,
+        reportedTransactionId,
+        meterValueWh: firstMeterValueWh,
+        meterTimestamp: meterValues[0]?.timestamp,
+        chargingSignal
       })
-      internalTransactionId = linkedTransaction?.id || null
+      if (resolution.transaction) {
+        transactionId = resolution.transaction.transactionId
+        internalTransactionId = resolution.transaction.id
+      } else if (reportedTransactionId) {
+        logger.warn(
+          `Ignoring billable MeterValues ${reportedTransactionId} from ${chargePointId}:${connectorId}: ` +
+            `no active transaction and no safe user correlation`
+        )
+      }
     }
 
     if (meterValues.length === 0) {
@@ -1441,7 +1895,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
       )
     } else {
       // Process meter values
-      if (transactionId && chargingSessionTracker) {
+      if (internalTransactionId && transactionId && chargingSessionTracker) {
         logger.info(`Processing meter values for transaction ${transactionId}`)
         chargingSessionTracker.updateMeterValue(transactionId, meterValues)
       }
@@ -1482,10 +1936,12 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
           for (const sampledValue of sampledValues) {
             // Check for SoC (battery percentage)
             if (sampledValue.measurand === "SoC") {
-              batteryPercentage = parseInt(sampledValue.value, 10)
-              logger.info(
-                `Found SoC: ${batteryPercentage}% for transaction ${transactionId} on ${chargePointId}`
-              )
+              batteryPercentage = parseBatteryPercentage(sampledValue.value)
+              if (batteryPercentage !== null) {
+                logger.info(
+                  `Found SoC: ${batteryPercentage}% for transaction ${transactionId} on ${chargePointId}`
+                )
+              }
             }
 
             // Check for Power readings
@@ -1530,7 +1986,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                 }
 
                 // If part of a transaction, update its current energy
-                if (transactionId) {
+                if (internalTransactionId && transactionId) {
                   try {
                     // Fetch transaction fresh to get latest currentMeterValue
                     let transaction = await Transaction.findOne({
@@ -1722,12 +2178,36 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                                 // Stop ALL active sessions for this user
                                 for (const session of activeSessions) {
                                   if (ocppServer.isConnected(session.chargePointId)) {
+                                    const stopKey = `${session.chargePointId}:${session.connectorId}`
+                                    const previousStop = automaticStopRequests.get(stopKey)
+                                    if (previousStop && Date.now() - previousStop < AUTOMATIC_STOP_RETRY_MS) {
+                                      continue
+                                    }
+
+                                    const commandTransactionId = await resolveCanonicalOcppTransactionId({
+                                      chargePointId: session.chargePointId,
+                                      connectorId: session.connectorId,
+                                      fallbackTransactionId: session.transactionId,
+                                    })
+                                    if (!commandTransactionId) {
+                                      logger.warn(
+                                        `AUTO-STOP: No canonical OCPP transaction ID for ` +
+                                          `${session.chargePointId}:${session.connectorId}; not sending a blind stop`
+                                      )
+                                      continue
+                                    }
+
+                                    automaticStopRequests.set(stopKey, Date.now())
                                     ocppServer.sendOcppRequest(session.chargePointId, 'RemoteStopTransaction', {
-                                      transactionId: session.transactionId
+                                      transactionId: commandTransactionId
                                     }).then(() => {
-                                      logger.info(`AUTO-STOP: RemoteStopTransaction sent for tx ${session.transactionId} at ${session.chargePointId}`)
+                                      logger.info(
+                                        `AUTO-STOP: RemoteStopTransaction sent for OCPP tx ${commandTransactionId} ` +
+                                          `(internal tx ${session.transactionId}) at ${session.chargePointId}`
+                                      )
                                     }).catch(err => {
-                                      logger.error(`AUTO-STOP: Failed to send RemoteStop for tx ${session.transactionId}:`, err)
+                                      automaticStopRequests.delete(stopKey)
+                                      logger.error(`AUTO-STOP: Failed to send RemoteStop for OCPP tx ${commandTransactionId}:`, err)
                                     })
                                   }
                                 }
@@ -1775,6 +2255,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                             chargePointId, // Add station ID for filtering
                             transactionId, // Include transaction ID for reference
                             soc: batteryPercentage, // Battery percentage for real-time updates
+                            batteryPercentage,
                           })
                         )
 
@@ -1794,6 +2275,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                             transactionId,
                             connectorId,
                             soc: batteryPercentage, // Battery percentage for dashboard display
+                            batteryPercentage,
                           })
                         )
                       }
@@ -1820,6 +2302,12 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
               logger.info(`SoC persisted: ${chargePointId}:${socConnId} → ${batteryPercentage}%`)
             } catch (socErr) {
               logger.warn(`Failed to persist SoC for ${chargePointId}: ${socErr.message}`)
+            }
+
+            try {
+              await persistTransactionBatteryPercentage(transactionId, chargePointId, batteryPercentage)
+            } catch (transactionSocError) {
+              logger.warn(`Failed to persist transaction SoC for ${transactionId}: ${transactionSocError.message}`)
             }
           }
         }
@@ -1856,6 +2344,7 @@ async function updateConnectorStatus(
             DO UPDATE SET 
             status = $3, 
             "transactionId" = $4,
+            "lastStatusUpdate" = NOW(),
             "updatedAt" = NOW()`,
       {
         bind: [chargePointId, connectorId, status, transactionId],
@@ -2250,18 +2739,40 @@ async function handleStatusNotification(chargePointId, uniqueId, payload) {
               )
             }
           } else {
-            // No transaction at all — truly orphaned, force stop
-            logger.warn(`Station ${chargePointId}:${connectorId} charging with NO transaction at all — sending RemoteStop`)
-            try {
-              const ocppServer = require("./server")
-              if (ocppServer.isConnected(chargePointId)) {
-                // Use 0 as transactionId to request stop (some chargers accept this)
-                await ocppServer.sendOcppRequest(chargePointId, 'RemoteStopTransaction', {
-                  transactionId: 0
-                })
+            // Do not stop a charger that is actively sending meter values just
+            // because its StartTransaction was lost. MeterValues reconciliation
+            // can safely create a continuation for the exact reported user; a
+            // blanket RemoteStop here used to leave the vehicle charging while
+            // also making it impossible to bill the session.
+            const recentTelemetry = await MeterValue.findOne({
+              where: {
+                chargePointId,
+                connectorId,
+                createdAt: { [Op.gte]: new Date(Date.now() - 2 * 60 * 1000) }
+              },
+              order: [["createdAt", "DESC"]],
+              attributes: ["id", "timestamp", "transactionId"]
+            })
+
+            if (recentTelemetry) {
+              logger.warn(
+                `Station ${chargePointId}:${connectorId} is Charging without an active ` +
+                  `transaction but has fresh MeterValues; waiting for safe reconciliation`
+              )
+            } else {
+              // No telemetry and no transaction is a genuinely orphaned charge.
+              // Keep the safety stop for that case only.
+              logger.warn(`Station ${chargePointId}:${connectorId} charging with NO transaction or recent telemetry — sending RemoteStop`)
+              try {
+                const ocppServer = require("./server")
+                if (ocppServer.isConnected(chargePointId)) {
+                  await ocppServer.sendOcppRequest(chargePointId, 'RemoteStopTransaction', {
+                    transactionId: 0
+                  })
+                }
+              } catch (stopErr) {
+                logger.error(`Failed to send RemoteStop for orphaned charging on ${chargePointId}: ${stopErr.message}`)
               }
-            } catch (stopErr) {
-              logger.error(`Failed to send RemoteStop for truly orphaned charging on ${chargePointId}: ${stopErr.message}`)
             }
           }
         }
@@ -2328,10 +2839,35 @@ async function handleStatusNotification(chargePointId, uniqueId, payload) {
       await updateConnectorStatus(chargePointId, connectorId, status, status === "Charging" ? statusTransactionId : null)
 
       if (status !== "Charging") {
+        // A station may have one charging connector and another connector in
+        // Faulted/Unavailable state. Do not let the secondary connector mask
+        // the active session in the station-level dashboard.
+        const activeTransaction = await Transaction.findOne({
+          where: { chargePointId, status: "InProgress" },
+          order: [["createdAt", "DESC"]],
+          attributes: ["transactionId"]
+        })
+        const otherCharging = await Connector.findOne({
+          where: {
+            chargePointId,
+            status: "Charging",
+            ...(connectorId ? { connectorId: { [Op.ne]: connectorId } } : {})
+          },
+          attributes: ["transactionId"]
+        })
+        const aggregateStatus = activeTransaction || otherCharging
+          ? "Charging"
+          : status === "Available"
+            ? "Available"
+            : status
         await ChargingStation.update(
           {
-            status: status === "Available" ? "Available" : status,
-            ...(status === "Available" ? { currentTransaction: null } : {})
+            status: aggregateStatus,
+            ...(aggregateStatus === "Available"
+              ? { currentTransaction: null }
+              : activeTransaction?.transactionId
+                ? { currentTransaction: activeTransaction.transactionId }
+                : {})
           },
           { where: { chargePointId } }
         )
