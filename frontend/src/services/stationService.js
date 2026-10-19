@@ -167,6 +167,11 @@ const stationService = {
     }
   },
 
+  getActivity: async (stationId, params = {}) => {
+    const response = await api.get(`/stations/${stationId}/activity`, { params });
+    return response.data;
+  },
+
   /**
    * Get station connectors and their status
    * @param {string} stationId - Station ID

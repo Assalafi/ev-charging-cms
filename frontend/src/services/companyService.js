@@ -77,6 +77,10 @@ const companyService = {
     const response = await api.post(`/admin/companies/${id}/wallet/transfer`, payload);
     return response.data;
   },
+  recoverFromUser: async (id, payload) => {
+    const response = await api.post(`/admin/companies/${id}/wallet/recover`, payload);
+    return response.data;
+  },
   transactions: async (id, params = {}) => {
     const response = await api.get(`/admin/companies/${id}/wallet/transactions`, { params });
     return response.data;

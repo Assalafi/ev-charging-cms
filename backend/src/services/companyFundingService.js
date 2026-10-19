@@ -234,6 +234,102 @@ async function transferCompanyFundsToUser({ companyId, mobileUserId, amount, fun
   });
 }
 
+/**
+ * Move available funds from a company mobile user's wallet back to the
+ * company's wallet. Both wallets and both ledgers are updated in one
+ * serializable transaction so a concurrent charge or funding action cannot
+ * overdraw the user's balance.
+ */
+async function recoverUserFundsToCompany({ companyId, mobileUserId, amount, description, performedBy }) {
+  const recoveryAmount = numericAmount(amount);
+  return sequelize.transaction({ isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.SERIALIZABLE }, async (transaction) => {
+    const company = await SubscriptionCompany.findByPk(companyId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!company) throw new Error('Company not found');
+    if (company.status !== 'active') throw new Error('Company is not active');
+
+    const user = await MobileUser.findByPk(mobileUserId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!user || Number(user.companyId) !== Number(company.id) || user.status === 'deleted') {
+      throw new Error('Mobile user is not assigned to this company');
+    }
+
+    const userWallet = await Wallet.findOne({
+      where: { userId: user.id },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const previousUserBalance = Number(userWallet?.balance || 0);
+    if (!userWallet || previousUserBalance < recoveryAmount) {
+      const error = new Error(`Insufficient user wallet balance. Available: ₦${previousUserBalance.toFixed(2)}`);
+      error.code = 'INSUFFICIENT_USER_BALANCE';
+      throw error;
+    }
+
+    const companyWallet = await getOrCreateCompanyWallet(company.id, transaction);
+    const previousCompanyBalance = Number(companyWallet.balance || 0);
+    const newUserBalance = Math.round((previousUserBalance - recoveryAmount) * 100) / 100;
+    const newCompanyBalance = Math.round((previousCompanyBalance + recoveryAmount) * 100) / 100;
+    const reference = `COMPANY-USER-RECOVERY-${company.id}-${user.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    await userWallet.update({ balance: newUserBalance }, { transaction });
+    await companyWallet.update({ balance: newCompanyBalance }, { transaction });
+
+    await CompanyWalletTransaction.create({
+      companyId: company.id,
+      walletId: companyWallet.id,
+      beneficiaryUserId: user.id,
+      type: 'CREDIT',
+      amount: recoveryAmount,
+      currency: companyWallet.currency || 'NGN',
+      reference,
+      method: 'company_recovery',
+      status: 'SUCCESS',
+      description: description || `Funds recovered from ${user.name}`,
+      metadata: {
+        action: 'user_wallet_recovery',
+        previousCompanyBalance,
+        newCompanyBalance,
+        previousUserBalance,
+        newUserBalance,
+        recoveredFromUserId: user.id
+      },
+      performedBy: performedBy || null
+    }, { transaction });
+
+    await PaymentTransaction.create({
+      userId: user.id,
+      walletId: userWallet.id,
+      type: 'DEBIT',
+      amount: recoveryAmount,
+      currency: userWallet.currency || 'NGN',
+      reference,
+      gateway: 'company',
+      status: 'SUCCESS',
+      description: description || `Funds recovered by ${company.name}`,
+      metadata: {
+        action: 'company_recovery',
+        companyId: company.id,
+        previousBalance: previousUserBalance,
+        newBalance: newUserBalance,
+        companyPreviousBalance: previousCompanyBalance,
+        companyNewBalance: newCompanyBalance
+      }
+    }, { transaction });
+
+    return {
+      company,
+      user,
+      companyWallet,
+      userWallet,
+      amount: recoveryAmount,
+      previousCompanyBalance,
+      newCompanyBalance,
+      previousUserBalance,
+      newUserBalance,
+      reference
+    };
+  });
+}
+
 async function executeFundingRule(ruleId) {
   const rule = await CompanyFundingRule.findByPk(ruleId, {
     include: [
@@ -305,6 +401,7 @@ module.exports = {
   initializeCompanyGatewayFunding,
   settleCompanyGatewayFunding,
   transferCompanyFundsToUser,
+  recoverUserFundsToCompany,
   executeFundingRule,
   runDueFundingRules,
   startCompanyFundingScheduler,

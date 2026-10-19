@@ -23,7 +23,8 @@ const {
   fundCompanyWallet,
   initializeCompanyGatewayFunding,
   settleCompanyGatewayFunding,
-  transferCompanyFundsToUser
+  transferCompanyFundsToUser,
+  recoverUserFundsToCompany
 } = require('../../services/companyFundingService');
 
 const router = express.Router();
@@ -744,6 +745,33 @@ router.post('/:companyId/wallet/transfer', authenticate, requirePermission('comp
   } catch (error) {
     logger.error('Error transferring company funds:', error);
     res.status(error.code === 'INSUFFICIENT_COMPANY_BALANCE' ? 400 : 400).json({ success: false, message: error.message || 'Failed to fund mobile user wallet' });
+  }
+});
+
+router.post('/:companyId/wallet/recover', authenticate, requirePermission('companies.manage_wallet'), async (req, res) => {
+  try {
+    const result = await recoverUserFundsToCompany({
+      companyId: Number(req.params.companyId),
+      mobileUserId: Number(req.body.mobileUserId),
+      amount: req.body.amount,
+      description: req.body.description || `Funds recovered by ${req.user.username}`,
+      performedBy: req.user.id
+    });
+    const { user, company, companyWallet, userWallet, ...recovery } = result;
+    res.status(201).json({
+      success: true,
+      message: 'Funds recovered from mobile user wallet successfully',
+      result: {
+        ...recovery,
+        user: user ? { id: user.id, name: user.name, email: user.email, phone: user.phone } : null,
+        company: company ? { id: company.id, name: company.name, status: company.status } : null,
+        companyWallet: companyWallet ? { id: companyWallet.id, balance: companyWallet.balance, currency: companyWallet.currency } : null,
+        userWallet: userWallet ? { id: userWallet.id, balance: userWallet.balance, currency: userWallet.currency } : null
+      }
+    });
+  } catch (error) {
+    logger.error('Error recovering mobile user funds:', error);
+    res.status(error.code === 'INSUFFICIENT_USER_BALANCE' ? 400 : 400).json({ success: false, message: error.message || 'Failed to recover mobile user funds' });
   }
 });
 

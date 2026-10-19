@@ -7,7 +7,7 @@ const {
 const { companyAuthenticate, companyAuthorize } = require('../../middleware/companyAuth');
 const { getPartnerDateRange } = require('../../utils/partnerDateRange');
 const { parseLagosDate } = require('../../utils/timezone');
-const { fundCompanyWallet, initializeCompanyGatewayFunding, settleCompanyGatewayFunding, transferCompanyFundsToUser } = require('../../services/companyFundingService');
+const { fundCompanyWallet, initializeCompanyGatewayFunding, settleCompanyGatewayFunding, transferCompanyFundsToUser, recoverUserFundsToCompany } = require('../../services/companyFundingService');
 const logger = require('../../utils/logger');
 
 const router = express.Router();
@@ -214,6 +214,13 @@ router.put('/users/:userId/status', ...companyAuthorize(['owner', 'manager']), a
 
 router.post('/users/:userId/fund', ...companyAuthorize(['owner', 'manager']), async (req, res) => {
   try { const result = await transferCompanyFundsToUser({ companyId: req.companyId, mobileUserId: Number(req.params.userId), amount: req.body.amount, description: req.body.description || `Company funding by ${req.companyUser.name}`, performedBy: req.companyUser.id }); res.status(201).json({ success: true, message: 'Mobile user wallet funded', result: { amount: result.amount, reference: result.reference, companyBalance: result.newCompanyBalance, userBalance: result.newUserBalance, user: { id: result.user.id, name: result.user.name } } }); } catch (error) { res.status(400).json({ success: false, message: error.message || 'Failed to fund mobile user' }); }
+});
+
+router.post('/users/:userId/recover', ...companyAuthorize(['owner', 'manager']), async (req, res) => {
+  try {
+    const result = await recoverUserFundsToCompany({ companyId: req.companyId, mobileUserId: Number(req.params.userId), amount: req.body.amount, description: req.body.description || `Funds recovered by ${req.companyUser.name}`, performedBy: req.companyUser.id });
+    res.status(201).json({ success: true, message: 'Funds recovered from mobile user wallet', result: { amount: result.amount, reference: result.reference, companyBalance: result.newCompanyBalance, userBalance: result.newUserBalance, user: { id: result.user.id, name: result.user.name } } });
+  } catch (error) { res.status(400).json({ success: false, message: error.message || 'Failed to recover mobile user funds' }); }
 });
 
 router.get('/wallet', async (req, res) => { const wallet = await CompanyWallet.findOne({ where: { companyId: req.companyId } }); const balance = Number(wallet?.balance || 0); res.json({ success: true, wallet: { ...(wallet ? wallet.toJSON() : { balance: 0, currency: 'NGN' }), debtEnabled: req.company.debtEnabled === true, debtOutstanding: Math.max(0, -balance) } }); });

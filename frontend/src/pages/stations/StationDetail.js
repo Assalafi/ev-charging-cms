@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
+  Autocomplete,
   Typography,
   Paper,
   Grid,
@@ -12,6 +13,7 @@ import {
   Tab,
   Divider,
   CircularProgress,
+  LinearProgress,
   Alert,
   Card,
   CardContent,
@@ -46,6 +48,7 @@ import {
   BatteryChargingFull as ChargingIcon,
   BatteryChargingFull as BatteryChargingFullIcon,
   CheckCircle as CheckCircleIcon,
+  History as HistoryIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import api from '../../services/api';
@@ -59,6 +62,12 @@ import RemoteCommandPanel from '../../components/RemoteCommandPanel';
 // Helper function to get API base URL
 const getApiBaseUrl = () =>
   process.env.REACT_APP_API_URL || 'https://evcharging.eride.ng/api';
+
+const formatPayload = payload => {
+  if (!payload) return 'No payload';
+  if (typeof payload === 'object') return JSON.stringify(payload, null, 2);
+  try { return JSON.stringify(JSON.parse(payload), null, 2); } catch (_) { return String(payload); }
+};
 
 // Tab panel component
 function TabPanel({ children, value, index, ...other }) {
@@ -115,6 +124,20 @@ function StationDetail() {
 
   // Authorized tags state
   const [authorizedTags, setAuthorizedTags] = useState([]);
+  const [tagSearch, setTagSearch] = useState('');
+  const [tagsLoading, setTagsLoading] = useState(false);
+
+  // Unified station activity timeline
+  const [activityEvents, setActivityEvents] = useState([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityLastUpdated, setActivityLastUpdated] = useState(null);
+  // Kept only for backwards-compatible dead markup below; reconciliation is
+  // intentionally not exposed as a station-detail tab at this time.
+  const reconciliationData = null;
+  const reconciliationLoading = false;
+  const reconciliationError = null;
+  const fetchReconciliation = () => {};
+  const triggerReconciliation = () => {};
 
   // Pagination state for transactions
   const [transactionsPage, setTransactionsPage] = useState(0);
@@ -139,11 +162,6 @@ function StationDetail() {
   const [batteryPercentage, setBatteryPercentage] = useState(null);
   const [chargingDuration, setChargingDuration] = useState(0);
 
-  // Reconciliation state
-  const [reconciliationData, setReconciliationData] = useState(null);
-  const [reconciliationLoading, setReconciliationLoading] = useState(false);
-  const [reconciliationError, setReconciliationError] = useState(null);
-
   // This interval will update the energy consumption based on a simple increment
   // if no MQTT updates are received - simulating energy consumption
   const [energySimulation, setEnergySimulation] = useState(null);
@@ -155,81 +173,6 @@ function StationDetail() {
     setOcppMessages([]);
     setTotalTransactions(0);
     setTotalMessages(0);
-  };
-
-  // Fetch reconciliation preview data
-  const fetchReconciliation = async () => {
-    setReconciliationLoading(true);
-    setReconciliationError(null);
-
-    try {
-      const token =
-        localStorage.getItem('token') ||
-        process.env.REACT_APP_DEV_TOKEN ||
-        'dev-mock-token-for-testing';
-
-      const response = await fetch(
-        `${getApiBaseUrl()}/admin/reconciliation/station/${stationId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        }
-      );
-
-      const data = await response.json();
-
-      if (data.success && data.report) {
-        setReconciliationData(data.report);
-      } else {
-        setReconciliationError(data.message || 'Failed to fetch reconciliation data');
-      }
-    } catch (error) {
-      console.error('Reconciliation fetch error:', error);
-      setReconciliationError('Failed to fetch reconciliation data');
-    } finally {
-      setReconciliationLoading(false);
-    }
-  };
-
-  // Trigger reconciliation with auto-correct
-  const triggerReconciliation = async () => {
-    setReconciliationLoading(true);
-    setReconciliationError(null);
-
-    try {
-      const token =
-        localStorage.getItem('token') ||
-        process.env.REACT_APP_DEV_TOKEN ||
-        'dev-mock-token-for-testing';
-
-      const response = await fetch(
-        `${getApiBaseUrl()}/admin/reconciliation/station/${stationId}`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ autoCorrect: true }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (data.success && data.report) {
-        setReconciliationData(data.report);
-        setSuccess(`Reconciliation complete. ${data.report.corrections?.length || 0} corrections applied.`);
-      } else {
-        setReconciliationError(data.message || 'Reconciliation failed');
-      }
-    } catch (error) {
-      console.error('Reconciliation error:', error);
-      setReconciliationError('Reconciliation failed');
-    } finally {
-      setReconciliationLoading(false);
-    }
   };
 
   // Fetch station data from API only
@@ -326,7 +269,6 @@ function StationDetail() {
         process.env.REACT_APP_DEV_TOKEN ||
         'dev-mock-token-for-testing';
 
-      const offset = page * limit;
       const messagesResponse = await fetch(
         `${getApiBaseUrl()}/ocpp/messages?chargePointId=${stationId}&page=${page}&limit=${limit}`,
         {
@@ -418,7 +360,7 @@ function StationDetail() {
       // Now fetch the paginated transactions for display
       const offset = page * limit;
       const transactionsResponse = await fetch(
-        `${getApiBaseUrl()}/transactions?chargePointId=${stationId}&page=${page}&limit=${limit}`,
+        `${getApiBaseUrl()}/transactions?chargePointId=${stationId}&page=${page}&limit=${limit}&offset=${offset}`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -455,9 +397,11 @@ function StationDetail() {
 
     // Fetch data based on selected tab
     if (newValue === 1 && stationId) {
+      fetchActivity();
+    } else if (newValue === 2 && stationId) {
       // Transactions tab
       fetchTransactions(0);
-    } else if (newValue === 2 && stationId) {
+    } else if (newValue === 3 && stationId) {
       // OCPP Messages tab
       fetchOcppMessages(0);
     }
@@ -496,10 +440,12 @@ function StationDetail() {
     }
   };
 
-  // Fetch authorized tags from API
-  const fetchAuthorizedTags = async () => {
+  // Search authorized tags from API. Tag ID is the primary label, with the
+  // linked driver's name/email available as secondary search fields.
+  const fetchAuthorizedTags = async (query = '') => {
+    setTagsLoading(true);
     try {
-      const response = await tagService.getAllTags();
+      const response = await tagService.searchTags(query, 50);
       if (response.success && response.tags) {
         setAuthorizedTags(response.tags);
       } else {
@@ -507,6 +453,24 @@ function StationDetail() {
       }
     } catch (error) {
       console.error('Error fetching authorized tags:', error);
+    } finally {
+      setTagsLoading(false);
+    }
+  };
+
+  const fetchActivity = async () => {
+    if (!stationId) return;
+    setActivityLoading(true);
+    try {
+      const response = await stationService.getActivity(stationId, { limit: 40 });
+      if (response.success) {
+        setActivityEvents(response.events || []);
+        setActivityLastUpdated(new Date());
+      }
+    } catch (activityError) {
+      console.error('Error fetching station activity:', activityError);
+    } finally {
+      setActivityLoading(false);
     }
   };
 
@@ -518,14 +482,15 @@ function StationDetail() {
     switch (command) {
       case 'RemoteStart':
         // Fetch available tags when opening start transaction dialog
-        fetchAuthorizedTags();
+        setTagSearch('');
+        fetchAuthorizedTags('');
         setCommandParams({
           idTag: '',
         });
         break;
       case 'RemoteStop':
         setCommandParams({
-          transactionId: station.currentTransaction || 0,
+          transactionId: station.currentTransaction || activeTransaction || transactions.find(transaction => transaction.status === 'InProgress')?.transactionId || 0,
         });
         break;
       case 'Reset':
@@ -592,8 +557,12 @@ function StationDetail() {
 
       console.log('Command response:', response.data);
 
-      // Update messages and station data
-      fetchStationData();
+      // Refresh only the affected lightweight sections. Avoid resetting the
+      // entire station page after a command response.
+      await fetchStationDetailsUpdate();
+      fetchActivity();
+      if (tabValue === 2) fetchTransactions(transactionsPage, transactionsLimit);
+      if (tabValue === 3) fetchOcppMessages(messagesPage, messagesLimit);
 
       setCommandLoading(false);
       setOpenCommandDialog(false);
@@ -695,30 +664,38 @@ function StationDetail() {
               'This will change the availability of the charging station.'}{' '}
           </DialogContentText>
           {commandType === 'RemoteStart' && (
-            <TextField
-              name="idTag"
-              label="ID Tag"
+            <Autocomplete
               fullWidth
-              select
-              value={commandParams.idTag || ''}
-              onChange={handleCommandParamChange}
-              margin="dense"
-              helperText={
-                authorizedTags.length === 0
-                  ? 'Loading authorized tags...'
-                  : 'Select an authorized tag'
-              }
-            >
-              {authorizedTags.length === 0 ? (
-                <MenuItem disabled>Loading tags...</MenuItem>
-              ) : (
-                authorizedTags.map(tag => (
-                  <MenuItem key={tag.id} value={tag.tagId}>
-                    {tag.tagId}
-                  </MenuItem>
-                ))
+              options={authorizedTags}
+              loading={tagsLoading}
+              value={authorizedTags.find(tag => tag.tagId === commandParams.idTag) || null}
+              inputValue={tagSearch}
+              onInputChange={(event, value) => setTagSearch(value)}
+              onChange={(event, value) => {
+                setCommandParams(previous => ({ ...previous, idTag: value?.tagId || '' }));
+                setTagSearch(value?.tagId || '');
+              }}
+              isOptionEqualToValue={(option, value) => option.tagId === value.tagId}
+              getOptionLabel={option => option?.tagId || ''}
+              filterOptions={options => options}
+              noOptionsText={tagSearch ? 'No active tag or driver matched' : 'No active tags available'}
+              renderOption={(props, option) => (
+                <Box component="li" {...props} key={option.id} sx={{ display: 'block !important' }}>
+                  <Typography variant="body2" fontWeight={800}>{option.tagId}</Typography>
+                  {option.user && <Typography variant="caption" color="text.secondary">{option.user.name} · {option.user.email || option.user.phone}</Typography>}
+                </Box>
               )}
-            </TextField>
+              renderInput={params => (
+                <TextField
+                  {...params}
+                  label="Search driver tag"
+                  margin="dense"
+                  required
+                  helperText="Tag ID is sent to the charger. Search by tag ID, name, email or phone."
+                  InputProps={{ ...params.InputProps, endAdornment: <>{tagsLoading ? <CircularProgress color="inherit" size={18} /> : null}{params.InputProps.endAdornment}</> }}
+                />
+              )}
+            />
           )}
           {commandType === 'RemoteStop' && (
             <TextField
@@ -782,7 +759,7 @@ function StationDetail() {
           <Button
             onClick={handleSendCommand}
             color="primary"
-            disabled={commandLoading}
+            disabled={commandLoading || (commandType === 'RemoteStart' && !commandParams.idTag)}
             startIcon={
               commandLoading ? <CircularProgress size={24} /> : <SendIcon />
             }
@@ -803,6 +780,35 @@ function StationDetail() {
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stationId]);
+
+  // Activity is refreshed independently from the station shell so a new OCPP
+  // event never blanks the details or transaction panels.
+  useEffect(() => {
+    if (!stationId || tabValue !== 1) return undefined;
+    fetchActivity();
+    const intervalId = setInterval(fetchActivity, 10000);
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stationId, tabValue]);
+
+  // Debounced remote-start lookup: operators can type a tag, name, email or
+  // phone, while the selected OCPP idTag remains the actual command value.
+  useEffect(() => {
+    if (!openCommandDialog || commandType !== 'RemoteStart') return undefined;
+    const timer = setTimeout(() => fetchAuthorizedTags(tagSearch), 250);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openCommandDialog, commandType, tagSearch]);
+
+  // Keep the transaction list live only while its tab is visible. The list
+  // stays mounted during the request; a progress bar communicates refresh
+  // status without replacing the rows with a full-page spinner.
+  useEffect(() => {
+    if (!stationId || tabValue !== 2) return undefined;
+    const intervalId = setInterval(() => fetchTransactions(transactionsPage, transactionsLimit), 10000);
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stationId, tabValue, transactionsPage, transactionsLimit]);
 
   // Set up polling for real-time updates of all station details
   useEffect(() => {
@@ -1205,7 +1211,7 @@ function StationDetail() {
     // These are our test values for energy display
     const energyValue = 0.0;
     const powerValue = 0;
-    const batteryValue = 1;
+    const batteryValue = null;
     const durationValue = 0;
 
     // Update energy consumption directly - this is the most critical part
@@ -1455,9 +1461,11 @@ function StationDetail() {
   // Check if a specific tab was requested
   useEffect(() => {
     if (location.state?.tab === 'transactions') {
-      setTabValue(1);
-    } else if (location.state?.tab === 'messages') {
       setTabValue(2);
+    } else if (location.state?.tab === 'messages') {
+      setTabValue(3);
+    } else if (location.state?.tab === 'activity') {
+      setTabValue(1);
     }
   }, [location.state]);
 
@@ -1598,9 +1606,9 @@ function StationDetail() {
           sx={{ px: { xs: 0.5, sm: 1.5 }, borderBottom: '1px solid', borderColor: 'divider', '& .MuiTab-root': { minHeight: 62, fontWeight: 700, textTransform: 'none' } }}
         >
           <Tab label="Details" />
+          <Tab icon={<HistoryIcon />} iconPosition="start" label="Activity" />
           <Tab label="Transactions" />
           <Tab label="OCPP Messages" />
-          <Tab label="Reconciliation" />
         </Tabs>
         {/* Details Tab */}{' '}
         <TabPanel value={tabValue} index={0}>
@@ -2177,7 +2185,7 @@ function StationDetail() {
                         }}
                       >
                         {' '}
-                        {station?.status !== 'Charging' ? (
+                        {displayStatus !== 'Charging' ? (
                           <Button
                             variant="outlined"
                             startIcon={<StartIcon />}
@@ -2199,7 +2207,7 @@ function StationDetail() {
                             }
                             disabled={
                               !station?.isConnected ||
-                              !station?.currentTransaction
+                              (!station?.currentTransaction && !activeTransaction)
                             }
                           >
                             Stop Transaction{' '}
@@ -2221,7 +2229,7 @@ function StationDetail() {
                           }
                           disabled={!station?.isConnected}
                         >
-                          {station?.status === 'Available'
+                          {displayStatus === 'Available'
                             ? 'Set Unavailable'
                             : 'Set Available'}{' '}
                         </Button>{' '}
@@ -2255,6 +2263,7 @@ function StationDetail() {
               }
             />{' '}
             <Divider />
+            {transactionsLoading && transactions.length > 0 && <LinearProgress />}
             <CardContent>
               <Grid container spacing={2}>
                 <Grid item xs={12} sm={6}>
@@ -2364,8 +2373,23 @@ function StationDetail() {
             </CardContent>{' '}
           </Card>{' '}
         </TabPanel>
-        {/* Transactions Tab */}{' '}
+        {/* Activity timeline */}{' '}
         <TabPanel value={tabValue} index={1}>
+          <Card sx={{ borderRadius: 3 }}>
+            <CardHeader
+              title="Station activity history"
+              subheader={activityLastUpdated ? `Live timeline · updated ${format(activityLastUpdated, 'HH:mm:ss')}` : 'Charging sessions and OCPP events in one timeline'}
+              action={<IconButton onClick={fetchActivity} disabled={activityLoading} aria-label="Refresh activity"><RefreshIcon /></IconButton>}
+            />
+            <Divider />
+            {activityLoading && activityEvents.length > 0 && <LinearProgress />}
+            <CardContent>
+              {activityLoading && activityEvents.length === 0 ? <Box sx={{ display: 'grid', placeItems: 'center', py: 6 }}><CircularProgress /></Box> : activityEvents.length === 0 ? <Box sx={{ textAlign: 'center', py: 6 }}><HistoryIcon color="disabled" sx={{ fontSize: 46 }} /><Typography variant="h6" sx={{ mt: 1 }}>No activity recorded</Typography><Typography color="text.secondary">Station transactions and OCPP events will appear here.</Typography></Box> : <List disablePadding>{activityEvents.map((event, index) => <React.Fragment key={event.id}><ListItem alignItems="flex-start" sx={{ px: 0, py: 1.5 }}><Box sx={{ width: 38, height: 38, borderRadius: 2, display: 'grid', placeItems: 'center', flexShrink: 0, mr: 1.5, bgcolor: event.type === 'transaction' ? 'primary.50' : 'grey.100', color: event.type === 'transaction' ? 'primary.main' : 'text.secondary' }}>{event.type === 'transaction' ? <ChargingIcon fontSize="small" /> : <SendIcon fontSize="small" />}</Box><ListItemText primary={<Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}><Typography fontWeight={800}>{event.title}</Typography><Chip size="small" label={event.status} color={event.status === 'Completed' || event.status === 'Received' ? 'success' : event.status === 'Failed' || event.status === 'Timeout' ? 'error' : event.status === 'InProgress' ? 'primary' : 'default'} /></Stack>} secondary={<><Typography variant="body2" color="text.secondary">{event.detail}</Typography><Typography variant="caption" color="text.secondary">{event.timestamp ? format(new Date(event.timestamp), 'dd MMM yyyy HH:mm:ss') : 'Unknown time'}</Typography></>} /></ListItem>{index < activityEvents.length - 1 && <Divider component="li" />}</React.Fragment>)}</List>}
+            </CardContent>
+          </Card>
+        </TabPanel>
+        {/* Transactions Tab */}{' '}
+        <TabPanel value={tabValue} index={2}>
           <Card
             sx={{
               borderRadius: 2,
@@ -2377,14 +2401,23 @@ function StationDetail() {
                 <Button
                   variant="outlined"
                   size="small"
-                  onClick={() => fetchOcppMessages(0)}
+                  onClick={() => fetchTransactions(0)}
                 >
                   Refresh{' '}
                 </Button>
               }
             />{' '}
             <Divider />
+            {transactionsLoading && transactions.length > 0 && <LinearProgress />}
             <CardContent>
+              <Grid container spacing={1.25} sx={{ mb: 2 }}>
+                {[
+                  ['Total sessions', totalTransactions.toLocaleString(), 'station history'],
+                  ['On this page', transactions.length.toLocaleString(), `${transactions.filter(transaction => transaction.status === 'InProgress').length} active`],
+                  ['Energy shown', `${(transactions.reduce((sum, transaction) => sum + (Number(transaction.energyDelivered) || 0), 0) / 1000).toFixed(2)} kWh`, 'raw meter values'],
+                  ['Last update', format(lastUpdated, 'HH:mm:ss'), 'auto refresh · 10s']
+                ].map(([label, value, helper]) => <Grid item xs={6} md={3} key={label}><Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2.5, bgcolor: 'action.hover' }}><Typography variant="caption" color="text.secondary" fontWeight={700}>{label}</Typography><Typography fontWeight={850} noWrap>{value}</Typography><Typography variant="caption" color="text.secondary">{helper}</Typography></Paper></Grid>)}
+              </Grid>
               {' '}
               {/* Pagination and results count */}{' '}
               <Box
@@ -2428,7 +2461,7 @@ function StationDetail() {
                   </Select>{' '}
                 </FormControl>{' '}
               </Box>
-              {loading || transactionsLoading ? (
+              {loading && transactions.length === 0 ? (
                 <Box
                   sx={{
                     display: 'flex',
@@ -2564,7 +2597,7 @@ function StationDetail() {
           </Card>{' '}
         </TabPanel>
         {/* OCPP Messages Tab */}{' '}
-        <TabPanel value={tabValue} index={2}>
+        <TabPanel value={tabValue} index={3}>
           <Card
             sx={{
               borderRadius: 2,
@@ -2572,6 +2605,7 @@ function StationDetail() {
           >
             <CardHeader
               title="OCPP Messages"
+              subheader="Inbound and outbound protocol traffic retained for this station"
               action={
                 <Button
                   variant="outlined"
@@ -2583,7 +2617,16 @@ function StationDetail() {
               }
             />{' '}
             <Divider />
+            {messagesLoading && ocppMessages.length > 0 && <LinearProgress />}
             <CardContent>
+              <Grid container spacing={1.25} sx={{ mb: 2 }}>
+                {[
+                  ['Total messages', totalMessages.toLocaleString(), 'protocol history'],
+                  ['Loaded', ocppMessages.length.toLocaleString(), `page ${messagesPage + 1}`],
+                  ['Received', ocppMessages.filter(message => (message.status || message.direction) === 'Received' || message.direction === 'Inbound').length.toLocaleString(), 'inbound traffic'],
+                  ['Last event', ocppMessages[0]?.timestamp ? format(new Date(ocppMessages[0].timestamp), 'HH:mm:ss') : '—', 'station time']
+                ].map(([label, value, helper]) => <Grid item xs={6} md={3} key={label}><Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2.5, bgcolor: 'action.hover' }}><Typography variant="caption" color="text.secondary" fontWeight={700}>{label}</Typography><Typography fontWeight={850} noWrap>{value}</Typography><Typography variant="caption" color="text.secondary">{helper}</Typography></Paper></Grid>)}
+              </Grid>
               {' '}
               {/* Pagination and results count */}{' '}
               <Box
@@ -2627,7 +2670,7 @@ function StationDetail() {
                   </Select>{' '}
                 </FormControl>{' '}
               </Box>
-              {loading || messagesLoading ? (
+              {loading && ocppMessages.length === 0 ? (
                 <Box
                   sx={{
                     display: 'flex',
@@ -2708,15 +2751,7 @@ function StationDetail() {
                                   }}
                                 >
                                   {' '}
-                                  {message.payload
-                                    ? typeof message.payload === 'string'
-                                      ? JSON.stringify(
-                                          JSON.parse(message.payload),
-                                          null,
-                                          2
-                                        )
-                                      : JSON.stringify(message.payload, null, 2)
-                                    : 'No payload'}{' '}
+                                  {formatPayload(message.payload)}{' '}
                                 </pre>{' '}
                               </Typography>{' '}
                             </Box>
@@ -2753,8 +2788,8 @@ function StationDetail() {
             </CardContent>{' '}
           </Card>{' '}
         </TabPanel>{' '}
-        {/* Reconciliation Tab */}
-        <TabPanel value={tabValue} index={3}>
+        {/* Reconciliation is intentionally hidden until charger-side export is supported. */}
+        <TabPanel value={tabValue} index={-2}>
           <Card
             sx={{
               borderRadius: 2,

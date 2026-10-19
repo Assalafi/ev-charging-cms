@@ -5,7 +5,7 @@ const tagService = {
      * Get all authorized tags
      * @returns {Promise} Promise object with tags data
      */
-    getAllTags: async () => {
+  getAllTags: async () => {
         try {
             const response = await api.get('/tags');
             return response.data;
@@ -17,7 +17,11 @@ const tagService = {
                 error: error.message
             };
         }
-    }
+  },
+  searchTags: async (query = '', limit = 50) => {
+    const response = await api.get('/tags', { params: { q: query, limit } });
+    return response.data;
+  }
 };
 
 export default tagService;

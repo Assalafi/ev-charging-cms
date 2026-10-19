@@ -892,6 +892,56 @@ router.get('/:id/logs', authenticate, requireStationStateAccess(), async (req, r
 });
 
 /**
+ * @route   GET /api/stations/:id/activity
+ * @desc    Return a unified, read-only station activity timeline
+ * @access  Private
+ */
+router.get('/:id/activity', authenticate, requireStationStateAccess(), async (req, res) => {
+    try {
+        const chargePointId = req.params.id;
+        const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 40, 1), 100);
+        const [transactions, messages] = await Promise.all([
+            Transaction.findAll({
+                where: { chargePointId },
+                attributes: ['id', 'transactionId', 'idTag', 'connectorId', 'status', 'startTime', 'stopTime', 'energyDelivered', 'amount', 'reason', 'stopReason', 'billedAt'],
+                order: [['startTime', 'DESC']],
+                limit
+            }),
+            OcppMessage.findAll({
+                where: { chargePointId },
+                attributes: ['id', 'messageId', 'message_type', 'status', 'direction', 'timestamp', 'createdAt', 'errorCode', 'errorDescription', 'payload'],
+                order: [['createdAt', 'DESC']],
+                limit
+            })
+        ]);
+        const events = [
+            ...transactions.map(row => ({
+                id: `transaction-${row.id}`,
+                type: 'transaction',
+                timestamp: row.stopTime || row.startTime || row.createdAt,
+                title: row.status === 'InProgress' ? 'Charging session started' : `Charging session ${String(row.status || 'unknown').toLowerCase()}`,
+                detail: `Transaction #${row.transactionId} · ${row.idTag}`,
+                status: row.status,
+                transaction: row
+            })),
+            ...messages.map(row => ({
+                id: `message-${row.id}`,
+                type: 'ocpp',
+                timestamp: row.timestamp || row.createdAt,
+                title: row.message_type,
+                detail: `${row.direction} message${row.errorCode ? ` · ${row.errorCode}` : ''}`,
+                status: row.status || row.direction,
+                message: row
+            }))
+        ].sort((left, right) => new Date(right.timestamp || 0) - new Date(left.timestamp || 0)).slice(0, limit * 2);
+        res.json({ success: true, events, count: events.length, generatedAt: new Date().toISOString() });
+    } catch (error) {
+        logger.error(`Error fetching activity for station ${req.params.id}:`, error);
+        res.status(500).json({ success: false, message: 'Failed to retrieve station activity' });
+    }
+});
+
+/**
  * @route   POST /api/stations/:id/remote-start
  * @desc    Send RemoteStartTransaction command
  * @access  Private/Operator

@@ -8,6 +8,7 @@ const companyPortalService = {
   createUser: payload => companyApi.post('/company/users', payload),
   setUserStatus: (id, status) => companyApi.put(`/company/users/${id}/status`, { status }),
   fundUser: (id, payload) => companyApi.post(`/company/users/${id}/fund`, payload),
+  recoverUser: (id, payload) => companyApi.post(`/company/users/${id}/recover`, payload),
   wallet: () => companyApi.get('/company/wallet'),
   transactions: (params = {}) => companyApi.get('/company/wallet/transactions', { params }),
   initializeFunding: payload => companyApi.post('/company/wallet/fund/paystack', payload),
