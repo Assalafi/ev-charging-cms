@@ -1,6 +1,6 @@
 const express = require('express');
-const { Op } = require('sequelize');
-const { Wallet, PaymentTransaction, MobileUser, PaymentSettings } = require('../../models');
+const { Op, Sequelize } = require('sequelize');
+const { Wallet, PaymentTransaction, MobileUser, PaymentSettings, sequelize } = require('../../models');
 const { authenticate } = require('../../middleware/auth');
 const { requirePermission } = require('../../middleware/permissions');
 const logger = require('../../utils/logger');
@@ -541,6 +541,85 @@ router.post('/wallets/:walletId/fund', requirePermission('payments.manage'), asy
       success: false,
       message: 'Failed to fund wallet: ' + error.message
     });
+  }
+});
+
+/**
+ * @route   POST /api/admin/payments/wallets/:walletId/deduct
+ * @desc    Admin deducts available funds from a user's wallet.
+ *          This creates only a debit; no platform wallet is credited.
+ */
+router.post('/wallets/:walletId/deduct', requirePermission('payments.manage'), async (req, res) => {
+  const amount = Number(req.body.amount);
+  const deductionAmount = Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0;
+  if (!Number.isFinite(amount) || deductionAmount <= 0) {
+    return res.status(400).json({ success: false, message: 'Amount must be greater than 0' });
+  }
+
+  try {
+    const result = await sequelize.transaction({
+      isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.SERIALIZABLE
+    }, async transaction => {
+      const wallet = await Wallet.findByPk(req.params.walletId, {
+        include: [{ model: MobileUser, as: 'user', attributes: ['id', 'name', 'email', 'phone', 'tagId'] }],
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!wallet) {
+        const error = new Error('Wallet not found');
+        error.code = 'WALLET_NOT_FOUND';
+        throw error;
+      }
+
+      const previousBalance = Number(wallet.balance || 0);
+      if (previousBalance < deductionAmount) {
+        const error = new Error(`Insufficient wallet balance. Available: ₦${previousBalance.toFixed(2)}`);
+        error.code = 'INSUFFICIENT_WALLET_BALANCE';
+        throw error;
+      }
+
+      const newBalance = Math.round((previousBalance - deductionAmount) * 100) / 100;
+      const reference = `ADMIN-DEDUCT-${wallet.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await wallet.update({ balance: newBalance }, { transaction });
+
+      const payment = await PaymentTransaction.create({
+        userId: wallet.userId,
+        walletId: wallet.id,
+        type: 'DEBIT',
+        amount: deductionAmount,
+        currency: wallet.currency || 'NGN',
+        reference,
+        gateway: 'admin',
+        status: 'SUCCESS',
+        description: req.body.description || `Admin wallet deduction by ${req.user.username}`,
+        metadata: {
+          action: 'admin_wallet_deduction',
+          performedBy: req.user.id,
+          previousBalance,
+          newBalance,
+          deductedAt: new Date().toISOString()
+        }
+      }, { transaction });
+
+      return { wallet, payment, amount: deductionAmount, previousBalance, newBalance };
+    });
+
+    logger.info(`Admin ${req.user.username} deducted ${result.amount} from wallet ${req.params.walletId}: ${result.previousBalance} -> ${result.newBalance}`);
+    return res.status(201).json({
+      success: true,
+      message: `Successfully deducted ${result.amount} from ${result.wallet.user?.name || 'user'}'s wallet`,
+      transaction: {
+        id: result.payment.id,
+        amount: result.amount,
+        previousBalance: result.previousBalance,
+        newBalance: result.newBalance,
+        reference: result.payment.reference
+      }
+    });
+  } catch (error) {
+    logger.error('Admin wallet deduction error:', error);
+    const status = error.code === 'WALLET_NOT_FOUND' ? 404 : error.code === 'INSUFFICIENT_WALLET_BALANCE' ? 400 : 500;
+    return res.status(status).json({ success: false, message: error.message || 'Failed to deduct wallet' });
   }
 });
 
