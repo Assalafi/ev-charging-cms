@@ -572,12 +572,6 @@ router.post('/wallets/:walletId/deduct', requirePermission('payments.manage'), a
       }
 
       const previousBalance = Number(wallet.balance || 0);
-      if (previousBalance < deductionAmount) {
-        const error = new Error(`Insufficient wallet balance. Available: ₦${previousBalance.toFixed(2)}`);
-        error.code = 'INSUFFICIENT_WALLET_BALANCE';
-        throw error;
-      }
-
       const newBalance = Math.round((previousBalance - deductionAmount) * 100) / 100;
       const reference = `ADMIN-DEDUCT-${wallet.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       await wallet.update({ balance: newBalance }, { transaction });
@@ -618,7 +612,7 @@ router.post('/wallets/:walletId/deduct', requirePermission('payments.manage'), a
     });
   } catch (error) {
     logger.error('Admin wallet deduction error:', error);
-    const status = error.code === 'WALLET_NOT_FOUND' ? 404 : error.code === 'INSUFFICIENT_WALLET_BALANCE' ? 400 : 500;
+    const status = error.code === 'WALLET_NOT_FOUND' ? 404 : 500;
     return res.status(status).json({ success: false, message: error.message || 'Failed to deduct wallet' });
   }
 });
