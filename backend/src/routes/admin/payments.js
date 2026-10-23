@@ -560,14 +560,25 @@ router.post('/wallets/:walletId/deduct', requirePermission('payments.manage'), a
     const result = await sequelize.transaction({
       isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.SERIALIZABLE
     }, async transaction => {
+      // Lock the wallet row without an outer-joined user include. PostgreSQL
+      // cannot apply FOR UPDATE to the nullable side of that join on some
+      // plans, which previously made an otherwise valid deduction fail.
       const wallet = await Wallet.findByPk(req.params.walletId, {
-        include: [{ model: MobileUser, as: 'user', attributes: ['id', 'name', 'email', 'phone', 'tagId'] }],
         transaction,
         lock: transaction.LOCK.UPDATE
       });
       if (!wallet) {
         const error = new Error('Wallet not found');
         error.code = 'WALLET_NOT_FOUND';
+        throw error;
+      }
+      const user = await MobileUser.findByPk(wallet.userId, {
+        transaction,
+        attributes: ['id', 'name', 'email', 'phone', 'tagId']
+      });
+      if (!user) {
+        const error = new Error('Mobile user linked to this wallet was not found');
+        error.code = 'USER_NOT_FOUND';
         throw error;
       }
 
@@ -595,13 +606,13 @@ router.post('/wallets/:walletId/deduct', requirePermission('payments.manage'), a
         }
       }, { transaction });
 
-      return { wallet, payment, amount: deductionAmount, previousBalance, newBalance };
+      return { wallet, user, payment, amount: deductionAmount, previousBalance, newBalance };
     });
 
     logger.info(`Admin ${req.user.username} deducted ${result.amount} from wallet ${req.params.walletId}: ${result.previousBalance} -> ${result.newBalance}`);
     return res.status(201).json({
       success: true,
-      message: `Successfully deducted ${result.amount} from ${result.wallet.user?.name || 'user'}'s wallet`,
+      message: `Successfully deducted ${result.amount} from ${result.user?.name || 'user'}'s wallet`,
       transaction: {
         id: result.payment.id,
         amount: result.amount,
@@ -612,7 +623,7 @@ router.post('/wallets/:walletId/deduct', requirePermission('payments.manage'), a
     });
   } catch (error) {
     logger.error('Admin wallet deduction error:', error);
-    const status = error.code === 'WALLET_NOT_FOUND' ? 404 : 500;
+    const status = ['WALLET_NOT_FOUND', 'USER_NOT_FOUND'].includes(error.code) ? 404 : 500;
     return res.status(status).json({ success: false, message: error.message || 'Failed to deduct wallet' });
   }
 });
