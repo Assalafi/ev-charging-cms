@@ -22,10 +22,17 @@ const { getChargingPricing } = require("../services/chargingPricingService")
 const {
   resolveCanonicalOcppTransactionId,
 } = require("../services/ocppTransactionResolver")
+const {
+  REMOTE_START_RECOVERY_WINDOW_MS,
+  REMOTE_START_SESSION_WINDOW_MS,
+  findVerifiedRemoteStartIntent,
+  getVerifiedRemoteStartOwner,
+} = require("./remoteStartCorrelation")
 
-// Track pending remote starts so we can accept StartTransaction from stations
-// that use their own default idTag instead of the one from RemoteStartTransaction
+// Track pending RemoteStart requests for diagnostics/cleanup. This map is not
+// financial ownership evidence; accepted OCPP audit history is authoritative.
 const pendingRemoteStarts = new Map()
+const meterResolutionLocks = new Map()
 // Prevent a wallet stop check from issuing a new command for every MeterValues
 // frame while the charger is processing the previous stop request.
 const automaticStopRequests = new Map()
@@ -75,13 +82,12 @@ async function nextRecoveryTransactionId() {
  * their old OCPP transaction ID after a reconnect or after the CSMS completed
  * the record while the cable remained physically active. In that case:
  *   1. Prefer an active transaction on this exact station/connector.
- *   2. If the reported ID is a completed record and the connector is Charging,
- *      create a new continuation for that record's user, starting at the
- *      first meter reading of the continuation.
+ *   2. If the reported ID is completed, create a continuation only for a newer
+ *      accepted RemoteStart owner on this exact connector.
  *   3. If neither is safe, return null; raw OCPP telemetry remains available
  *      for audit but is not billed to an arbitrary user.
  */
-async function resolveMeterValuesTransaction({
+async function resolveMeterValuesTransactionUnlocked({
   chargePointId,
   connectorId,
   reportedTransactionId,
@@ -91,13 +97,9 @@ async function resolveMeterValuesTransaction({
 }) {
   const reported = reportedTransactionId
     ? await Transaction.findOne({
-        where: { transactionId: reportedTransactionId, chargePointId }
+        where: { transactionId: reportedTransactionId, chargePointId, connectorId }
       })
     : null
-
-  if (reported?.status === "InProgress") {
-    return { transaction: reported, reportedTransactionId, recovered: false }
-  }
 
   // A charger can change its transaction ID while the CSMS is still handling
   // the previous message. Never let that stale ID override an active session
@@ -107,48 +109,57 @@ async function resolveMeterValuesTransaction({
     order: [["startTime", "DESC"]]
   })
   if (active) {
-    // A recovery row can be created from the old OCPP transaction before the
-    // durable RemoteStart history is consulted. When the charger clock is
-    // stale, the latest RemoteStart received by the CSMS is stronger user
-    // evidence than the idTag attached to that old transaction.
-    const remoteStartIntent = await findRecentRemoteStartIntent({
+    // Re-check durable OCPP history even when the in-memory pending map was
+    // lost in a process restart. This is intentionally done before every
+    // billable frame: safety takes precedence over guessing that ownership is
+    // unchanged after a reconnect.
+    const remoteStartIntent = await findVerifiedRemoteStartIntent({
       chargePointId,
       connectorId,
-      meterTimestamp,
+      requireChargingConfirmation: true,
+      maxAgeMs: REMOTE_START_SESSION_WINDOW_MS,
     })
-    const remoteStartMatchesActive = Boolean(
-      remoteStartIntent?.idTag &&
-      String(remoteStartIntent.idTag) === String(active.idTag)
+    const verifiedIntentOwner = getVerifiedRemoteStartOwner(remoteStartIntent, connectorId)
+    const activeStartedAt = active.startTime ? new Date(active.startTime) : null
+    const conflictingNewIntent = Boolean(
+      verifiedIntentOwner &&
+      active.idTag &&
+      verifiedIntentOwner !== String(active.idTag) &&
+      activeStartedAt &&
+      remoteStartIntent.createdAt > activeStartedAt
     )
-    const remoteStartSupersedesActive = Boolean(
-      active.reason === "OCPP_STALE_TRANSACTION_RECOVERY" &&
-      chargingSignal &&
-      remoteStartIntent?.idTag &&
-      String(remoteStartIntent.idTag) !== String(active.idTag) &&
-      remoteStartIntent.createdAt <= new Date(active.startTime)
-    )
-    if (remoteStartSupersedesActive) {
-      await active.update({ idTag: remoteStartIntent.idTag })
-      active.idTag = remoteStartIntent.idTag
-      logger.warn(
-        `Reassigned recovery transaction ${active.transactionId} on ${chargePointId}:${connectorId} ` +
-          `to RemoteStart user ${remoteStartIntent.idTag}`
+
+    // Transaction ownership is immutable after creation. A later accepted
+    // RemoteStart for another user is a conflict to investigate, never a
+    // reason to transfer the existing session (and its energy) to that user.
+    if (conflictingNewIntent) {
+      logger.error(
+        `Quarantining MeterValues on ${chargePointId}:${connectorId}: active transaction ` +
+          `${active.transactionId} belongs to ${active.idTag}, but newer accepted RemoteStart ` +
+          `${remoteStartIntent.messageId} belongs to ${verifiedIntentOwner}`
       )
+      return { transaction: null, reportedTransactionId, recovered: false, quarantined: true }
     }
+
+    const remoteStartMatchesActive = verifiedIntentOwner === String(active.idTag)
+    const immutableVerifiedRecovery =
+      active.reason === "OCPP_VERIFIED_REMOTE_START_RECOVERY" ||
+      (active.reason === "OCPP_STALE_TRANSACTION_RECOVERY" && remoteStartMatchesActive)
     const activeReadingTime = meterTimestamp ? new Date(meterTimestamp) : null
     const activeStartMeter = Number(active.startMeterValue)
     const activeLatestMeter = Math.max(
       Number.isFinite(activeStartMeter) ? activeStartMeter : 0,
       Number(active.stopMeterValue) || 0
     )
-    const reportedUserMatchesActive =
-      !reported?.idTag || !active.idTag || String(reported.idTag) === String(active.idTag)
+    const reportedUserMatchesActive = Boolean(
+      reported?.idTag && active.idTag && String(reported.idTag) === String(active.idTag)
+    )
     const monotonicLiveRecovery =
-      active.reason === "OCPP_STALE_TRANSACTION_RECOVERY" &&
+      ["OCPP_STALE_TRANSACTION_RECOVERY", "OCPP_VERIFIED_REMOTE_START_RECOVERY"].includes(active.reason) &&
       chargingSignal &&
       Number.isFinite(meterValueWh) &&
       meterValueWh >= activeLatestMeter &&
-      (reportedUserMatchesActive || remoteStartMatchesActive || remoteStartSupersedesActive)
+      (reportedUserMatchesActive || immutableVerifiedRecovery)
     if (
       active.startTime &&
       activeReadingTime &&
@@ -190,14 +201,22 @@ async function resolveMeterValuesTransaction({
     reported &&
     ["Completed", "Stopped"].includes(reported.status) &&
     reported.reason === "NetworkDisconnected" &&
+    reported.offlineSince &&
+    reported.stopTime &&
+    Date.now() - new Date(reported.stopTime).getTime() <= REMOTE_START_SESSION_WINDOW_MS &&
     chargingSignal &&
     Number.isFinite(meterValueWh) &&
     meterValueWh >= (Number(reported.stopMeterValue) || Number(reported.startMeterValue) || 0)
   ) {
-    const remoteStartIntent = await findRecentRemoteStartIntent({
+    const remoteStartIntent = await findVerifiedRemoteStartIntent({
       chargePointId,
       connectorId,
       meterTimestamp,
+      // Any newer accepted RemoteStart for a different user makes resuming the
+      // old network-disconnected record ambiguous, even before a safe new
+      // Charging transition is proven.
+      requireChargingConfirmation: false,
+      maxAgeMs: REMOTE_START_RECOVERY_WINDOW_MS,
     })
     const newerDifferentUser = Boolean(
       remoteStartIntent?.idTag &&
@@ -219,10 +238,12 @@ async function resolveMeterValuesTransaction({
     return { transaction: null, reportedTransactionId, recovered: false }
   }
 
-  const remoteStartIntent = await findRecentRemoteStartIntent({
+  const remoteStartIntent = await findVerifiedRemoteStartIntent({
     chargePointId,
     connectorId,
     meterTimestamp,
+    requireChargingConfirmation: true,
+    maxAgeMs: REMOTE_START_RECOVERY_WINDOW_MS,
   })
   if (remoteStartIntent?.blocked) {
     logger.warn(
@@ -260,12 +281,19 @@ async function resolveMeterValuesTransaction({
     return { transaction: null, reportedTransactionId, recovered: false }
   }
 
-  // When the charger continues reporting a previous customer's transactionId
-  // after a new RemoteStart, use the new request's idTag. The sample must be
-  // newer than both the previous stop and the new RemoteStart (checked above),
-  // and must carry positive power/current evidence (checked before recovery).
-  const continuationTag = remoteStartIntent?.idTag || reported.idTag
-  const supersededUser = remoteStartIntent && remoteStartIntent.idTag !== reported.idTag
+  // A completed transaction ID is never sufficient evidence of the current
+  // driver's identity. Only a charger-accepted RemoteStart for this exact
+  // connector may own a recovered session; otherwise retain telemetry solely
+  // for audit and do not bill it.
+  const continuationTag = getVerifiedRemoteStartOwner(remoteStartIntent, connectorId)
+  if (!continuationTag) {
+    logger.error(
+      `Quarantining orphan MeterValues ${reportedTransactionId} on ${chargePointId}:${connectorId}: ` +
+        `no accepted, connector-matched RemoteStart ownership proof`
+    )
+    return { transaction: null, reportedTransactionId, recovered: false, quarantined: true }
+  }
+  const supersededUser = continuationTag !== String(reported.idTag)
   if (supersededUser) {
     logger.warn(
       `Correlating stale MeterValues ${reportedTransactionId} on ${chargePointId}:${connectorId} ` +
@@ -284,7 +312,7 @@ async function resolveMeterValuesTransaction({
     energyDelivered: 0,
     amount: 0,
     status: "InProgress",
-    reason: "OCPP_STALE_TRANSACTION_RECOVERY"
+    reason: "OCPP_VERIFIED_REMOTE_START_RECOVERY"
   })
 
   await updateConnectorStatus(chargePointId, connectorId, "Charging", continuation.transactionId)
@@ -308,6 +336,21 @@ async function resolveMeterValuesTransaction({
       `new continuation tx ${continuation.transactionId} at ${meterValueWh} Wh`
   )
   return { transaction: continuation, reportedTransactionId, recovered: true }
+}
+
+async function resolveMeterValuesTransaction(args) {
+  const key = `${args.chargePointId}:${args.connectorId}`
+  const previous = meterResolutionLocks.get(key) || Promise.resolve()
+  const current = previous
+    .catch(() => {})
+    .then(() => resolveMeterValuesTransactionUnlocked(args))
+  meterResolutionLocks.set(key, current)
+
+  try {
+    return await current
+  } finally {
+    if (meterResolutionLocks.get(key) === current) meterResolutionLocks.delete(key)
+  }
 }
 
 function extractBatteryPercentage(values) {
@@ -353,93 +396,24 @@ async function persistTransactionBatteryPercentage(transactionId, chargePointId,
 /**
  * Register a pending remote start for a station
  */
-function registerPendingRemoteStart(chargePointId, idTag, connectorId) {
-  pendingRemoteStarts.set(chargePointId, { idTag, connectorId, timestamp: Date.now() })
+function registerPendingRemoteStart(chargePointId, idTag, connectorId, messageId = null) {
+  const pending = {
+    idTag,
+    connectorId,
+    messageId,
+    timestamp: Date.now(),
+  }
+  pendingRemoteStarts.set(chargePointId, pending)
   logger.info(`Registered pending remote start for ${chargePointId} with tag ${idTag}`)
-  // Auto-expire after 60 seconds
-  setTimeout(() => {
-    if (pendingRemoteStarts.has(chargePointId)) {
+  // Keep this only as a short-lived hint for diagnostics. Billing ownership is
+  // established from the persisted accepted OCPP response, never this map.
+  const expiry = setTimeout(() => {
+    if (pendingRemoteStarts.get(chargePointId) === pending) {
       pendingRemoteStarts.delete(chargePointId)
       logger.info(`Expired pending remote start for ${chargePointId}`)
     }
-  }, 60000)
-}
-
-/**
- * Find the most recent RemoteStart intent for this connector. A few OCPP 1.6
- * chargers keep sending their previous transactionId after reconnecting and
- * never send a fresh StartTransaction. In that case the outbound
- * RemoteStartTransaction is the only authoritative link to the new user.
- *
- * This is deliberately conservative: the meter sample must be newer than the
- * RemoteStart request. If it is older (a delayed/offline replay), return a
- * blocked result so the sample cannot fall back to the previous customer's
- * completed transaction.
- */
-async function findRecentRemoteStartIntent({ chargePointId, connectorId, meterTimestamp }) {
-  const pending = pendingRemoteStarts.get(chargePointId)
-  const sampleTime = meterTimestamp ? new Date(meterTimestamp) : null
-  const validSampleTime = sampleTime && !Number.isNaN(sampleTime.getTime())
-    ? sampleTime
-    : null
-
-  const candidates = []
-  if (pending) {
-    candidates.push({
-      idTag: pending.idTag,
-      connectorId: pending.connectorId,
-      createdAt: new Date(pending.timestamp),
-    })
-  }
-
-  // Keep the correlation durable across a PM2 reload/reconnect. The in-memory
-  // intent is normally enough, but the OCPP audit row is needed when a charger
-  // delivers its buffered meter values after the backend restarts.
-  try {
-    const recent = await OcppMessage.findAll({
-      where: {
-        chargePointId,
-        message_type: "RemoteStartTransaction",
-        direction: "Outbound",
-        // A charging session can legitimately run for more than 30 minutes;
-        // retain enough RemoteStart history to correlate a stale transaction
-        // ID after a charger reconnects later in the same session.
-        createdAt: { [Op.gte]: new Date(Date.now() - 2 * 60 * 60 * 1000) },
-      },
-      order: [["createdAt", "DESC"]],
-      limit: 10,
-      attributes: ["payload", "createdAt"],
-    })
-
-    for (const row of recent) {
-      const payload = typeof row.payload === "string"
-        ? (() => {
-            try { return JSON.parse(row.payload) } catch { return null }
-          })()
-        : row.payload
-      if (!payload) continue
-      const requestedConnector = Number(payload.connectorId ?? payload.ConnectorId ?? connectorId)
-      if (requestedConnector !== Number(connectorId)) continue
-      const idTag = payload.idTag || payload.IdTag
-      if (!idTag) continue
-      candidates.push({ idTag, connectorId: requestedConnector, createdAt: new Date(row.createdAt) })
-    }
-  } catch (error) {
-    logger.warn(`Could not load recent RemoteStart history for ${chargePointId}: ${error.message}`)
-  }
-
-  candidates.sort((a, b) => b.createdAt - a.createdAt)
-  const intent = candidates[0]
-  if (!intent || !intent.idTag || Number(intent.connectorId) !== Number(connectorId)) return null
-
-  if (
-    validSampleTime &&
-    validSampleTime.getTime() < intent.createdAt.getTime() - 5000
-  ) {
-    return { ...intent, blocked: true }
-  }
-
-  return intent
+  }, REMOTE_START_RECOVERY_WINDOW_MS)
+  expiry.unref?.()
 }
 
 /**
@@ -980,41 +954,69 @@ async function handleStartTransaction(chargePointId, uniqueId, payload) {
       reservationId: payload.reservationId,
     }
 
-    // First check if the tag is authorized for charging
-    const authResult = await tagAuthService.isAuthorized(
-      normalizedPayload.idTag
+    const stationTag = normalizedPayload.idTag
+    const stationTagAuth = await tagAuthService.isAuthorized(stationTag)
+    const verifiedStartIntent = await findVerifiedRemoteStartIntent({
+      chargePointId,
+      connectorId: normalizedPayload.connectorId,
+      requireChargingConfirmation: false,
+      // A genuine StartTransaction normally follows RemoteStart immediately.
+      // A wider window could capture an unrelated local RFID start.
+      maxAgeMs: 2 * 60 * 1000,
+    })
+    const verifiedRemoteOwner = getVerifiedRemoteStartOwner(
+      verifiedStartIntent,
+      normalizedPayload.connectorId,
+      { requireChargingConfirmation: false }
     )
 
-    if (authResult.status !== "Accepted") {
-      // Check if there's a pending RemoteStart for this station
-      // Some chargers (e.g. 7KVA) use their own default tag instead of the one from RemoteStart
-      const pendingStart = pendingRemoteStarts.get(chargePointId)
-      if (pendingStart) {
-        logger.info(
-          `Tag ${normalizedPayload.idTag} not authorized, but found pending RemoteStart for ${chargePointId} with tag ${pendingStart.idTag}. Accepting with RemoteStart tag.`
-        )
-        // Use the authorized tag from the RemoteStart instead
-        normalizedPayload.idTag = pendingStart.idTag
-        pendingRemoteStarts.delete(chargePointId)
-      } else {
-        logger.warn(
-          `Rejected transaction start from ${chargePointId}: Tag ${normalizedPayload.idTag} status is ${authResult.status}`
-        )
-        return [
-          3,
-          uniqueId,
-          {
-            transactionId: 0,
-            idTagInfo: {
-              status: authResult.status,
-            },
-          },
-        ]
-      }
-    } else {
-      // Tag was accepted, clear any pending remote start
-      pendingRemoteStarts.delete(chargePointId)
+    if (
+      verifiedRemoteOwner &&
+      stationTagAuth.status === "Accepted" &&
+      String(stationTag) !== verifiedRemoteOwner
+    ) {
+      // Both identities are valid, so choosing either one would risk charging
+      // the wrong driver. Reject and let subsequent verified telemetry enter
+      // the conservative recovery path instead of guessing ownership.
+      logger.error(
+        `Rejected ambiguous StartTransaction on ${chargePointId}:${normalizedPayload.connectorId}: ` +
+          `station tag ${stationTag} conflicts with accepted RemoteStart owner ${verifiedRemoteOwner}`
+      )
+      return [3, uniqueId, { transactionId: 0, idTagInfo: { status: "Invalid" } }]
     }
+
+    if (verifiedRemoteOwner && stationTagAuth.status !== "Accepted") {
+      logger.warn(
+        `Replacing unauthorised station tag ${stationTag} with verified RemoteStart owner ` +
+          `${verifiedRemoteOwner} on ${chargePointId}:${normalizedPayload.connectorId}`
+      )
+      normalizedPayload.idTag = verifiedRemoteOwner
+    }
+
+    // Authorize the final, immutable owner. An in-memory pending request is
+    // deliberately not enough: the station must have persisted an Accepted
+    // RemoteStart response before its tag can replace the reported tag.
+    const authResult = normalizedPayload.idTag === stationTag
+      ? stationTagAuth
+      : await tagAuthService.isAuthorized(normalizedPayload.idTag)
+
+    if (authResult.status !== "Accepted") {
+      logger.warn(
+        `Rejected transaction start from ${chargePointId}: Tag ${normalizedPayload.idTag} status is ${authResult.status}`
+      )
+      return [
+        3,
+        uniqueId,
+        {
+          transactionId: 0,
+          idTagInfo: {
+            status: authResult.status,
+          },
+        },
+      ]
+    }
+
+    if (verifiedRemoteOwner) pendingRemoteStarts.delete(chargePointId)
 
     // A charge point may retry the same StartTransaction after the socket
     // drops before the CSMS response is delivered. If the first request made
@@ -2611,19 +2613,21 @@ async function handleStatusNotification(chargePointId, uniqueId, payload) {
             )
           }
         } else {
-          // Charger reports Charging but no active transaction
-          // This happens when: offline timer completed the transaction but charger kept charging
-          // RESUME the session — reopen the transaction and continue tracking
-          logger.warn(`Station ${chargePointId}:${connectorId} reports Charging but no active transaction — attempting to resume session`)
+          // Charger reports Charging but no active transaction. Status alone
+          // cannot identify the driver or the charger's transaction, so do not
+          // reopen a financial record until MeterValues proves correlation.
+          logger.warn(`Station ${chargePointId}:${connectorId} reports Charging but no active transaction — awaiting transaction evidence`)
           
-          // First, check the connector's transactionId (most accurate source)
-          const { Connector } = require("../models")
-          const connector = await Connector.findOne({
-            where: { chargePointId, connectorId }
-          })
+          // Kept null by design: connector table state is operational state,
+          // not proof that a particular customer owns the physical session.
+          const connector = null
           
           let resumeTx = null
-          if (connector && connector.transactionId) {
+          // StatusNotification has no OCPP transactionId or idTag. Never reopen
+          // a financial record from status alone; wait for MeterValues, whose
+          // reported transaction ID passes the strict resolver above.
+          const statusOnlyResumeAllowed = false
+          if (statusOnlyResumeAllowed && connector && connector.transactionId) {
             // Connector has the transaction ID — use it
             resumeTx = await Transaction.findOne({
               where: { transactionId: connector.transactionId }
@@ -2634,7 +2638,7 @@ async function handleStatusNotification(chargePointId, uniqueId, payload) {
           // If the timer already completed this same connector's session,
           // resume only a recent network-recovered record. Never reopen the
           // most recent transaction from another connector or user.
-          if (!resumeTx) {
+          if (statusOnlyResumeAllowed && !resumeTx) {
             const recentRecovered = await Transaction.findAll({
               where: {
                 chargePointId,
@@ -2739,40 +2743,41 @@ async function handleStatusNotification(chargePointId, uniqueId, payload) {
               )
             }
           } else {
-            // Do not stop a charger that is actively sending meter values just
-            // because its StartTransaction was lost. MeterValues reconciliation
-            // can safely create a continuation for the exact reported user; a
-            // blanket RemoteStop here used to leave the vehicle charging while
-            // also making it impossible to bill the session.
-            const recentTelemetry = await MeterValue.findOne({
-              where: {
-                chargePointId,
-                connectorId,
-                createdAt: { [Op.gte]: new Date(Date.now() - 2 * 60 * 1000) }
-              },
-              order: [["createdAt", "DESC"]],
-              attributes: ["id", "timestamp", "transactionId"]
+            const verifiedStartIntent = await findVerifiedRemoteStartIntent({
+              chargePointId,
+              connectorId,
+              requireChargingConfirmation: false,
+              maxAgeMs: REMOTE_START_RECOVERY_WINDOW_MS,
             })
+            const verifiedOwner = getVerifiedRemoteStartOwner(
+              verifiedStartIntent,
+              connectorId,
+              { requireChargingConfirmation: false }
+            )
 
-            if (recentTelemetry) {
-              logger.warn(
-                `Station ${chargePointId}:${connectorId} is Charging without an active ` +
-                  `transaction but has fresh MeterValues; waiting for safe reconciliation`
+            // OCPP RemoteStopTransaction requires the charger's real
+            // transactionId. Never guess with transactionId 0. Quarantine the
+            // state until StartTransaction or safely correlated MeterValues
+            // provides both an actual transaction and verified driver.
+            logger.warn(
+              `Station ${chargePointId}:${connectorId} reports Charging without an active transaction; ` +
+                (verifiedOwner
+                  ? `accepted RemoteStart owner ${verifiedOwner} is awaiting safe telemetry reconciliation`
+                  : "ownership is unverified, so telemetry will remain non-billable")
+            )
+            if (mqttClient) {
+              mqttClient.publish(
+                `ocpp/${chargePointId}/attention`,
+                JSON.stringify({
+                  connectorId,
+                  reason: verifiedOwner
+                    ? "awaiting_transaction_reconciliation"
+                    : "unattributed_charging",
+                  idTag: verifiedOwner || null,
+                  billable: false,
+                  timestamp: new Date().toISOString(),
+                })
               )
-            } else {
-              // No telemetry and no transaction is a genuinely orphaned charge.
-              // Keep the safety stop for that case only.
-              logger.warn(`Station ${chargePointId}:${connectorId} charging with NO transaction or recent telemetry — sending RemoteStop`)
-              try {
-                const ocppServer = require("./server")
-                if (ocppServer.isConnected(chargePointId)) {
-                  await ocppServer.sendOcppRequest(chargePointId, 'RemoteStopTransaction', {
-                    transactionId: 0
-                  })
-                }
-              } catch (stopErr) {
-                logger.error(`Failed to send RemoteStop for orphaned charging on ${chargePointId}: ${stopErr.message}`)
-              }
             }
           }
         }
@@ -3082,4 +3087,8 @@ module.exports = {
   handleFirmwareStatusNotification,
   updateConnectorStatus,
   registerPendingRemoteStart,
+  _test: {
+    resolveMeterValuesTransaction,
+    resolveMeterValuesTransactionUnlocked,
+  },
 }

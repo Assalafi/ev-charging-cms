@@ -29,4 +29,18 @@ describe('OCPP inbound request deduplication', () => {
         ]));
         expect(branches).not.toContainEqual({ dedupeKey: 'inbound:CP-1:96', message_type: 'Heartbeat' });
     });
+
+    test('does not match pre-connection history when a socket connection ID is known', () => {
+        const where = buildInboundDedupeWhere('CP-1', 'MeterValues', '96', 'socket-b');
+        const branches = where[require('sequelize').Op.or];
+
+        expect(branches).toEqual([
+            { dedupeKey: 'inbound:CP-1:MeterValues:96:socket-b' }
+        ]);
+        expect(branches).not.toContainEqual({ dedupeKey: 'inbound:CP-1:MeterValues:96' });
+        expect(branches).not.toContainEqual({
+            dedupeKey: 'inbound:CP-1:96',
+            message_type: 'MeterValues'
+        });
+    });
 });

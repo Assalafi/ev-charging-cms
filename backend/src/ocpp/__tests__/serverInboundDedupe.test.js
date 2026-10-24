@@ -85,4 +85,18 @@ describe('OCPP server inbound dispatch', () => {
         expect(mockHandleRequest).toHaveBeenCalledTimes(1);
         expect(ws.send).toHaveBeenCalledTimes(2);
     });
+
+    test('processes a reused message ID again after a charger reconnects', async () => {
+        const firstSocket = { connectionId: 'socket-a', readyState: 1, send: jest.fn() };
+        const secondSocket = { connectionId: 'socket-b', readyState: 1, send: jest.fn() };
+        const payload = { connectorId: 1, transactionId: 697698, meterValue: [] };
+
+        await handleOcppMessage('CP-1', [2, '1', 'MeterValues', payload], firstSocket);
+        await handleOcppMessage('CP-1', [2, '1', 'MeterValues', payload], secondSocket);
+
+        expect(mockHandleRequest).toHaveBeenCalledTimes(2);
+        expect(mockInboundRows.filter(row => row.direction === 'Inbound')).toHaveLength(2);
+        expect(firstSocket.send).toHaveBeenCalledTimes(1);
+        expect(secondSocket.send).toHaveBeenCalledTimes(1);
+    });
 });

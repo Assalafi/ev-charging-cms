@@ -269,8 +269,11 @@ function init(server) {
             ws.chargePointId = chargePointId;
             ws.protocol = protocol;
             
-            // Store connection ID for logging
-            ws.connectionId = ++serverState.connectionCount;
+            // Use a process-independent ID. A simple counter restarts at 1 on
+            // every PM2 reload and can collide with persisted inbound dedupe
+            // keys, causing valid telemetry to be mistaken for an old retry.
+            ws.connectionSequence = ++serverState.connectionCount;
+            ws.connectionId = uuidv4();
 
             // Store the connection - CRITICAL for remote commands to work
             logger.info(`Storing connection for ${chargePointId} with connection ID: ${ws.connectionId}`);
@@ -866,11 +869,6 @@ async function sendOcppRequest(chargePointId, action, payload) {
             }
             
             logger.debug(`RemoteStartTransaction payload: ${JSON.stringify(normalizedPayload)}`);
-            
-            // Register pending remote start so handleStartTransaction can accept
-            // stations that use their own default tag instead of the provided one
-            const { registerPendingRemoteStart } = require('./messageHandlers');
-            registerPendingRemoteStart(chargePointId, normalizedPayload.idTag, normalizedPayload.connectorId);
         }
         else if (action === 'RemoteStopTransaction') {
             // For RemoteStopTransaction, we only need transactionId and it should be camelCase
@@ -905,6 +903,18 @@ async function sendOcppRequest(chargePointId, action, payload) {
             direction: 'Outbound',
             timestamp: new Date()
         });
+
+        if (action === 'RemoteStartTransaction') {
+            // This is a diagnostic hint only. Financial ownership is verified
+            // later from this audit row plus the charger's Accepted response.
+            const { registerPendingRemoteStart } = require('./messageHandlers');
+            registerPendingRemoteStart(
+                chargePointId,
+                normalizedPayload.idTag,
+                normalizedPayload.connectorId,
+                request[1]
+            );
+        }
 
         // Send the request
         ws.send(JSON.stringify(request));

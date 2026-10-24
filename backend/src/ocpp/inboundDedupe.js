@@ -29,22 +29,32 @@ function buildLegacyInboundDedupeKey(chargePointId, uniqueId) {
  * matches the current action.
  */
 function buildInboundDedupeWhere(chargePointId, action, uniqueId, connectionId = null) {
-    return {
-        direction: 'Inbound',
-        [Op.or]: [
-            { dedupeKey: buildInboundDedupeKey(chargePointId, action, uniqueId, connectionId) },
-            // Older rows were written without a connection generation. Only
-            // use the legacy action-aware key when no connection ID is known;
-            // otherwise a charger reconnect that reuses its OCPP IDs must be
-            // processed as a new request.
-            ...(connectionId === null || connectionId === undefined || connectionId === ''
-                ? [{ dedupeKey: buildInboundDedupeKey(chargePointId, action, uniqueId) }]
-                : []),
+    const hasConnectionId = !(
+        connectionId === null ||
+        connectionId === undefined ||
+        connectionId === ''
+    );
+    const alternatives = [
+        { dedupeKey: buildInboundDedupeKey(chargePointId, action, uniqueId, connectionId) }
+    ];
+
+    // Keys written by older releases have no connection generation. They are
+    // useful only when the current socket also has no connection ID. Including
+    // them for a known connection would cause a charger that restarts its OCPP
+    // message counter to have valid MeterValues silently replayed/skipped.
+    if (!hasConnectionId) {
+        alternatives.push(
+            { dedupeKey: buildInboundDedupeKey(chargePointId, action, uniqueId) },
             {
                 dedupeKey: buildLegacyInboundDedupeKey(chargePointId, uniqueId),
                 message_type: action
             }
-        ]
+        );
+    }
+
+    return {
+        direction: 'Inbound',
+        [Op.or]: alternatives
     };
 }
 

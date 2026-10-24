@@ -28,7 +28,8 @@ module.exports = (sequelize) => {
                 'FirmwareStatusNotification', 'UpdateFirmware', 'GetLocalListVersion',
                 'SendLocalList', 'CancelReservation', 'ReserveNow', 'ChangeAvailability',
                 'ChangeConfiguration', 'ClearCache', 'GetConfiguration', 'Reset',
-                'UnlockConnector', 'Error', 'InternalError', 'Response'
+                'UnlockConnector', 'RemoteStartTransaction', 'RemoteStopTransaction',
+                'Error', 'InternalError', 'Response'
             ),
             allowNull: false
         },
