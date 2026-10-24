@@ -105,6 +105,50 @@ module.exports = (sequelize) => {
             allowNull: true,
             comment: 'When the station connection was lost while this transaction was active'
         },
+        ocppTransactionId: {
+            type: DataTypes.INTEGER,
+            allowNull: true,
+            comment: 'Transaction ID understood by the charge point; may differ from the internal recovery ID'
+        },
+        ocppStartMessageId: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            comment: 'Inbound StartTransaction request ID that proves connector and tag ownership'
+        },
+        remoteStartMessageId: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            comment: 'Accepted RemoteStartTransaction request used as recovery ownership evidence'
+        },
+        ownershipSource: {
+            type: DataTypes.STRING(50),
+            allowNull: true,
+            comment: 'Audit source used to establish the immutable session owner'
+        },
+        ownershipVerifiedAt: {
+            type: DataTypes.DATE,
+            allowNull: true
+        },
+        lastMeterValueWh: {
+            type: DataTypes.DOUBLE,
+            allowNull: true,
+            comment: 'Highest accepted cumulative energy register for monotonic session accounting'
+        },
+        lastMeterTimestamp: {
+            type: DataTypes.DATE,
+            allowNull: true,
+            comment: 'Device timestamp of the latest accepted cumulative meter sample'
+        },
+        lastMeterReceivedAt: {
+            type: DataTypes.DATE,
+            allowNull: true,
+            comment: 'Server receipt time of the latest accepted cumulative meter sample'
+        },
+        ocppStopMessageId: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            comment: 'StopTransaction request that finalized this session'
+        },
         sellingPricePerWh: {
             type: DataTypes.FLOAT,
             allowNull: true,
@@ -124,6 +168,11 @@ module.exports = (sequelize) => {
             type: DataTypes.BOOLEAN,
             defaultValue: false,
             comment: 'Whether minimum charge was applied'
+        },
+        minimumChargeAmount: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+            comment: 'Snapshot of the minimum charge used for this session'
         },
         productionCostAmount: {
             type: DataTypes.FLOAT,
@@ -189,6 +238,21 @@ module.exports = (sequelize) => {
             },
             {
                 fields: ['settlementStatus']
+            },
+            {
+                fields: ['chargePointId', 'connectorId', 'status']
+            },
+            {
+                name: 'transactions_one_active_connector_idx',
+                unique: true,
+                fields: ['chargePointId', 'connectorId'],
+                where: { status: 'InProgress' }
+            },
+            {
+                fields: ['chargePointId', 'ocppTransactionId', 'status']
+            },
+            {
+                fields: ['chargePointId', 'ocppStartMessageId']
             }
         ]
     });

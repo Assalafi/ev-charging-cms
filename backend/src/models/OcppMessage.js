@@ -92,6 +92,14 @@ module.exports = (sequelize) => {
                 fields: ['createdAt']
             },
             {
+                name: 'ocpp_messages_station_type_direction_created_idx',
+                fields: ['chargePointId', 'message_type', 'direction', 'createdAt']
+            },
+            {
+                name: 'ocpp_messages_station_message_correlation_idx',
+                fields: ['chargePointId', 'messageId', 'direction', 'message_type', 'createdAt']
+            },
+            {
                 name: 'ocpp_messages_dedupe_key_unique',
                 unique: true,
                 fields: ['dedupeKey'],

@@ -43,6 +43,11 @@ function createServerState() {
         // OCPP unique IDs can be reused across different actions, so the
         // action must be part of this key as well as the persisted dedupe key.
         inboundProcessing: new Map(),
+
+        // Preserve OCPP wire order per station. WebSocket event callbacks are
+        // otherwise concurrent once they await database I/O, which can let a
+        // StartTransaction overtake its RemoteStartTransaction response.
+        stationMessageQueues: new Map(),
         
         // OCPP Configuration
         heartbeatInterval: config.ocpp.heartbeatInterval,
@@ -176,7 +181,16 @@ function init(server) {
             });
             
             // Immediately add to connection map
+            const supersededConnection = serverState.connectedStations.get(chargePointId);
             serverState.connectedStations.set(chargePointId, ws);
+            if (supersededConnection && supersededConnection !== ws) {
+                supersededConnection.isSuperseded = true;
+                try {
+                    supersededConnection.close(4001, 'Superseded by a newer connection');
+                } catch (closeError) {
+                    logger.warn(`Could not close superseded socket for ${chargePointId}: ${closeError.message}`);
+                }
+            }
             logger.info(`Added ${chargePointId} to connection map on upgrade, map size: ${serverState.connectedStations.size}`);
             logger.debug(`Connection started at ${new Date().toISOString()} for ${chargePointId}`);
             
@@ -203,7 +217,10 @@ function init(server) {
             // More tolerant connection checking - only terminate after 3 missed heartbeats
             if (ws.missedHeartbeats >= 3 && connectionAge > 60) {
                 logger.warn(`Terminating inactive connection for ${ws.chargePointId || 'unknown station'} after missing ${ws.missedHeartbeats} heartbeats`);
-                if (ws.chargePointId) {
+                if (
+                    ws.chargePointId &&
+                    serverState.connectedStations.get(ws.chargePointId) === ws
+                ) {
                     serverState.connectedStations.delete(ws.chargePointId);
                     logger.info(`Removed ${ws.chargePointId} from connection map due to inactivity`);
                 }
@@ -282,29 +299,6 @@ function init(server) {
             // Debug log the current connections
             logger.info(`Current connections: ${Array.from(serverState.connectedStations.keys()).join(', ')}`);
 
-            // Set up WebSocket event handlers
-            // Ping handler for WebSocket
-            ws.on('pong', () => {
-                ws.isAlive = true;
-                logger.debug(`Received pong from ${ws.chargePointId}`);
-            });
-            
-            // Handle close event
-            ws.on('close', (code, reason) => {
-                logger.info(`WebSocket connection closed for ${ws.chargePointId}: ${code} - ${reason}`);
-                // Remove from connected stations map
-                if (ws.chargePointId && serverState.connectedStations.get(ws.chargePointId) === ws) {
-                    serverState.connectedStations.delete(ws.chargePointId);
-                    logger.info(`Removed ${ws.chargePointId} from connected stations map`);
-                    logger.info(`Remaining connections: ${Array.from(serverState.connectedStations.keys()).join(', ')}`);
-                }
-            });
-            
-            // Handle error event
-            ws.on('error', (error) => {
-                logger.error(`WebSocket error for ${ws.chargePointId}:`, error);
-            });
-
             // Update station connection status in database
             updateStationConnectionStatus(chargePointId, true, request.headers['x-forwarded-for'] ||
                 request.connection.remoteAddress ||
@@ -323,32 +317,6 @@ function init(server) {
                     }
                 });
             }
-
-            // Add extra event handlers for connection issues
-            ws.on('error', (error) => {
-                logger.error(`WebSocket error for ${chargePointId}:`, error);
-                // Don't immediately close on error - let the heartbeat mechanism do its job
-            });
-
-            ws.on('close', (code, reason) => {
-                logger.info(`WebSocket connection closed for ${chargePointId}: code ${code}, reason: ${reason || 'No reason provided'}`);
-                // Only clean up if THIS ws is still the active connection (not a stale close)
-                const currentWs = serverState.connectedStations.get(chargePointId);
-                if (currentWs && currentWs !== ws) {
-                    logger.info(`Stale close event for ${chargePointId} (already reconnected), ignoring`);
-                    return;
-                }
-                serverState.connectedStations.delete(chargePointId);
-
-                // Persist the disconnect marker. The periodic recovery worker
-                // will use it even if this Node process restarts.
-                offlineRecovery.markStationOffline(chargePointId).catch(error => {
-                    logger.warn(`Could not persist offline recovery marker for ${chargePointId}: ${error.message}`);
-                });
-                updateStationConnectionStatus(chargePointId, false).catch(err => {
-                    logger.error(`Error updating connection status for ${chargePointId}:`, err);
-                });
-            });
 
             // Respond to pongs (part of heartbeat mechanism)
             ws.on('pong', () => {
@@ -378,19 +346,29 @@ function init(server) {
 
             // Handle messages from charging station
             ws.on('message', async (message) => {
+                const previousMessage = serverState.stationMessageQueues.get(chargePointId) || Promise.resolve();
+                const currentMessage = previousMessage.catch(() => {}).then(async () => {
                 // Any message from the client indicates the connection is alive
                 ws.isAlive = true;
                 ws.missedHeartbeats = 0; // Reset missed heartbeat counter
                 
-                // Ensure station is in connection map (handles race conditions on restart)
-                if (!serverState.connectedStations.has(chargePointId) || serverState.connectedStations.get(chargePointId) !== ws) {
+                // Never let a late frame from a superseded socket replace the
+                // station's current connection after a reconnect.
+                const activeSocket = serverState.connectedStations.get(chargePointId);
+                if (activeSocket && activeSocket !== ws) {
+                    logger.warn(`Ignoring message from superseded socket for ${chargePointId}`);
+                    return;
+                }
+                if (!activeSocket) {
                     serverState.connectedStations.set(chargePointId, ws);
                     logger.info(`Re-added ${chargePointId} to connection map via message handler (was missing)`);
                 }
                 
                 try {
-                    // Log the raw message for debugging
-                    logger.info(`RAW MESSAGE from ${chargePointId}: ${message.toString()}`);
+                    // The full payload is durably stored in ocpp_messages.
+                    // Keep high-frequency MeterValues out of production info
+                    // logs to avoid log-volume backpressure on live sockets.
+                    logger.debug(`RAW MESSAGE from ${chargePointId}: ${message.toString()}`);
 
                     // Parse message
                     const data = JSON.parse(message);
@@ -438,11 +416,22 @@ function init(server) {
                         ws.send(JSON.stringify([4, error.messageId, "FormationViolation", "Invalid message format", {}]));
                     }
                 }
+                });
+                serverState.stationMessageQueues.set(chargePointId, currentMessage);
+                try {
+                    await currentMessage;
+                } finally {
+                    if (serverState.stationMessageQueues.get(chargePointId) === currentMessage) {
+                        serverState.stationMessageQueues.delete(chargePointId);
+                    }
+                }
             });
 
             // Handle disconnection
             ws.on('close', async () => {
                 logger.info(`Charging station disconnected: ${chargePointId}`);
+                if (ws.disconnectHandled) return;
+                ws.disconnectHandled = true;
                 // Only process if THIS ws is still the active connection (not a stale close)
                 const currentWs = serverState.connectedStations.get(chargePointId);
                 if (currentWs && currentWs !== ws) {
@@ -452,7 +441,14 @@ function init(server) {
                 serverState.connectedStations.delete(chargePointId);
 
                 // Update station connection status
-                await updateStationConnectionStatus(chargePointId, false);
+                try {
+                    await offlineRecovery.markStationOffline(chargePointId);
+                    await updateStationConnectionStatus(chargePointId, false);
+                } catch (disconnectError) {
+                    logger.error(
+                        `Could not persist disconnect state for ${chargePointId}: ${disconnectError.message}`
+                    );
+                }
 
                 // Publish disconnection event if MQTT is enabled
                 if (process.env.MQTT_ENABLED !== 'false') {
@@ -465,7 +461,12 @@ function init(server) {
                 // Keep a short local fast path for the normal disconnect case.
                 // The database-backed worker is the durable safety net.
                 if (!serverState.disconnectTimers.has(chargePointId)) {
-                    const graceMs = Number.parseInt(process.env.OCPP_OFFLINE_GRACE_MS || '120000', 10);
+                    const graceMs = Number.parseInt(
+                        process.env.OCPP_OFFLINE_FINALIZATION_MS ||
+                        process.env.OCPP_OFFLINE_GRACE_MS ||
+                        String(24 * 60 * 60 * 1000),
+                        10
+                    );
                     logger.info(`Starting ${graceMs}ms offline recovery timer for ${chargePointId}`);
                     const timer = setTimeout(async () => {
                         serverState.disconnectTimers.delete(chargePointId);
@@ -489,13 +490,10 @@ function init(server) {
             // Handle WebSocket errors
             ws.on('error', async (error) => {
                 logger.error(`WebSocket error for ${chargePointId}:`, error);
-
-                // Clean up on error
-                serverState.connectedStations.delete(chargePointId);
-                offlineRecovery.markStationOffline(chargePointId).catch(markerError => {
-                    logger.warn(`Could not persist offline marker after socket error for ${chargePointId}: ${markerError.message}`);
-                });
-                await updateStationConnectionStatus(chargePointId, false);
+                // The close event owns connection cleanup. Deleting here can
+                // mark a newly reconnected socket offline when an old socket
+                // emits a late error.
+                ws.isAlive = false;
             });
 
             // Publish connection event
@@ -862,6 +860,15 @@ async function sendOcppRequest(chargePointId, action, payload) {
             if (normalizedPayload.connectorId !== undefined) {
                 normalizedPayload.connectorId = parseInt(normalizedPayload.connectorId, 10);
             }
+            if (!normalizedPayload.idTag) {
+                return { success: false, status: 'Rejected', error: 'idTag is required' };
+            }
+            if (
+                normalizedPayload.connectorId !== undefined &&
+                (!Number.isSafeInteger(normalizedPayload.connectorId) || normalizedPayload.connectorId <= 0)
+            ) {
+                return { success: false, status: 'Rejected', error: 'connectorId must be a positive integer' };
+            }
             
             // Add optional chargingProfile if specified
             if (payload.chargingProfile) {
@@ -873,24 +880,22 @@ async function sendOcppRequest(chargePointId, action, payload) {
         else if (action === 'RemoteStopTransaction') {
             // For RemoteStopTransaction, we only need transactionId and it should be camelCase
             normalizedPayload.transactionId = parseInt(payload.transactionId, 10);
+            if (!Number.isSafeInteger(normalizedPayload.transactionId) || normalizedPayload.transactionId <= 0) {
+                return { success: false, status: 'Rejected', error: 'transactionId must be a positive integer' };
+            }
             
             logger.debug(`RemoteStopTransaction payload: ${JSON.stringify(normalizedPayload)}`);
         }
         else {
-            // Normalize other commands to PascalCase
+            // OCPP 1.6 JSON field names are camelCase. Preserve already
+            // correct callers and normalize only a legacy leading capital.
             Object.keys(payload).forEach(key => {
-                // Convert first character to uppercase for PascalCase
-                const pascalKey = key.charAt(0).toUpperCase() + key.slice(1);
-                normalizedPayload[pascalKey] = payload[key];
+                const camelKey = key.charAt(0).toLowerCase() + key.slice(1);
+                normalizedPayload[camelKey] = payload[key];
             });
         }
 
         // Special case handling for specific commands
-        if (action === 'RemoteStartTransaction' && normalizedPayload.ConnectorId !== undefined) {
-            // Ensure connectorId is a number
-            normalizedPayload.ConnectorId = parseInt(normalizedPayload.ConnectorId, 10);
-        }
-
         const request = [2, uuidv4(), action, normalizedPayload];
 
         // Log the outgoing request

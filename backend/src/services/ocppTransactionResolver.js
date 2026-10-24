@@ -7,7 +7,17 @@
  * MeterValues frame is the most reliable durable source for that canonical
  * ID when a charger keeps reporting an old transaction after reconnecting.
  */
-const { OcppMessage } = require('../models');
+const { OcppMessage, Transaction } = require('../models');
+const {
+  findStartTransactionEvidence,
+  evidenceMatchesTransaction,
+  bindOcppIdentity
+} = require('../ocpp/sessionOwnership');
+const {
+  findVerifiedRemoteStartIntent,
+  getVerifiedRemoteStartOwner,
+  REMOTE_START_SESSION_WINDOW_MS
+} = require('../ocpp/remoteStartCorrelation');
 
 function parsePayload(payload) {
   if (!payload) return null;
@@ -28,6 +38,34 @@ async function resolveCanonicalOcppTransactionId({
   if (!chargePointId) return fallbackTransactionId;
 
   try {
+    const session = fallbackTransactionId
+      ? await Transaction.findOne({
+          where: {
+            transactionId: fallbackTransactionId,
+            chargePointId,
+            ...(connectorId !== undefined && connectorId !== null ? { connectorId } : {})
+          }
+        })
+      : null;
+
+    if (session?.ocppTransactionId) return session.ocppTransactionId;
+
+    if (session) {
+      const startEvidence = await findStartTransactionEvidence({
+        chargePointId,
+        ocppTransactionId: session.transactionId
+      });
+      if (evidenceMatchesTransaction(startEvidence, session)) {
+        await bindOcppIdentity(session, {
+          ocppTransactionId: startEvidence.ocppTransactionId,
+          startMessageId: startEvidence.messageId,
+          ownershipSource: 'start_transaction_audit',
+          ownershipVerifiedAt: startEvidence.receivedAt
+        });
+        return startEvidence.ocppTransactionId;
+      }
+    }
+
     const rows = await OcppMessage.findAll({
       where: {
         chargePointId,
@@ -57,7 +95,41 @@ async function resolveCanonicalOcppTransactionId({
 
       const transactionId = Number(payload.transactionId);
       if (Number.isSafeInteger(transactionId) && transactionId > 0) {
-        return transactionId;
+        if (!session) continue;
+
+        // Normal transactions may use their internal ID directly. Recovery
+        // rows need the accepted RemoteStart owner on this exact connector;
+        // the latest meter frame alone is never enough to select a customer.
+        if (Number(session.transactionId) === transactionId) {
+          await bindOcppIdentity(session, {
+            ocppTransactionId: transactionId,
+            ownershipSource: session.ownershipSource || 'exact_ocpp_transaction',
+            ownershipVerifiedAt: session.ownershipVerifiedAt || new Date()
+          });
+          return transactionId;
+        }
+
+        if ([
+          'OCPP_VERIFIED_REMOTE_START_RECOVERY',
+          'OCPP_STALE_TRANSACTION_RECOVERY'
+        ].includes(session.reason)) {
+          const intent = await findVerifiedRemoteStartIntent({
+            chargePointId,
+            connectorId: session.connectorId,
+            requireChargingConfirmation: true,
+            maxAgeMs: REMOTE_START_SESSION_WINDOW_MS
+          });
+          const owner = getVerifiedRemoteStartOwner(intent, session.connectorId);
+          if (owner && owner === String(session.idTag)) {
+            await bindOcppIdentity(session, {
+              ocppTransactionId: transactionId,
+              remoteStartMessageId: intent.messageId,
+              ownershipSource: 'verified_remote_start_recovery',
+              ownershipVerifiedAt: intent.acceptedAt || intent.createdAt
+            });
+            return transactionId;
+          }
+        }
       }
     }
   } catch (_) {
@@ -65,7 +137,17 @@ async function resolveCanonicalOcppTransactionId({
     // is temporarily unavailable.
   }
 
-  return fallbackTransactionId;
+  // An internal recovery ID that the charger never acknowledged must not be
+  // sent as RemoteStopTransaction. A normal exact StartTransaction ID remains
+  // a safe compatibility fallback for pre-migration rows.
+  if (fallbackTransactionId) {
+    const evidence = await findStartTransactionEvidence({
+      chargePointId,
+      ocppTransactionId: fallbackTransactionId
+    }).catch(() => null);
+    if (evidence) return fallbackTransactionId;
+  }
+  return null;
 }
 
 module.exports = {

@@ -157,6 +157,196 @@ async function billTransaction(transactionId) {
   }
 }
 
+/**
+ * Atomically apply a corrected final meter to an already completed session.
+ * The transaction snapshot, wallet delta and adjustment ledger either all
+ * commit or all roll back, so a crash cannot leave the new amount recorded
+ * without charging/refunding the corresponding wallet difference.
+ */
+async function reconcileCompletedBilling(transactionId, updates) {
+  const dbTx = await sequelize.transaction({
+    isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.SERIALIZABLE
+  });
+
+  try {
+    const chargingTx = await Transaction.findOne({
+      where: { transactionId },
+      lock: dbTx.LOCK.UPDATE,
+      transaction: dbTx
+    });
+    if (!chargingTx) throw new Error(`Transaction ${transactionId} not found`);
+
+    const oldAmount = Number(chargingTx.amount) || 0;
+    const newAmount = Number(updates.amount) || 0;
+    const oldEnergy = Number(chargingTx.energyDelivered) || 0;
+    const newEnergy = Number(updates.energyDelivered) || 0;
+    const difference = Math.round((newAmount - oldAmount) * 100) / 100;
+
+    if (chargingTx.billedAt && Math.abs(difference) >= 0.01) {
+      const user = await MobileUser.findOne({
+        where: { tagId: chargingTx.idTag },
+        transaction: dbTx
+      });
+      if (!user) throw new Error(`No user found for idTag ${chargingTx.idTag}`);
+
+      const wallet = await Wallet.findOne({
+        where: { userId: user.id },
+        lock: dbTx.LOCK.UPDATE,
+        transaction: dbTx
+      });
+      if (!wallet) throw new Error(`No wallet found for user ${user.id}`);
+
+      const meterKey = String(Number(updates.stopMeterValue) || 0).replace(/[^0-9]/g, '_');
+      const reference = `ADJ-${transactionId}-${meterKey}`;
+      const existing = await PaymentTransaction.findOne({
+        where: { reference },
+        transaction: dbTx
+      });
+
+      if (!existing) {
+        const previousBalance = Number(wallet.balance) || 0;
+        const newBalance = previousBalance - difference;
+        await wallet.update({ balance: newBalance }, { transaction: dbTx });
+        await PaymentTransaction.create({
+          userId: user.id,
+          walletId: wallet.id,
+          type: difference > 0 ? 'DEBIT' : 'CREDIT',
+          amount: Math.abs(difference),
+          currency: 'NGN',
+          reference,
+          gateway: 'internal',
+          status: 'SUCCESS',
+          description: difference > 0
+            ? `Billing adjustment: additional charge for session ${transactionId}`
+            : `Billing adjustment: refund for session ${transactionId}`,
+          metadata: {
+            transactionId,
+            chargePointId: chargingTx.chargePointId,
+            previousEnergy: oldEnergy,
+            correctedEnergy: newEnergy,
+            previousAmount: oldAmount,
+            correctedAmount: newAmount,
+            adjustment: difference,
+            previousBalance,
+            newBalance
+          }
+        }, { transaction: dbTx });
+      }
+    }
+
+    await chargingTx.update(updates, { transaction: dbTx });
+    await dbTx.commit();
+
+    if (!chargingTx.billedAt) {
+      const billing = await billTransaction(transactionId);
+      // The authoritative transaction state is already committed. A wallet
+      // failure is durable retry work, not a reason to make the charger repeat
+      // StopTransaction indefinitely.
+      return {
+        success: true,
+        billing,
+        billingPending: !billing.success,
+        difference
+      };
+    }
+    return { success: true, difference };
+  } catch (error) {
+    try { await dbTx.rollback(); } catch (_) {}
+    logger.error(`Billing reconciliation FAILED for transaction ${transactionId}:`, error);
+    return { success: false, message: error.message };
+  }
+}
+
+/**
+ * Reopen a provisionally completed network-loss session and reverse its
+ * wallet debit atomically. The deterministic refund reference makes retries
+ * idempotent, while settlement-linked sessions are deliberately quarantined.
+ */
+async function reopenNetworkDisconnectedTransaction(transactionId) {
+  const dbTx = await sequelize.transaction({
+    isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.SERIALIZABLE
+  });
+
+  try {
+    const chargingTx = await Transaction.findOne({
+      where: { transactionId },
+      lock: dbTx.LOCK.UPDATE,
+      transaction: dbTx
+    });
+    if (!chargingTx) throw new Error(`Transaction ${transactionId} not found`);
+    if (chargingTx.status === 'InProgress') {
+      await dbTx.rollback();
+      return { success: true, transaction: chargingTx, alreadyActive: true };
+    }
+    if (chargingTx.reason !== 'NetworkDisconnected') {
+      throw new Error(`Transaction ${transactionId} was not provisionally closed for network loss`);
+    }
+    if (chargingTx.settlementId) {
+      throw new Error(`Transaction ${transactionId} is already linked to a settlement`);
+    }
+
+    const billedAmount = Number(chargingTx.amount) || 0;
+    if (chargingTx.billedAt && billedAmount > 0) {
+      const user = await MobileUser.findOne({
+        where: { tagId: chargingTx.idTag },
+        transaction: dbTx
+      });
+      if (!user) throw new Error(`No user found for idTag ${chargingTx.idTag}`);
+      const wallet = await Wallet.findOne({
+        where: { userId: user.id },
+        lock: dbTx.LOCK.UPDATE,
+        transaction: dbTx
+      });
+      if (!wallet) throw new Error(`No wallet found for user ${user.id}`);
+
+      const billedKey = new Date(chargingTx.billedAt).getTime();
+      const reference = `RESUME-REFUND-${transactionId}-${billedKey}`;
+      const existing = await PaymentTransaction.findOne({
+        where: { reference },
+        transaction: dbTx
+      });
+      if (!existing) {
+        const previousBalance = Number(wallet.balance) || 0;
+        const newBalance = previousBalance + billedAmount;
+        await wallet.update({ balance: newBalance }, { transaction: dbTx });
+        await PaymentTransaction.create({
+          userId: user.id,
+          walletId: wallet.id,
+          type: 'CREDIT',
+          amount: billedAmount,
+          currency: 'NGN',
+          reference,
+          gateway: 'internal',
+          status: 'SUCCESS',
+          description: `Provisional network-loss billing reversed for resumed session ${transactionId}`,
+          metadata: {
+            transactionId,
+            chargePointId: chargingTx.chargePointId,
+            reason: 'network_session_resumed',
+            previousBalance,
+            newBalance
+          }
+        }, { transaction: dbTx });
+      }
+    }
+
+    await chargingTx.update({
+      status: 'InProgress',
+      stopTime: null,
+      billedAt: null,
+      offlineSince: null,
+      billingLastError: null,
+      billingNextAttemptAt: null
+    }, { transaction: dbTx });
+    await dbTx.commit();
+    return { success: true, transaction: chargingTx };
+  } catch (error) {
+    try { await dbTx.rollback(); } catch (_) {}
+    logger.error(`Network session resume FAILED for transaction ${transactionId}:`, error);
+    return { success: false, message: error.message };
+  }
+}
+
 async function recordBillingFailure(transactionId, error) {
   const transaction = await Transaction.findOne({
     where: { transactionId },
@@ -234,6 +424,8 @@ function stopBillingReconciliation() {
 
 module.exports = {
   billTransaction,
+  reconcileCompletedBilling,
+  reopenNetworkDisconnectedTransaction,
   billUnbilledTransactions,
   startBillingReconciliation,
   stopBillingReconciliation

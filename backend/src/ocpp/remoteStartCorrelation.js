@@ -5,6 +5,10 @@ const logger = require("../utils/logger")
 const REMOTE_START_RECOVERY_WINDOW_MS = 15 * 60 * 1000
 const REMOTE_START_SESSION_WINDOW_MS = 2 * 60 * 60 * 1000
 const DEVICE_CLOCK_TOLERANCE_MS = 5 * 1000
+const REMOTE_START_CHARGING_CONFIRM_MS = Number.parseInt(
+  process.env.OCPP_REMOTE_START_CONFIRM_MS || String(3 * 60 * 1000),
+  10
+)
 
 function parseOcppPayload(value) {
   let parsed = value
@@ -80,7 +84,7 @@ async function findVerifiedRemoteStartIntent({
         createdAt: { [Op.gte]: new Date(nowDate.getTime() - maxAgeMs) },
       },
       order: [["createdAt", "DESC"]],
-      limit: 20,
+      limit: 250,
       attributes: ["messageId", "payload", "createdAt", "timestamp"],
     })
 
@@ -94,7 +98,7 @@ async function findVerifiedRemoteStartIntent({
           createdAt: { [Op.gte]: new Date(nowDate.getTime() - maxAgeMs) },
         },
         order: [["createdAt", "DESC"]],
-        limit: 100,
+        limit: 500,
         attributes: ["payload", "createdAt", "timestamp"],
       })
     }
@@ -145,9 +149,14 @@ async function findVerifiedRemoteStartIntent({
             })
             .filter(row => row.at && row.connectorId === targetConnectorId)
         : []
-      const chargingConfirmation = connectorStatuses.find(
-        row => row.at >= acceptedAt && row.status === "charging"
-      )
+      const chargingConfirmation = connectorStatuses
+        .filter(
+          row =>
+            row.at >= acceptedAt &&
+            row.at.getTime() - acceptedAt.getTime() <= REMOTE_START_CHARGING_CONFIRM_MS &&
+            row.status === "charging"
+        )
+        .sort((left, right) => left.at - right.at)[0]
       const priorStatus = connectorStatuses.find(row => row.at < requestTime)
       const safePriorStatuses = new Set(["available", "preparing", "reserved", "finishing"])
       const safeChargingTransition = Boolean(
@@ -169,6 +178,9 @@ async function findVerifiedRemoteStartIntent({
         acceptedAt,
         verified: true,
         chargingConfirmed: requireChargingConfirmation ? true : null,
+        chargingConfirmedAt: requireChargingConfirmation
+          ? chargingConfirmation.at
+          : null,
         safeChargingTransition: requireChargingConfirmation ? true : null,
       }
 
@@ -191,6 +203,7 @@ async function findVerifiedRemoteStartIntent({
 module.exports = {
   REMOTE_START_RECOVERY_WINDOW_MS,
   REMOTE_START_SESSION_WINDOW_MS,
+  REMOTE_START_CHARGING_CONFIRM_MS,
   parseOcppPayload,
   isVerifiedRemoteStartIntent,
   getVerifiedRemoteStartOwner,

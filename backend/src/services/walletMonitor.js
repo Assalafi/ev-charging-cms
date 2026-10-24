@@ -140,7 +140,7 @@ async function stopSession(session) {
     if (!ocppServerRef.isConnected(chargePointId)) {
       logger.warn(
         `WalletMonitor: Station ${chargePointId} not connected. ` +
-        `Completing tx ${transactionId} via DB (offline auto-stop).`
+        `Marking tx ${transactionId} for stop on reconnect; stale energy will not be billed.`
       );
       await offlineStop(session);
       return;
@@ -210,7 +210,9 @@ async function stopSession(session) {
 }
 
 /**
- * Force-complete a transaction via database when charger is offline or rejects
+ * Persist a stop request while the charger is offline. The physical charger
+ * can continue delivering energy without a data connection, so completing and
+ * billing here would knowingly undercharge and lose the later meter delta.
  */
 async function offlineStop(session) {
   const { transactionId } = session;
@@ -225,19 +227,14 @@ async function offlineStop(session) {
       return;
     }
 
-    // Use the same conditional, meter-aware completion path as network-loss
-    // recovery. This prevents two workers from billing or resetting a
-    // different connector when wallet exhaustion and socket loss overlap.
-    const offlineRecovery = require('./offlineTransactionRecovery');
-    const result = await offlineRecovery.completeOfflineTransaction(
-      transaction,
-      new Date(),
-      { reason: 'WalletExhausted', stopReason: 'Wallet exhausted' }
+    await transaction.update({
+      stopReason: 'WalletExhaustedPendingReconnect',
+      offlineSince: transaction.offlineSince || new Date()
+    });
+    logger.warn(
+      `WalletMonitor offlineStop: tx ${transactionId} remains InProgress until ` +
+        `the charger reconnects and supplies an authoritative final meter`
     );
-
-    if (result.completed) {
-      logger.info(`WalletMonitor offlineStop: tx ${transactionId} completed via shared recovery path`);
-    }
   } catch (error) {
     logger.error(`WalletMonitor offlineStop error for tx ${transactionId}:`, error.message);
     throw error;

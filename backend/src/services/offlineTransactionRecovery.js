@@ -16,7 +16,16 @@ const { getChargingPricing } = require('./chargingPricingService');
 const { calculatePartnerRevenue } = require('./partnerRevenueService');
 const { billTransaction } = require('./billingService');
 
-const OFFLINE_GRACE_MS = Number.parseInt(process.env.OCPP_OFFLINE_GRACE_MS || '120000', 10);
+// A charge point can continue delivering energy while its data connection is
+// down. Keep the transaction open for a full reconciliation window instead of
+// billing a stale meter after two minutes. Explicit terminal status and real
+// StopTransaction still finalize immediately through their own paths.
+const OFFLINE_GRACE_MS = Number.parseInt(
+  process.env.OCPP_OFFLINE_FINALIZATION_MS ||
+    process.env.OCPP_OFFLINE_GRACE_MS ||
+    String(24 * 60 * 60 * 1000),
+  10
+);
 const RECOVERY_INTERVAL_MS = Number.parseInt(process.env.OCPP_RECOVERY_INTERVAL_MS || '30000', 10);
 
 let intervalHandle = null;
@@ -79,10 +88,30 @@ async function completeOfflineTransaction(
   });
   if (!current) return { completed: false, reason: 'already handled' };
 
-  const pricing = await getChargingPricing({
+  const currentPricing = await getChargingPricing({
     chargePointId: current.chargePointId,
     idTag: current.idTag
   });
+  const snapshotRate = Number(current.sellingPricePerWh);
+  const snapshotMinimum = Number(current.minimumChargeAmount);
+  const historicalAppliedMinimum = Number(current.amount);
+  const pricing = {
+    ...currentPricing,
+    pricePerWh: Number.isFinite(snapshotRate) && snapshotRate > 0
+      ? snapshotRate
+      : currentPricing.pricePerWh,
+    minimumCharge:
+      current.minimumChargeAmount !== null &&
+      current.minimumChargeAmount !== undefined &&
+      Number.isFinite(snapshotMinimum) &&
+      snapshotMinimum >= 0
+        ? snapshotMinimum
+        : current.minimumChargeApplied &&
+            Number.isFinite(historicalAppliedMinimum) &&
+            historicalAppliedMinimum >= 0
+          ? historicalAppliedMinimum
+          : currentPricing.minimumCharge
+  };
   const calculation = calculateFallbackAmount(current, pricing);
   const stopMeterValue = Math.max(
     Number(current.stopMeterValue) || 0,
@@ -113,6 +142,7 @@ async function completeOfflineTransaction(
       productionCostPerWh: revenue.productionCostPerWh,
       partnerSharePercent: revenue.partnerSharePercent,
       minimumChargeApplied: calculation.grossAmount < calculation.amount,
+      minimumChargeAmount: pricing.minimumCharge,
       productionCostAmount: revenue.productionCostAmount,
       profitAmount: revenue.profitAmount,
       partnerEarning: revenue.partnerEarning,
