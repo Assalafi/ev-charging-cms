@@ -3068,6 +3068,13 @@ async function handleBootNotification(chargePointId, uniqueId, payload) {
           type: sequelize.QueryTypes.INSERT,
         }
       )
+      if (payload.firmwareVersion) {
+        await require('../services/firmwareUpdateService')
+          .recordBootFirmwareVersion(chargePointId, payload.firmwareVersion, new Date())
+          .catch(error => logger.warn(
+            `Unable to correlate firmware version from BootNotification for ${chargePointId}: ${error.message}`
+          ))
+      }
     } catch (dbError) {
       logger.error(
         `Database error during BootNotification from ${chargePointId}:`,
@@ -3593,6 +3600,12 @@ async function handleFirmwareStatusNotification(
 
     // Extract status from payload
     const status = payload.status || "Idle"
+
+    await require('../services/firmwareUpdateService')
+      .recordFirmwareStatus(chargePointId, status, new Date())
+      .catch(error => logger.warn(
+        `Unable to persist firmware status ${status} for ${chargePointId}: ${error.message}`
+      ))
 
     // Publish firmware status to MQTT
     if (mqttClient) {

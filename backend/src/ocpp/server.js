@@ -676,6 +676,15 @@ async function handleOcppMessage(chargePointId, data, ws) {
                             timestamp: new Date()
                         });
 
+                        // UpdateFirmware.conf is intentionally empty in OCPP
+                        // 1.6. Correlate it by message ID, while the later
+                        // FirmwareStatusNotification frames report progress.
+                        require('../services/firmwareUpdateService')
+                            .recordCommandResponse(chargePointId, uniqueId, { success: true })
+                            .catch(error => logger.warn(
+                                `Unable to record firmware command acknowledgement ${uniqueId}: ${error.message}`
+                            ));
+
                         // A rejected RemoteStopTransaction is not proof that the
                         // physical session stopped. Never complete or bill the
                         // database row here: recovery rows may use an internal
@@ -720,6 +729,15 @@ async function handleOcppMessage(chargePointId, data, ws) {
                             direction: 'Inbound',
                             timestamp: new Date()
                         });
+
+                        require('../services/firmwareUpdateService')
+                            .recordCommandResponse(chargePointId, uniqueId, {
+                                success: false,
+                                message: [data[2], data[3]].filter(Boolean).join(': ') || 'OCPP command error'
+                            })
+                            .catch(error => logger.warn(
+                                `Unable to record firmware command failure ${uniqueId}: ${error.message}`
+                            ));
 
                         // Publish error to MQTT
                         mqttClient.publish(`ocpp/${chargePointId}/error/${uniqueId}`, JSON.stringify({
@@ -824,7 +842,7 @@ async function processOcppMessage(chargePointId, data, ws) {
 /**
  * Send an OCPP request to a charging station
  */
-async function sendOcppRequest(chargePointId, action, payload) {
+async function sendOcppRequest(chargePointId, action, payload, options = {}) {
     try {
         // Check if the station is connected
         if (!isConnected(chargePointId)) {
@@ -896,7 +914,7 @@ async function sendOcppRequest(chargePointId, action, payload) {
         }
 
         // Special case handling for specific commands
-        const request = [2, uuidv4(), action, normalizedPayload];
+        const request = [2, options.messageId || uuidv4(), action, normalizedPayload];
 
         // Log the outgoing request
         await OcppMessage.create({

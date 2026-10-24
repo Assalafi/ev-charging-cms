@@ -36,6 +36,7 @@ const PaymentTransaction = require('./PaymentTransaction')(sequelize);
 const PaymentSettings = require('./PaymentSettings')(sequelize);
 const Reservation = require('./Reservation')(sequelize);
 const AdsBoard = require('./AdsBoard')(sequelize);
+const FirmwareUpdate = require('./FirmwareUpdate')(sequelize);
 
 // Company subscription models
 const SubscriptionCompany = require('./SubscriptionCompany')(sequelize);
@@ -170,6 +171,7 @@ module.exports = {
   PaymentSettings,
   Reservation,
   AdsBoard,
+  FirmwareUpdate,
   SubscriptionCompany,
   CompanyWallet,
   CompanyWalletTransaction,

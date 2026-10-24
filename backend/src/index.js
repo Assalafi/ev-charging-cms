@@ -116,7 +116,12 @@ const publicAssetOptions = {
 app.use('/public', express.static(uploadsDirectory, publicAssetOptions));
 // Legacy/mobile ad URLs use /uploads; keep them served from the same canonical directory.
 app.use('/uploads', express.static(uploadsDirectory, publicAssetOptions));
-app.use('/firmware', express.static(process.env.FIRMWARE_DIR || './uploads/firmware'));
+const firmwareDirectory = process.env.FIRMWARE_DIR || './uploads/firmware';
+app.use('/firmware', express.static(firmwareDirectory, publicAssetOptions));
+// Public OCPP download path. Keeping this below the API prefix lets deployments
+// with an existing /api reverse-proxy rule serve firmware without another
+// public Nginx location, while /firmware remains available for compatibility.
+app.use(`${apiPrefix.replace(/\/$/, '')}/firmware`, express.static(firmwareDirectory, publicAssetOptions));
 
 // ======================
 // Monitoring

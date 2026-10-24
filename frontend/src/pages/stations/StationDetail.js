@@ -49,6 +49,7 @@ import {
   BatteryChargingFull as BatteryChargingFullIcon,
   CheckCircle as CheckCircleIcon,
   History as HistoryIcon,
+  SystemUpdateAlt as FirmwareIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import api from '../../services/api';
@@ -58,6 +59,8 @@ import stationService from '../../services/stationService';
 import remoteCommandService from '../../services/remoteCommandService';
 import tagService from '../../services/tagService';
 import RemoteCommandPanel from '../../components/RemoteCommandPanel';
+import StationFirmwarePanel from './StationFirmwarePanel';
+import { useAuth } from '../../contexts/AuthContext';
 
 // Helper function to get API base URL
 const getApiBaseUrl = () =>
@@ -98,6 +101,8 @@ function StationDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const { stationStatus, mqtt, subscribe, unsubscribe } = useMQTT();
+  const { hasPermission } = useAuth();
+  const canManageFirmware = hasPermission('stations.update');
 
   // State
   const [station, setStation] = useState(null);
@@ -1466,6 +1471,8 @@ function StationDetail() {
       setTabValue(3);
     } else if (location.state?.tab === 'activity') {
       setTabValue(1);
+    } else if (location.state?.tab === 'firmware') {
+      setTabValue(4);
     }
   }, [location.state]);
 
@@ -1559,6 +1566,11 @@ function StationDetail() {
             </Stack>
           </Box>
           <Stack direction="row" gap={1}>
+            {canManageFirmware && !isEditing && (
+              <Button variant="contained" color="inherit" startIcon={<FirmwareIcon />} onClick={() => setTabValue(4)} sx={{ color: '#0B5D49' }}>
+                Firmware
+              </Button>
+            )}
             {isEditing ? <>
               <Button variant="contained" color="inherit" startIcon={<SaveIcon />} onClick={handleSaveStation} sx={{ color: '#0B5D49' }}>Save</Button>
               <Button variant="outlined" startIcon={<CancelIcon />} onClick={handleEditToggle} sx={{ color: 'white', borderColor: 'rgba(255,255,255,.5)' }}>Cancel</Button>
@@ -1609,6 +1621,7 @@ function StationDetail() {
           <Tab icon={<HistoryIcon />} iconPosition="start" label="Activity" />
           <Tab label="Transactions" />
           <Tab label="OCPP Messages" />
+          <Tab icon={<FirmwareIcon />} iconPosition="start" label="Firmware" />
         </Tabs>
         {/* Details Tab */}{' '}
         <TabPanel value={tabValue} index={0}>
@@ -2788,6 +2801,14 @@ function StationDetail() {
             </CardContent>{' '}
           </Card>{' '}
         </TabPanel>{' '}
+        <TabPanel value={tabValue} index={4}>
+          <StationFirmwarePanel
+            stationId={stationId}
+            station={station}
+            canManage={canManageFirmware}
+            onStationRefresh={fetchStationDetailsUpdate}
+          />
+        </TabPanel>
         {/* Reconciliation is intentionally hidden until charger-side export is supported. */}
         <TabPanel value={tabValue} index={-2}>
           <Card

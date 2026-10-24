@@ -1,9 +1,14 @@
 const express = require('express');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
 const {
     ChargingStation,
     Transaction,
     OcppMessage,
     Connector,
+    FirmwareUpdate,
     sequelize
 } = require('../models');
 const { Op } = require('sequelize');
@@ -16,6 +21,142 @@ const { scopedStationWhere, scopedTransactionWhere, accessibleLocationIds } = re
 const { resolveCanonicalOcppTransactionId } = require('../services/ocppTransactionResolver');
 
 const router = express.Router();
+
+const FIRMWARE_EXTENSIONS = new Set([
+    '.bin', '.fw', '.hex', '.img', '.ota', '.zip', '.tar', '.gz', '.tgz'
+]);
+const FIRMWARE_TERMINAL_STATUSES = ['Installed', 'DownloadFailed', 'InstallationFailed', 'CommandFailed'];
+const firmwareMaxBytes = Math.max(
+    1,
+    Number.parseInt(process.env.FIRMWARE_MAX_FILE_SIZE_MB || '250', 10)
+) * 1024 * 1024;
+
+function firmwareDirectory() {
+    return path.resolve(process.env.FIRMWARE_DIR || path.join(process.cwd(), 'uploads', 'firmware'));
+}
+
+function cleanupFirmwareFile(file) {
+    if (!file?.path) return;
+    try {
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    } catch (error) {
+        logger.warn(`Unable to remove rejected firmware file ${file.filename}: ${error.message}`);
+    }
+}
+
+const firmwareUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, callback) => {
+            const directory = firmwareDirectory();
+            fs.mkdirSync(directory, { recursive: true });
+            callback(null, directory);
+        },
+        filename: (req, file, callback) => {
+            const extension = path.extname(file.originalname || '').toLowerCase();
+            callback(null, `firmware-${Date.now()}-${crypto.randomUUID()}${extension}`);
+        }
+    }),
+    limits: { fileSize: firmwareMaxBytes, files: 1 },
+    fileFilter: (req, file, callback) => {
+        const extension = path.extname(file.originalname || '').toLowerCase();
+        if (!FIRMWARE_EXTENSIONS.has(extension)) {
+            return callback(new Error(`Firmware file must use one of: ${[...FIRMWARE_EXTENSIONS].join(', ')}`));
+        }
+        callback(null, true);
+    }
+});
+
+function parseFirmwareUpload(req, res, next) {
+    firmwareUpload.single('firmware')(req, res, error => {
+        if (!error) return next();
+        const message = error.code === 'LIMIT_FILE_SIZE'
+            ? `Firmware file must not exceed ${Math.round(firmwareMaxBytes / 1024 / 1024)} MB`
+            : error.message || 'Invalid firmware upload';
+        return res.status(400).json({ success: false, message });
+    });
+}
+
+async function sha256File(filename) {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256');
+        const input = fs.createReadStream(filename);
+        input.on('error', reject);
+        input.on('data', chunk => hash.update(chunk));
+        input.on('end', () => resolve(hash.digest('hex')));
+    });
+}
+
+function publicFirmwareUrl(req, filename) {
+    const configuredBase = String(process.env.FIRMWARE_PUBLIC_BASE_URL || '').trim();
+    const base = configuredBase || `${req.protocol}://${req.get('host')}/api/firmware`;
+    return `${base.replace(/\/$/, '')}/${encodeURIComponent(filename)}`;
+}
+
+function parseIntegerInRange(value, fallback, min, max) {
+    if (value === undefined || value === null || value === '') return fallback;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : null;
+}
+
+function validateFirmwareLocation(value) {
+    const location = String(value || '').trim();
+    if (!location || location.length > 4096) return null;
+    try {
+        const parsed = new URL(location);
+        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+        return parsed.toString();
+    } catch (_) {
+        return null;
+    }
+}
+
+async function requireSafeFirmwareTarget(req, res, next) {
+    try {
+        const station = await ChargingStation.findOne({ where: { chargePointId: req.params.id } });
+        if (!station) {
+            return res.status(404).json({ success: false, message: 'Charging station not found' });
+        }
+        if (!ocppServer.isConnected(station.chargePointId)) {
+            return res.status(409).json({
+                success: false,
+                code: 'STATION_OFFLINE',
+                message: 'The station must be connected before a firmware command can be delivered'
+            });
+        }
+        const activeSessions = await Transaction.count({
+            where: { chargePointId: station.chargePointId, status: 'InProgress' }
+        });
+        if (activeSessions > 0) {
+            return res.status(409).json({
+                success: false,
+                code: 'ACTIVE_CHARGING_SESSION',
+                message: 'Stop the active charging session before updating firmware'
+            });
+        }
+        const activeFirmwareUpdate = await FirmwareUpdate.findOne({
+            where: {
+                chargePointId: station.chargePointId,
+                status: { [Op.notIn]: FIRMWARE_TERMINAL_STATUSES },
+                [Op.or]: [
+                    { requestedAt: { [Op.gte]: new Date(Date.now() - (72 * 60 * 60 * 1000)) } },
+                    { retrieveDate: { [Op.gte]: new Date(Date.now() - (60 * 60 * 1000)) } }
+                ]
+            },
+            order: [['requestedAt', 'DESC']]
+        });
+        if (activeFirmwareUpdate) {
+            return res.status(409).json({
+                success: false,
+                code: 'FIRMWARE_UPDATE_IN_PROGRESS',
+                message: `Firmware update #${activeFirmwareUpdate.id} is still ${activeFirmwareUpdate.status}`
+            });
+        }
+        req.firmwareStation = station;
+        return next();
+    } catch (error) {
+        return next(error);
+    }
+}
 
 function requireStationStateAccess(param = 'id') {
     return async (req, res, next) => {
@@ -940,6 +1081,204 @@ router.get('/:id/activity', authenticate, requireStationStateAccess(), async (re
         res.status(500).json({ success: false, message: 'Failed to retrieve station activity' });
     }
 });
+
+/**
+ * @route   GET /api/stations/:id/firmware
+ * @desc    Get durable firmware update state and OCPP firmware status history
+ * @access  Private
+ */
+router.get('/:id/firmware', authenticate, requirePermission('stations.view'), requireStationStateAccess(), async (req, res) => {
+    try {
+        const chargePointId = req.params.id;
+        const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
+        const station = await ChargingStation.findOne({
+            where: { chargePointId },
+            attributes: ['chargePointId', 'name', 'model', 'vendor', 'firmwareVersion', 'currentTransaction']
+        });
+        if (!station) {
+            return res.status(404).json({ success: false, message: 'Charging station not found' });
+        }
+
+        const [updates, latestUpdate, statusEvents, activeSessions] = await Promise.all([
+            FirmwareUpdate.findAndCountAll({
+                where: { chargePointId },
+                order: [['requestedAt', 'DESC'], ['id', 'DESC']],
+                limit,
+                offset: (page - 1) * limit
+            }),
+            FirmwareUpdate.findOne({
+                where: { chargePointId },
+                order: [['requestedAt', 'DESC'], ['id', 'DESC']]
+            }),
+            OcppMessage.findAll({
+                where: {
+                    chargePointId,
+                    direction: 'Inbound',
+                    message_type: 'FirmwareStatusNotification'
+                },
+                attributes: ['id', 'messageId', 'status', 'payload', 'createdAt', 'processedAt', 'processingError'],
+                order: [['createdAt', 'DESC']],
+                limit: 30
+            }),
+            Transaction.count({ where: { chargePointId, status: 'InProgress' } })
+        ]);
+
+        return res.json({
+            success: true,
+            station: {
+                ...station.toJSON(),
+                isConnected: ocppServer.isConnected(chargePointId),
+                hasActiveSession: activeSessions > 0
+            },
+            latest: latestUpdate,
+            updates: updates.rows,
+            count: updates.count,
+            page,
+            limit,
+            statusEvents,
+            generatedAt: new Date().toISOString()
+        });
+    } catch (error) {
+        logger.error(`Error fetching firmware history for ${req.params.id}:`, error);
+        return res.status(500).json({ success: false, message: 'Failed to retrieve firmware history' });
+    }
+});
+
+/**
+ * @route   POST /api/stations/:id/firmware/update
+ * @desc    Upload or reference firmware and dispatch an OCPP 1.6 UpdateFirmware request
+ * @access  Private/Station managers
+ */
+router.post(
+    '/:id/firmware/update',
+    authenticate,
+    requirePermission('stations.update'),
+    requireStationStateAccess(),
+    requireSafeFirmwareTarget,
+    parseFirmwareUpload,
+    async (req, res) => {
+        let update = null;
+        try {
+            const chargePointId = req.params.id;
+            const uploadedLocation = req.file ? publicFirmwareUrl(req, req.file.filename) : null;
+            const location = uploadedLocation || validateFirmwareLocation(req.body.location);
+            if (!location) {
+                cleanupFirmwareFile(req.file);
+                return res.status(400).json({
+                    success: false,
+                    message: 'Provide a valid HTTP(S) firmware URL or select a supported firmware file'
+                });
+            }
+
+            const retries = parseIntegerInRange(req.body.retries, 0, 0, 10);
+            const retryInterval = parseIntegerInRange(req.body.retryInterval, 0, 0, 86400);
+            if (retries === null || retryInterval === null) {
+                cleanupFirmwareFile(req.file);
+                return res.status(400).json({
+                    success: false,
+                    message: 'Retries must be 0–10 and retry interval must be 0–86,400 seconds'
+                });
+            }
+
+            const now = Date.now();
+            let retrieveDate = req.body.retrieveDate ? new Date(req.body.retrieveDate) : new Date(now + 10000);
+            if (Number.isNaN(retrieveDate.getTime())) {
+                cleanupFirmwareFile(req.file);
+                return res.status(400).json({ success: false, message: 'Retrieve date is invalid' });
+            }
+            if (retrieveDate.getTime() < now - 60000) {
+                cleanupFirmwareFile(req.file);
+                return res.status(400).json({ success: false, message: 'Retrieve date cannot be in the past' });
+            }
+            if (retrieveDate.getTime() < now) retrieveDate = new Date(now + 10000);
+            if (retrieveDate.getTime() > now + (365 * 24 * 60 * 60 * 1000)) {
+                cleanupFirmwareFile(req.file);
+                return res.status(400).json({ success: false, message: 'Retrieve date cannot be more than one year ahead' });
+            }
+
+            const targetVersion = String(req.body.targetVersion || '').trim().slice(0, 255) || null;
+            const releaseNotes = String(req.body.releaseNotes || '').trim().slice(0, 2000) || null;
+            const checksumSha256 = req.file ? await sha256File(req.file.path) : null;
+
+            const requestMessageId = crypto.randomUUID();
+            update = await FirmwareUpdate.create({
+                chargePointId,
+                requestMessageId,
+                location,
+                source: req.file ? 'upload' : 'url',
+                targetVersion,
+                originalFilename: req.file?.originalname || null,
+                storageFilename: req.file?.filename || null,
+                fileSize: req.file?.size || null,
+                checksumSha256,
+                retrieveDate,
+                retries,
+                retryInterval,
+                status: 'Dispatching',
+                requestedBy: req.user?.id || null,
+                requestedByName: req.user?.name || req.user?.username || null,
+                requestedAt: new Date(),
+                currentFirmwareVersion: req.firmwareStation.firmwareVersion || null,
+                metadata: releaseNotes ? { releaseNotes } : null
+            });
+
+            const result = await ocppServer.sendOcppRequest(
+                chargePointId,
+                'UpdateFirmware',
+                {
+                    location,
+                    retrieveDate: retrieveDate.toISOString(),
+                    retries,
+                    retryInterval
+                },
+                { messageId: requestMessageId }
+            );
+
+            if (!result.success) {
+                await update.update({
+                    status: 'CommandFailed',
+                    statusMessage: result.error || 'The firmware command could not be delivered',
+                    failedAt: new Date(),
+                    lastStatusAt: new Date()
+                });
+                return res.status(409).json({
+                    success: false,
+                    message: result.error || 'The firmware command could not be delivered',
+                    update
+                });
+            }
+
+            await FirmwareUpdate.update(
+                {
+                    status: 'CommandSent',
+                    statusMessage: 'OCPP UpdateFirmware command delivered to the station socket',
+                    lastStatusAt: new Date()
+                },
+                { where: { id: update.id, status: 'Dispatching' } }
+            );
+            await update.reload();
+
+            return res.status(202).json({
+                success: true,
+                message: 'Firmware update command sent. Progress will update when the station reports its status.',
+                update
+            });
+        } catch (error) {
+            if (!update) cleanupFirmwareFile(req.file);
+            if (update) {
+                await update.update({
+                    status: 'CommandFailed',
+                    statusMessage: String(error.message || error).slice(0, 2000),
+                    failedAt: new Date(),
+                    lastStatusAt: new Date()
+                }).catch(() => {});
+            }
+            logger.error(`Error dispatching firmware update for ${req.params.id}:`, error);
+            return res.status(500).json({ success: false, message: 'Failed to dispatch firmware update' });
+        }
+    }
+);
 
 /**
  * @route   POST /api/stations/:id/remote-start

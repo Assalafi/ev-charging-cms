@@ -172,6 +172,31 @@ const stationService = {
     return response.data;
   },
 
+  getFirmwareHistory: async (stationId, params = {}) => {
+    const response = await api.get(`/stations/${stationId}/firmware`, { params });
+    return response.data;
+  },
+
+  updateFirmware: async (stationId, details, onProgress) => {
+    const formData = new FormData();
+    if (details.file) formData.append('firmware', details.file);
+    if (details.location) formData.append('location', details.location);
+    if (details.targetVersion) formData.append('targetVersion', details.targetVersion);
+    if (details.retrieveDate) formData.append('retrieveDate', details.retrieveDate);
+    formData.append('retries', String(details.retries ?? 0));
+    formData.append('retryInterval', String(details.retryInterval ?? 0));
+    if (details.releaseNotes) formData.append('releaseNotes', details.releaseNotes);
+
+    const response = await api.post(`/stations/${stationId}/firmware/update`, formData, {
+      timeout: 300000,
+      onUploadProgress: event => {
+        if (!onProgress || !event.total) return;
+        onProgress(Math.round((event.loaded * 100) / event.total));
+      }
+    });
+    return response.data;
+  },
+
   /**
    * Get station connectors and their status
    * @param {string} stationId - Station ID
