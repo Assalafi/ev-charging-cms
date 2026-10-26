@@ -103,7 +103,7 @@ function validateFirmwareLocation(value) {
     if (!location || location.length > 4096) return null;
     try {
         const parsed = new URL(location);
-        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+        if (!['http:', 'https:', 'ftp:', 'ftps:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
         return parsed.toString();
     } catch (_) {
         return null;
@@ -1167,7 +1167,7 @@ router.post(
                 cleanupFirmwareFile(req.file);
                 return res.status(400).json({
                     success: false,
-                    message: 'Provide a valid HTTP(S) firmware URL or select a supported firmware file'
+                    message: 'Provide a valid HTTP(S)/FTP(S) firmware URL or select a supported firmware file'
                 });
             }
 

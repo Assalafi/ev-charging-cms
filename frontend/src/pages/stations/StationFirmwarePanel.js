@@ -148,7 +148,7 @@ function StationFirmwarePanel({ stationId, station, canManage = false, onStation
           : '';
 
   const formValid = useMemo(() => {
-    const sourceReady = form.source === 'upload' ? Boolean(form.file) : /^https?:\/\//i.test(form.location.trim());
+    const sourceReady = form.source === 'upload' ? Boolean(form.file) : /^(https?|ftps?):\/\//i.test(form.location.trim());
     const scheduleReady = form.scheduleMode === 'now' || Boolean(form.retrieveDate);
     return sourceReady && scheduleReady && Boolean(form.targetVersion.trim()) && !blockedReason;
   }, [form, blockedReason]);
@@ -265,7 +265,7 @@ function StationFirmwarePanel({ stationId, station, canManage = false, onStation
               <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={2} mb={2.5}>
                 <Box>
                   <Typography variant="h6" fontWeight={800}>Start a firmware update</Typography>
-                  <Typography variant="body2" color="text.secondary">Upload a package or provide the vendor’s public download URL.</Typography>
+                  <Typography variant="body2" color="text.secondary">Upload a package or provide the vendor’s HTTP(S)/FTP(S) download URL.</Typography>
                 </Box>
                 <SecurityIcon color="success" />
               </Stack>
@@ -279,7 +279,7 @@ function StationFirmwarePanel({ stationId, station, canManage = false, onStation
                 </ToggleButtonGroup>
 
                 {form.source === 'url' ? (
-                  <TextField name="location" label="Firmware download URL" value={form.location} onChange={updateForm} fullWidth placeholder="https://vendor.example/firmware/v2.4.1.bin" helperText="The URL must be reachable directly by the charge point." />
+                  <TextField name="location" label="Firmware download URL" value={form.location} onChange={updateForm} fullWidth placeholder="ftp://host:21/firmware/v3.20.bin" helperText="The URL must be reachable directly by the charge point; FTP credentials must already be configured on the charger." />
                 ) : (
                   <Box sx={{ border: '1px dashed', borderColor: form.file ? 'success.main' : 'divider', borderRadius: 2.5, p: 2, bgcolor: form.file ? 'success.50' : 'action.hover' }}>
                     <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ sm: 'center' }} justifyContent="space-between" gap={1.5}>
