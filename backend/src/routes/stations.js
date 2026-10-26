@@ -103,7 +103,12 @@ function validateFirmwareLocation(value) {
     if (!location || location.length > 4096) return null;
     try {
         const parsed = new URL(location);
-        if (!['http:', 'https:', 'ftp:', 'ftps:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+        const ftpProtocol = ['ftp:', 'ftps:'].includes(parsed.protocol);
+        if (!['http:', 'https:', 'ftp:', 'ftps:'].includes(parsed.protocol)) return null;
+        // HTTP(S) locations must remain credential-free. FTP credentials are
+        // supported for chargers that cannot receive FTP settings through OCPP.
+        if (!ftpProtocol && (parsed.username || parsed.password)) return null;
+        if (ftpProtocol && (!parsed.username || !parsed.password)) return null;
         return parsed.toString();
     } catch (_) {
         return null;
