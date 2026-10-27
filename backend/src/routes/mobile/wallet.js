@@ -30,7 +30,7 @@ async function mobileAuth(req, res, next) {
       logger.warn('Mobile wallet auth failed: Invalid mobile token structure', { path: req.path, decoded });
       throw new Error('Invalid mobile token');
     }
-    const user = await MobileUser.findByPk(decoded.id, { attributes: ['id', 'name', 'email', 'phone', 'tagId', 'active', 'status', 'companyId'] });
+    const user = await MobileUser.findByPk(decoded.id, { attributes: ['id', 'name', 'email', 'phone', 'tagId', 'legacyTagId', 'active', 'status', 'companyId'] });
     if (!user || !user.active || user.status !== 'active') {
       return res.status(401).json({ success: false, message: 'Mobile account is inactive or suspended' });
     }

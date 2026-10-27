@@ -46,7 +46,9 @@ const RemoteCommandPanel = ({ station, onSuccess, onError }) => {
   const [resetType, setResetType] = useState('Soft');
   const [configKey, setConfigKey] = useState('');
   const [configValue, setConfigValue] = useState('');
-  const [idTag, setIdTag] = useState('TAG001');
+  // Do not prefill a legacy/test tag. The charger fleet now requires the
+  // vendor-compatible D-format (D + 9 hexadecimal characters).
+  const [idTag, setIdTag] = useState('');
   const [connectorId, setConnectorId] = useState(1);
   const [requestedMessage, setRequestedMessage] = useState('StatusNotification');
   const [transactionId, setTransactionId] = useState('');
@@ -481,7 +483,7 @@ const RemoteCommandPanel = ({ station, onSuccess, onError }) => {
                 size="small"
                 fullWidth
                 sx={{ mb: 1 }}
-                placeholder="e.g. TAG001"
+                placeholder="e.g. D1407A34DF"
               />
               <Button
                 variant="outlined"

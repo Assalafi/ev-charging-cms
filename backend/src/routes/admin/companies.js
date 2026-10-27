@@ -26,6 +26,7 @@ const {
   transferCompanyFundsToUser,
   recoverUserFundsToCompany
 } = require('../../services/companyFundingService');
+const { generateChargerTag, tagAliases } = require('../../services/chargerTagService');
 
 const router = express.Router();
 
@@ -169,11 +170,6 @@ function validateCompanyBilling(payload, { requirePricing = false } = {}) {
   }
 }
 
-function phoneToTagId(phone) {
-  const digits = String(phone || '').replace(/\D/g, '');
-  return `MOB${digits.slice(-10)}`;
-}
-
 function serializeCompany(company) {
   const value = company.toJSON ? company.toJSON() : company;
   return {
@@ -303,7 +299,8 @@ router.get('/:companyId/users', authenticate, requirePermission('companies.view'
         { name: { [Op.iLike]: search } },
         { email: { [Op.iLike]: search } },
         { phone: { [Op.iLike]: search } },
-        { tagId: { [Op.iLike]: search } }
+        { tagId: { [Op.iLike]: search } },
+        { legacyTagId: { [Op.iLike]: search } }
       ];
     }
     const { count, rows } = await MobileUser.findAndCountAll({
@@ -369,14 +366,7 @@ router.post('/:companyId/users', authenticate, requirePermission('companies.mana
     const existing = await MobileUser.findOne({ where: { [Op.or]: [{ phone }, { email }] } });
     if (existing) return res.status(409).json({ success: false, message: 'A mobile user with that phone or email already exists' });
     const user = await sequelize.transaction(async transaction => {
-      const baseTagId = phoneToTagId(phone) || `MOB${Date.now()}`;
-      const [existingUserTag, existingAuthorizedTag] = await Promise.all([
-        MobileUser.findOne({ where: { tagId: baseTagId }, transaction }),
-        AuthorizedTag.findOne({ where: { tagId: baseTagId }, transaction })
-      ]);
-      const tagId = existingUserTag || existingAuthorizedTag
-        ? `${baseTagId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
-        : baseTagId;
+      const tagId = await generateChargerTag({ transaction });
       const created = await MobileUser.create({ name, phone, email: String(email).toLowerCase(), password, tagId, companyId: company.id, active: true, status: 'active' }, { transaction });
       await Wallet.create({ userId: created.id, balance: 0, currency: 'NGN' }, { transaction });
       try {
@@ -402,8 +392,7 @@ router.put('/:companyId/users/:userId/status', authenticate, requirePermission('
     const user = await MobileUser.findOne({ where: { id: req.params.userId, companyId: req.params.companyId } });
     if (!user) return res.status(404).json({ success: false, message: 'Company mobile user not found' });
     await user.update({ status, active: status === 'active', deletedAt: status === 'deleted' ? new Date() : null });
-    const tag = await AuthorizedTag.findOne({ where: { tagId: user.tagId } });
-    if (tag) await tag.update({ status: status === 'active' ? 'Active' : 'Blocked', blocked: status !== 'active' });
+    await AuthorizedTag.update({ status: status === 'active' ? 'Active' : 'Blocked', blocked: status !== 'active' }, { where: { tagId: { [Op.in]: tagAliases(user) } } });
     const safeUser = user.toJSON();
     delete safeUser.password;
     res.json({ success: true, message: `Mobile user ${status} successfully`, user: safeUser });
@@ -518,10 +507,10 @@ router.get('/:companyId/activity', authenticate, requirePermission('companies.vi
       getPartnerDateRange({ range: 'weekly' }),
       getPartnerDateRange({ range: 'monthly' }),
       getPartnerDateRange({ range: 'yearly' }),
-      MobileUser.findAll({ where: { companyId: company.id }, attributes: ['id', 'tagId', 'name', 'email', 'phone'], raw: true })
+      MobileUser.findAll({ where: { companyId: company.id }, attributes: ['id', 'tagId', 'legacyTagId', 'name', 'email', 'phone'], raw: true })
     ]);
     const userIds = users.map(user => user.id).filter(Number.isInteger);
-    const tagIds = users.map(user => user.tagId).filter(Boolean);
+    const tagIds = [...new Set(users.flatMap(user => [user.tagId, user.legacyTagId]).filter(Boolean))];
 
     const [todaySummary, weekSummary, monthSummary, yearSummary, lifetimeSummary, selectedSummary] = await Promise.all([
       companyActivitySummary({ tagIds, userIds, companyId: company.id, start: today.start, end: today.end }),

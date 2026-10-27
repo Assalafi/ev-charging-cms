@@ -19,13 +19,20 @@ module.exports = {
 
     await queryInterface.addIndex('transactions', ['userId']);
 
-    // Backfill userId for existing transactions by matching idTag to mobile_user.tagId
+    // Backfill by either current or preserved legacy tag. This remains
+    // compatible with databases that predate the charger-tag alias column.
+    const [legacyColumn] = await queryInterface.sequelize.query(`
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'mobile_users' AND column_name = 'legacy_tag_id'
+      LIMIT 1
+    `);
+    const legacyMatch = legacyColumn.length ? 'OR t."idTag" = mu."legacy_tag_id"' : '';
     await queryInterface.sequelize.query(`
       UPDATE transactions t
-      SET userId = mu.id
+      SET "userId" = mu.id
       FROM mobile_users mu
-      WHERE t.idTag = mu.tagId
-      AND t.userId IS NULL
+      WHERE (t."idTag" = mu."tagId" ${legacyMatch})
+      AND t."userId" IS NULL
     `);
 
     console.log('Migration completed: Added userId to transactions and backfilled existing records');

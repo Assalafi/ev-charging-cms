@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { MobileUser, AuthorizedTag, Transaction, SubscriptionCompany } = require('../../models');
+const { Op } = require('sequelize');
+const { tagAliases } = require('../../services/chargerTagService');
 const { authenticate } = require('../../middleware/auth');
 const { requirePermission } = require('../../middleware/permissions');
 const logger = require('../../utils/logger');
@@ -19,7 +21,9 @@ router.get('/', authenticate, requirePermission('mobile_users.view'), async (req
           [require('sequelize').Op.or]: [
             { name: { [require('sequelize').Op.iLike]: `%${search}%` } },
             { email: { [require('sequelize').Op.iLike]: `%${search}%` } },
-            { phone: { [require('sequelize').Op.iLike]: `%${search}%` } }
+            { phone: { [require('sequelize').Op.iLike]: `%${search}%` } },
+            { tagId: { [require('sequelize').Op.iLike]: `%${search}%` } },
+            { legacyTagId: { [require('sequelize').Op.iLike]: `%${search}%` } }
           ]
         },
         { status: { [require('sequelize').Op.ne]: 'deleted' } }
@@ -43,6 +47,13 @@ router.get('/', authenticate, requirePermission('mobile_users.view'), async (req
           order: [['startTime', 'DESC']]
         },
         {
+          model: Transaction,
+          as: 'legacyTransactions',
+          attributes: ['transactionId', 'startTime', 'stopTime', 'energyDelivered', 'amount', 'status'],
+          limit: 5,
+          order: [['startTime', 'DESC']]
+        },
+        {
           model: SubscriptionCompany,
           as: 'company',
           attributes: ['id', 'name', 'status'],
@@ -55,6 +66,16 @@ router.get('/', authenticate, requirePermission('mobile_users.view'), async (req
     });
 
     const totalPages = Math.ceil(count / limit);
+
+    // Present one chronological history to the admin even though the two
+    // associations are kept separate internally (canonical vs legacy tag).
+    users.forEach(user => {
+      const combined = [...(user.transactions || []), ...(user.legacyTransactions || [])]
+        .sort((left, right) => new Date(right.startTime || 0) - new Date(left.startTime || 0))
+        .slice(0, 5);
+      user.setDataValue('transactions', combined);
+      user.setDataValue('legacyTransactions', undefined);
+    });
 
     res.json({
       success: true,
@@ -130,6 +151,11 @@ router.get('/:id', authenticate, requirePermission('mobile_users.view'), async (
           model: Transaction,
           as: 'transactions',
           order: [['startTime', 'DESC']]
+        },
+        {
+          model: Transaction,
+          as: 'legacyTransactions',
+          order: [['startTime', 'DESC']]
         }
       ]
     });
@@ -140,6 +166,11 @@ router.get('/:id', authenticate, requirePermission('mobile_users.view'), async (
         message: 'User not found'
       });
     }
+
+    const combinedTransactions = [...(user.transactions || []), ...(user.legacyTransactions || [])]
+      .sort((left, right) => new Date(right.startTime || 0) - new Date(left.startTime || 0));
+    user.setDataValue('transactions', combinedTransactions);
+    user.setDataValue('legacyTransactions', undefined);
 
     res.json({
       success: true,
@@ -185,12 +216,11 @@ router.put('/:id/status', authenticate, requirePermission('mobile_users.manage')
       });
     }
 
-    // Also update the associated tag status
-    if (user.authorizedTag) {
-      await user.authorizedTag.update({
-        status: status === 'active' ? 'Active' : 'Blocked'
-      });
-    }
+    // Keep both the canonical and historical alias credentials in sync.
+    await AuthorizedTag.update({
+      status: status === 'active' ? 'Active' : 'Blocked',
+      blocked: status !== 'active'
+    }, { where: { tagId: { [Op.in]: tagAliases(user) } } });
 
     res.json({
       success: true,

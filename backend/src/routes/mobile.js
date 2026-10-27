@@ -1,13 +1,17 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
-const { MobileUser, AuthorizedTag, ChargingStation, Transaction, Connector, Location, Wallet, SubscriptionCompany } = require('../models');
+const { sequelize, MobileUser, AuthorizedTag, ChargingStation, Transaction, Connector, Location, Wallet, SubscriptionCompany } = require('../models');
 const logger = require('../utils/logger');
 const ocppServer = require('../ocpp/server');
 const { getChargingPricing } = require('../services/chargingPricingService');
 const {
   resolveCanonicalOcppTransactionId,
 } = require('../services/ocppTransactionResolver');
+const {
+  tagAliases,
+  generateChargerTag
+} = require('../services/chargerTagService');
 
 const router = express.Router();
 
@@ -42,7 +46,7 @@ async function mobileAuth(req, res, next) {
       throw new Error('Invalid mobile token');
     }
     const user = await MobileUser.findByPk(decoded.id, {
-      attributes: ['id', 'name', 'email', 'phone', 'tagId', 'active', 'status', 'companyId']
+      attributes: ['id', 'name', 'email', 'phone', 'tagId', 'legacyTagId', 'active', 'status', 'companyId']
     });
     if (!user || !user.active || user.status !== 'active') {
       return res.status(401).json({ success: false, message: 'Mobile account is inactive or suspended' });
@@ -66,12 +70,6 @@ async function mobileAuth(req, res, next) {
 }
 
 // ─── Helper: generate tagId from phone ───────────────────────────────────────
-function phoneToTagId(phone) {
-  // Remove all non-digit characters, keep last 10 digits
-  const digits = phone.replace(/\D/g, '');
-  return 'MOB' + digits.slice(-10);
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 //  AUTH ROUTES
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -111,17 +109,27 @@ router.post('/auth/signup', async (req, res) => {
       return res.status(409).json({ success: false, message: `An account with this ${field} already exists` });
     }
 
-    // Create tagId from phone
-    const tagId = phoneToTagId(phone);
+    // Allocate a charger-compatible tag that is independent of the phone
+    // number. Phone-derived MOB tags remain supported as legacy aliases by
+    // the migration and lookup helpers.
+    const tagId = await generateChargerTag();
 
     // Create mobile user
-    const user = await MobileUser.create({
-      name,
-      phone,
-      email,
-      password,
-      tagId,
-      active: true
+    const user = await sequelize.transaction(async transaction => {
+      const created = await MobileUser.create({
+        name,
+        phone,
+        email,
+        password,
+        tagId,
+        active: true
+      }, { transaction });
+      await AuthorizedTag.findOrCreate({
+        where: { tagId },
+        defaults: { tagId, status: 'Active', blocked: false },
+        transaction
+      });
+      return created;
     });
 
     // Create authorized tag for OCPP (use raw query to avoid ENUM/constraint issues)
@@ -421,9 +429,9 @@ router.delete('/auth/account', mobileAuth, async (req, res) => {
       });
 
       // Delete authorized tag
-      if (user.tagId) {
+      if (user.tagId || user.legacyTagId) {
         await sequelize.models.AuthorizedTag.destroy({
-          where: { tagId: user.tagId },
+          where: { tagId: { [Op.in]: tagAliases(user) } },
           transaction: t
         });
       }
@@ -863,7 +871,7 @@ router.post('/charging/stop', mobileAuth, async (req, res) => {
     const transaction = await Transaction.findOne({
       where: {
         chargePointId,
-        idTag: user.tagId,
+        idTag: { [Op.in]: tagAliases(user) },
         status: 'InProgress'
       },
       order: [['startTime', 'DESC']]
@@ -967,7 +975,7 @@ router.post('/charging/autostop', mobileAuth, async (req, res) => {
     const transaction = await Transaction.findOne({
       where: {
         chargePointId,
-        idTag: user.tagId,
+        idTag: { [Op.in]: tagAliases(user) },
         status: 'InProgress'
       },
       order: [['startTime', 'DESC']]
@@ -1024,7 +1032,7 @@ router.delete('/charging/autostop', mobileAuth, async (req, res) => {
     const transaction = await Transaction.findOne({
       where: {
         chargePointId,
-        idTag: user.tagId,
+        idTag: { [Op.in]: tagAliases(user) },
         status: 'InProgress'
       },
       order: [['startTime', 'DESC']]
@@ -1063,7 +1071,7 @@ router.get('/charging/status/:chargePointId', mobileAuth, async (req, res) => {
 
     // Find active transaction
     let transaction = await Transaction.findOne({
-      where: { chargePointId, idTag: user.tagId, status: 'InProgress' },
+      where: { chargePointId, idTag: { [Op.in]: tagAliases(user) }, status: 'InProgress' },
       order: [['startTime', 'DESC']]
     });
 
@@ -1078,7 +1086,7 @@ router.get('/charging/status/:chargePointId', mobileAuth, async (req, res) => {
     if (!transaction) {
       // Return the last completed session for this station/user so app can show summary
       const lastSession = await Transaction.findOne({
-        where: { chargePointId, idTag: user.tagId, status: 'Completed' },
+        where: { chargePointId, idTag: { [Op.in]: tagAliases(user) }, status: 'Completed' },
         order: [['stopTime', 'DESC']]
       });
       return res.json({ 
@@ -1151,7 +1159,7 @@ router.get('/transactions', mobileAuth, async (req, res) => {
     }
 
     const transactions = await Transaction.findAll({
-      where: { idTag: user.tagId },
+      where: { idTag: { [Op.in]: tagAliases(user) } },
       include: [{
         model: ChargingStation,
         attributes: ['name', 'chargePointId', 'location']

@@ -16,6 +16,7 @@ router.get('/', authenticate, async (req, res) => {
             const pattern = `%${query}%`;
             userWhere[Op.or] = [
                 { tagId: { [Op.iLike]: pattern } },
+                { legacyTagId: { [Op.iLike]: pattern } },
                 { name: { [Op.iLike]: pattern } },
                 { email: { [Op.iLike]: pattern } },
                 { phone: { [Op.iLike]: pattern } }
@@ -23,11 +24,11 @@ router.get('/', authenticate, async (req, res) => {
         }
         const users = await db.MobileUser.findAll({
             where: userWhere,
-            attributes: ['id', 'name', 'email', 'phone', 'tagId'],
+            attributes: ['id', 'name', 'email', 'phone', 'tagId', 'legacyTagId'],
             limit,
             order: [['tagId', 'ASC']]
         });
-        const userTagIds = users.map(user => user.tagId).filter(Boolean);
+        const userTagIds = [...new Set(users.flatMap(user => [user.tagId, user.legacyTagId]).filter(Boolean))];
         const tagWhere = { status: 'Active' };
         if (query) {
             tagWhere[Op.or] = [
@@ -41,7 +42,7 @@ router.get('/', authenticate, async (req, res) => {
             order: [['tagId', 'ASC']],
             limit
         });
-        const usersByTag = new Map(users.map(user => [user.tagId, user.toJSON()]));
+        const usersByTag = new Map(users.flatMap(user => [user.tagId, user.legacyTagId].filter(Boolean).map(tagId => [tagId, user.toJSON()])));
 
         res.json({
             success: true,

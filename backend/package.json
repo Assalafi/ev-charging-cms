@@ -15,6 +15,7 @@
     "migrate:ocpp-session-ownership": "node scripts/migrate-ocpp-session-ownership.js",
     "migrate:transaction-battery-soc": "node scripts/migrate-transaction-battery-soc.js",
     "migrate:firmware-updates": "node scripts/migrate-firmware-updates.js",
+    "migrate:charger-tags": "node scripts/migrate-charger-tags.js",
     "test": "jest",
     "migrate:settlement-status": "node scripts/migrate-settlement-status.js"
   },

@@ -10,6 +10,7 @@ const {
 const ocppServer = require('../ocpp/server');
 const logger = require('../utils/logger');
 const { resolveCanonicalOcppTransactionId } = require('../services/ocppTransactionResolver');
+const { resolveCanonicalChargerTag } = require('../services/chargerTagService');
 
 const router = express.Router();
 
@@ -432,10 +433,11 @@ router.post('/:stationId/remote-start', authorize(['admin', 'operator']), async 
             });
         }
 
+        const canonicalTag = await resolveCanonicalChargerTag(idTag);
         // Send RemoteStartTransaction command
         const result = await ocppServer.sendOcppRequest(stationId, 'RemoteStartTransaction', {
             connectorId: parseInt(connectorId),
-            idTag
+            idTag: canonicalTag
         });
 
         if (!result.success) {
@@ -448,7 +450,8 @@ router.post('/:stationId/remote-start', authorize(['admin', 'operator']), async 
         res.json({
             success: true,
             messageId: result.messageId,
-            message: `Remote start transaction command sent successfully`
+            message: `Remote start transaction command sent successfully`,
+            idTag: canonicalTag
         });
     } catch (error) {
         logger.error(`Error sending RemoteStartTransaction command:`, error);

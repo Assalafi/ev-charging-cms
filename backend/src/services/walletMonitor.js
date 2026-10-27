@@ -13,6 +13,7 @@ const { Transaction, MobileUser, Wallet } = require('../models');
 const {
   resolveCanonicalOcppTransactionId,
 } = require('./ocppTransactionResolver');
+const { findMobileUserByTag } = require('./chargerTagService');
 
 let intervalHandle = null;
 let ocppServerRef = null;
@@ -85,7 +86,7 @@ async function checkAllActiveSessions() {
     // Check each user's total cost vs wallet
     for (const [idTag, sessions] of Object.entries(userSessions)) {
       try {
-        const user = await MobileUser.findOne({ where: { tagId: idTag } });
+        const user = await findMobileUserByTag(idTag);
         if (!user) continue;
 
         const wallet = await Wallet.findOne({ where: { userId: user.id } });

@@ -8,6 +8,7 @@ const { completeTransaction } = require('../services/completeTransactionService'
 const { getChargingPricing } = require('../services/chargingPricingService');
 const { calculatePartnerRevenue } = require('../services/partnerRevenueService');
 const { scopedTransactionWhere } = require('../middleware/adminScope');
+const { findMobileUserByTag } = require('../services/chargerTagService');
 
 const router = express.Router();
 
@@ -871,10 +872,7 @@ router.post('/:id/reconcile', authenticate, requirePermission('transactions.mana
     let walletMessage = '';
     
     if (transaction.idTag) {
-      const user = await MobileUser.findOne({
-        where: { tagId: transaction.idTag },
-        transaction: t
-      });
+      const user = await findMobileUserByTag(transaction.idTag, { transaction: t });
       
       if (user) {
         const wallet = await Wallet.findOne({

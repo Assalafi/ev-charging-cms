@@ -8,6 +8,7 @@ const { companyAuthenticate, companyAuthorize } = require('../../middleware/comp
 const { getPartnerDateRange } = require('../../utils/partnerDateRange');
 const { parseLagosDate } = require('../../utils/timezone');
 const { fundCompanyWallet, initializeCompanyGatewayFunding, settleCompanyGatewayFunding, transferCompanyFundsToUser, recoverUserFundsToCompany } = require('../../services/companyFundingService');
+const { generateChargerTag, tagAliases } = require('../../services/chargerTagService');
 const logger = require('../../utils/logger');
 
 const router = express.Router();
@@ -40,8 +41,8 @@ function paystackRequest({ method = 'GET', path, secretKey, payload }) {
 }
 
 async function companyTags(companyId) {
-  const users = await MobileUser.findAll({ where: { companyId, status: { [Op.ne]: 'deleted' } }, attributes: ['id', 'name', 'tagId', 'status', 'active'] });
-  return { users, tags: users.map(user => user.tagId).filter(Boolean) };
+  const users = await MobileUser.findAll({ where: { companyId, status: { [Op.ne]: 'deleted' } }, attributes: ['id', 'name', 'tagId', 'legacyTagId', 'status', 'active'] });
+  return { users, tags: [...new Set(users.flatMap(user => tagAliases(user)))] };
 }
 
 router.get('/dashboard', async (req, res) => {
@@ -95,7 +96,7 @@ router.get('/users', async (req, res) => {
   try {
     const { page, limit, offset } = parsePage(req.query); const where = { companyId: req.companyId };
     if (req.query.status && req.query.status !== 'all') where.status = req.query.status;
-    if (req.query.search) { const search = `%${String(req.query.search).trim()}%`; where[Op.or] = [{ name: { [Op.iLike]: search } }, { email: { [Op.iLike]: search } }, { phone: { [Op.iLike]: search } }, { tagId: { [Op.iLike]: search } }]; }
+    if (req.query.search) { const search = `%${String(req.query.search).trim()}%`; where[Op.or] = [{ name: { [Op.iLike]: search } }, { email: { [Op.iLike]: search } }, { phone: { [Op.iLike]: search } }, { tagId: { [Op.iLike]: search } }, { legacyTagId: { [Op.iLike]: search } }]; }
     const [result, statusRows] = await Promise.all([
       MobileUser.findAndCountAll({ where, attributes: { exclude: ['password'] }, include: [{ model: Wallet, as: 'wallet', attributes: ['id', 'balance', 'currency', 'isActive'], required: false }], order: [['name', 'ASC']], limit, offset, distinct: true }),
       MobileUser.findAll({ where: { companyId: req.companyId }, attributes: ['status', [sequelize.fn('COUNT', sequelize.col('id')), 'count']], group: ['status'], raw: true })
@@ -133,7 +134,7 @@ router.get('/users/:userId/activity', async (req, res) => {
     // Include manually stopped sessions as well: they are billable records and
     // should remain part of the driver's lifetime energy and spend totals.
     const billableStatuses = { [Op.in]: ['Completed', 'Stopped', 'InProgress'] };
-    const transactionWhere = { idTag: user.tagId };
+    const transactionWhere = { idTag: { [Op.in]: tagAliases(user) } };
     const fundingWhere = { companyId: req.companyId, beneficiaryUserId: user.id, status: 'SUCCESS' };
     const walletWhere = { userId: user.id };
 
@@ -201,7 +202,7 @@ router.post('/users', ...companyAuthorize(['owner', 'manager']), async (req, res
     if (String(password).length < 6) return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
     const company = await SubscriptionCompany.findByPk(req.companyId); if (!company || company.status !== 'active') return res.status(400).json({ success: false, message: 'Company is not active' });
     const normalizedEmail = String(email).trim().toLowerCase(); const existing = await MobileUser.findOne({ where: { [Op.or]: [{ phone: String(phone).trim() }, { email: normalizedEmail }] } }); if (existing) return res.status(409).json({ success: false, message: 'A mobile user with that phone or email already exists' });
-    const digits = String(phone).replace(/\D/g, ''); const baseTagId = `MOB${digits.slice(-10) || Date.now()}`; const [tagCollision, authorizedTagCollision] = await Promise.all([MobileUser.findOne({ where: { tagId: baseTagId } }), AuthorizedTag.findOne({ where: { tagId: baseTagId } })]); const tagId = tagCollision || authorizedTagCollision ? `${baseTagId}-${Date.now().toString(36)}` : baseTagId;
+    const tagId = await generateChargerTag();
     const user = await sequelize.transaction(async transaction => { const created = await MobileUser.create({ name: String(name).trim(), phone: String(phone).trim(), email: normalizedEmail, password, tagId, companyId: req.companyId, active: true, status: 'active' }, { transaction }); await Wallet.create({ userId: created.id, balance: 0, currency: 'NGN' }, { transaction }); await AuthorizedTag.findOrCreate({ where: { tagId }, defaults: { tagId, status: 'Active', blocked: false }, transaction }); return created; });
     res.status(201).json({ success: true, message: 'Mobile user created', user: safeMobileUser(user) });
   } catch (error) { logger.error('Company create mobile user error:', error); res.status(error.name === 'SequelizeUniqueConstraintError' ? 409 : 400).json({ success: false, message: error.message || 'Failed to create mobile user' }); }
@@ -209,7 +210,7 @@ router.post('/users', ...companyAuthorize(['owner', 'manager']), async (req, res
 
 router.put('/users/:userId/status', ...companyAuthorize(['owner', 'manager']), async (req, res) => {
   const status = req.body.status; if (!['active', 'suspended', 'deleted'].includes(status)) return res.status(400).json({ success: false, message: 'Invalid user status' });
-  try { const user = await MobileUser.findOne({ where: { id: req.params.userId, companyId: req.companyId } }); if (!user) return res.status(404).json({ success: false, message: 'Company mobile user not found' }); await user.update({ status, active: status === 'active', deletedAt: status === 'deleted' ? new Date() : null }); const tag = await AuthorizedTag.findOne({ where: { tagId: user.tagId } }); if (tag) await tag.update({ status: status === 'active' ? 'Active' : 'Blocked', blocked: status !== 'active' }); res.json({ success: true, message: `Mobile user ${status === 'deleted' ? 'deactivated' : status}`, user: safeMobileUser(user) }); } catch (error) { res.status(500).json({ success: false, message: 'Failed to update mobile user' }); }
+  try { const user = await MobileUser.findOne({ where: { id: req.params.userId, companyId: req.companyId } }); if (!user) return res.status(404).json({ success: false, message: 'Company mobile user not found' }); await user.update({ status, active: status === 'active', deletedAt: status === 'deleted' ? new Date() : null }); await AuthorizedTag.update({ status: status === 'active' ? 'Active' : 'Blocked', blocked: status !== 'active' }, { where: { tagId: { [Op.in]: tagAliases(user) } } }); res.json({ success: true, message: `Mobile user ${status === 'deleted' ? 'deactivated' : status}`, user: safeMobileUser(user) }); } catch (error) { res.status(500).json({ success: false, message: 'Failed to update mobile user' }); }
 });
 
 router.post('/users/:userId/fund', ...companyAuthorize(['owner', 'manager']), async (req, res) => {

@@ -27,12 +27,13 @@ const userSearchWhere = search => {
       { name: { [Op.iLike]: `%${term}%` } },
       { email: { [Op.iLike]: `%${term}%` } },
       { phone: { [Op.iLike]: `%${term}%` } },
-      { tagId: { [Op.iLike]: `%${term}%` } }
+      { tagId: { [Op.iLike]: `%${term}%` } },
+      { legacyTagId: { [Op.iLike]: `%${term}%` } }
     ]
   };
 };
 
-const userInclude = (search, attributes = ['id', 'name', 'email', 'phone', 'tagId'], requireMatch = Boolean(normaliseSearch(search))) => ({
+const userInclude = (search, attributes = ['id', 'name', 'email', 'phone', 'tagId', 'legacyTagId'], requireMatch = Boolean(normaliseSearch(search))) => ({
   model: MobileUser,
   as: 'user',
   attributes,
@@ -60,7 +61,8 @@ const paymentWhere = ({ status, userId, type, startDate, endDate, gateway, searc
       { '$user.name$': { [Op.iLike]: pattern } },
       { '$user.email$': { [Op.iLike]: pattern } },
       { '$user.phone$': { [Op.iLike]: pattern } },
-      { '$user.tagId$': { [Op.iLike]: pattern } }
+      { '$user.tagId$': { [Op.iLike]: pattern } },
+      { '$user.legacyTagId$': { [Op.iLike]: pattern } }
     ];
   }
   return { where, search: term };
@@ -220,7 +222,7 @@ router.get('/transactions', requirePermission('payments.view'), async (req, res)
           as: 'wallet'
         },
         {
-          ...userInclude(normalisedSearch, ['id', 'name', 'email', 'phone', 'tagId'], false)
+          ...userInclude(normalisedSearch, ['id', 'name', 'email', 'phone', 'tagId', 'legacyTagId'], false)
         }
       ],
       order: [['createdAt', 'DESC']],
@@ -574,7 +576,7 @@ router.post('/wallets/:walletId/deduct', requirePermission('payments.manage'), a
       }
       const user = await MobileUser.findByPk(wallet.userId, {
         transaction,
-        attributes: ['id', 'name', 'email', 'phone', 'tagId']
+        attributes: ['id', 'name', 'email', 'phone', 'tagId', 'legacyTagId']
       });
       if (!user) {
         const error = new Error('Mobile user linked to this wallet was not found');
@@ -638,7 +640,7 @@ router.get('/users', requirePermission('payments.view'), async (req, res) => {
     const search = normaliseSearch(q);
     const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 40));
     const users = await MobileUser.findAll({
-      attributes: ['id', 'name', 'phone', 'email', 'tagId'],
+      attributes: ['id', 'name', 'phone', 'email', 'tagId', 'legacyTagId'],
       ...(userSearchWhere(search) ? { where: userSearchWhere(search) } : {}),
       order: [['name', 'ASC']],
       limit: safeLimit

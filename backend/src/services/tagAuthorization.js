@@ -1,4 +1,5 @@
 const { sequelize, AuthorizedTag, MobileUser, SubscriptionCompany } = require('../models');
+const { mobileUserTagWhere } = require('./chargerTagService');
 const logger = require('../utils/logger');
 
 /**
@@ -112,7 +113,7 @@ class TagAuthorizationService {
       // company-managed users this keeps a suspended/inactive company from
       // continuing to charge with a token issued before the suspension.
       const mobileUser = await MobileUser.findOne({
-        where: { tagId },
+        where: mobileUserTagWhere(tagId),
         attributes: ['id', 'active', 'status', 'companyId']
       });
       if (mobileUser && (!mobileUser.active || mobileUser.status !== 'active')) {

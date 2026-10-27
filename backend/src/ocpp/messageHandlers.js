@@ -24,6 +24,11 @@ const {
 const { calculatePartnerRevenue } = require("../services/partnerRevenueService")
 const { getChargingPricing } = require("../services/chargingPricingService")
 const {
+  findMobileUserByTag,
+  tagAliases,
+  resolveCanonicalChargerTag,
+} = require("../services/chargerTagService")
+const {
   resolveCanonicalOcppTransactionId,
 } = require("../services/ocppTransactionResolver")
 const {
@@ -321,11 +326,17 @@ async function resolveMeterValuesTransactionUnlocked({
       maxAgeMs: REMOTE_START_SESSION_WINDOW_MS,
     })
     const verifiedIntentOwner = getVerifiedRemoteStartOwner(remoteStartIntent, connectorId)
+    const canonicalActiveOwner = active.idTag
+      ? await resolveCanonicalChargerTag(active.idTag)
+      : null
+    const canonicalIntentOwner = verifiedIntentOwner
+      ? await resolveCanonicalChargerTag(verifiedIntentOwner)
+      : null
     const activeStartedAt = active.startTime ? new Date(active.startTime) : null
     const conflictingNewIntent = Boolean(
       verifiedIntentOwner &&
       active.idTag &&
-      verifiedIntentOwner !== String(active.idTag) &&
+      canonicalIntentOwner !== canonicalActiveOwner &&
       activeStartedAt &&
       remoteStartIntent.createdAt > activeStartedAt
     )
@@ -342,7 +353,9 @@ async function resolveMeterValuesTransactionUnlocked({
       return { transaction: null, reportedTransactionId, recovered: false, quarantined: true }
     }
 
-    const remoteStartMatchesActive = verifiedIntentOwner === String(active.idTag)
+    const remoteStartMatchesActive = Boolean(
+      canonicalIntentOwner && canonicalIntentOwner === canonicalActiveOwner
+    )
     const immutableVerifiedRecovery =
       active.reason === "OCPP_VERIFIED_REMOTE_START_RECOVERY" ||
       (active.reason === "OCPP_STALE_TRANSACTION_RECOVERY" && remoteStartMatchesActive)
@@ -411,8 +424,11 @@ async function resolveMeterValuesTransactionUnlocked({
       Number.isFinite(activeStartMeter) ? activeStartMeter : 0,
       Number(active.stopMeterValue) || 0
     )
+    const canonicalReportedTag = reported?.idTag
+      ? await resolveCanonicalChargerTag(reported.idTag)
+      : null
     const reportedUserMatchesActive = Boolean(
-      reported?.idTag && active.idTag && String(reported.idTag) === String(active.idTag)
+      canonicalReportedTag && canonicalActiveOwner && canonicalReportedTag === canonicalActiveOwner
     )
     const monotonicLiveRecovery =
       ["OCPP_STALE_TRANSACTION_RECOVERY", "OCPP_VERIFIED_REMOTE_START_RECOVERY"].includes(active.reason) &&
@@ -480,7 +496,8 @@ async function resolveMeterValuesTransactionUnlocked({
     })
     const newerDifferentUser = Boolean(
       remoteStartIntent?.idTag &&
-      String(remoteStartIntent.idTag) !== String(reported.idTag) &&
+      (await resolveCanonicalChargerTag(remoteStartIntent.idTag)) !==
+        (await resolveCanonicalChargerTag(reported.idTag)) &&
       reported.stopTime &&
       remoteStartIntent.createdAt > new Date(reported.stopTime)
     )
@@ -567,7 +584,9 @@ async function resolveMeterValuesTransactionUnlocked({
     )
     return { transaction: null, reportedTransactionId, recovered: false, quarantined: true }
   }
-  const supersededUser = continuationTag !== String(reported.idTag)
+  const supersededUser =
+    (await resolveCanonicalChargerTag(continuationTag)) !==
+    (await resolveCanonicalChargerTag(reported.idTag))
   if (supersededUser) {
     logger.warn(
       `Correlating stale MeterValues ${reportedTransactionId} on ${chargePointId}:${connectorId} ` +
@@ -1294,11 +1313,19 @@ async function handleStartTransaction(chargePointId, uniqueId, payload) {
       normalizedPayload.connectorId,
       { requireChargingConfirmation: false }
     )
+    // A charger may echo a legacy MOB alias even after the CMS has sent the
+    // canonical D-format tag. Compare ownership by canonical identity, then
+    // store the canonical value for this new transaction. Unrelated valid
+    // tags still fail closed below.
+    const canonicalStationTag = await resolveCanonicalChargerTag(stationTag)
+    const canonicalRemoteOwner = verifiedRemoteOwner
+      ? await resolveCanonicalChargerTag(verifiedRemoteOwner)
+      : null
 
     if (
       verifiedRemoteOwner &&
       stationTagAuth.status === "Accepted" &&
-      String(stationTag) !== verifiedRemoteOwner
+      canonicalStationTag !== canonicalRemoteOwner
     ) {
       // Both identities are valid, so choosing either one would risk charging
       // the wrong driver. Reject and let subsequent verified telemetry enter
@@ -1308,6 +1335,10 @@ async function handleStartTransaction(chargePointId, uniqueId, payload) {
           `station tag ${stationTag} conflicts with accepted RemoteStart owner ${verifiedRemoteOwner}`
       )
       return [3, uniqueId, { transactionId: 0, idTagInfo: { status: "Invalid" } }]
+    }
+
+    if (verifiedRemoteOwner && canonicalStationTag === canonicalRemoteOwner) {
+      normalizedPayload.idTag = canonicalRemoteOwner
     }
 
     if (verifiedRemoteOwner && stationTagAuth.status !== "Accepted") {
@@ -1888,7 +1919,7 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
                   try {
                     const { MobileUser, Wallet, PaymentTransaction } = require("../models")
                     adjDbTx = await sequelize.transaction()
-                    const user = await MobileUser.findOne({ where: { tagId: completedTx.idTag }, transaction: adjDbTx })
+                    const user = await findMobileUserByTag(completedTx.idTag, { transaction: adjDbTx })
                     if (user) {
                       const wallet = await Wallet.findOne({ where: { userId: user.id }, lock: adjDbTx.LOCK.UPDATE, transaction: adjDbTx })
                       if (wallet) {
@@ -2569,7 +2600,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                         // Refund premature billing if it was already billed
                         if (completedTx.billedAt) {
                           try {
-                            const user = await MobileUser.findOne({ where: { tagId: completedTx.idTag } })
+                            const user = await findMobileUserByTag(completedTx.idTag)
                             if (user) {
                               const wallet = await Wallet.findOne({ where: { userId: user.id } })
                               if (wallet) {
@@ -2733,7 +2764,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
                       // ═══ AUTO-STOP: Check if TOTAL cost of ALL active sessions exceeds wallet ═══
                       if (amount && amount > 0) {
                         try {
-                          const user = await MobileUser.findOne({ where: { tagId: transaction.idTag } })
+                          const user = await findMobileUserByTag(transaction.idTag)
                           if (user) {
                             const wallet = await Wallet.findOne({ where: { userId: user.id } })
                             if (wallet) {
@@ -2741,7 +2772,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
 
                               // Sum cost of ALL active sessions for this user
                               const activeSessions = await Transaction.findAll({
-                                where: { idTag: transaction.idTag, status: 'InProgress' },
+                                where: { idTag: { [Op.in]: tagAliases(user) }, status: 'InProgress' },
                                 attributes: ['transactionId', 'chargePointId', 'amount']
                               })
                               const totalCost = activeSessions.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0)
@@ -3256,7 +3287,7 @@ async function handleStatusNotification(chargePointId, uniqueId, payload) {
             if (wasBilled && previousAmount > 0) {
               try {
                 const { MobileUser, Wallet, PaymentTransaction } = require("../models")
-                const user = await MobileUser.findOne({ where: { tagId: resumeTx.idTag } })
+                const user = await findMobileUserByTag(resumeTx.idTag)
                 if (user) {
                   const wallet = await Wallet.findOne({ where: { userId: user.id } })
                   if (wallet) {

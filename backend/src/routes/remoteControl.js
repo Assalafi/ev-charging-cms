@@ -5,6 +5,7 @@ const logger = require('../utils/logger');
 const { Transaction } = require('../models');
 const eventEmitter = require('../utils/eventEmitter');
 const { resolveCanonicalOcppTransactionId } = require('../services/ocppTransactionResolver');
+const { resolveCanonicalChargerTag } = require('../services/chargerTagService');
 
 const router = express.Router();
 
@@ -32,9 +33,12 @@ router.post('/start', authenticate, async (req, res) => {
       });
     }
     
+    // Historical MOB tags resolve to the user's canonical vendor-compatible
+    // tag before any new charger command is sent.
+    const canonicalTag = await resolveCanonicalChargerTag(idTag);
     // Prepare payload
     const payload = {
-      idTag: idTag,
+      idTag: canonicalTag,
       connectorId: parseInt(connectorId || 1, 10)
     };
     
@@ -51,7 +55,8 @@ router.post('/start', authenticate, async (req, res) => {
     res.json({
       success: true,
       messageId: result.messageId,
-      message: 'RemoteStartTransaction command sent successfully'
+      message: 'RemoteStartTransaction command sent successfully',
+      idTag: canonicalTag
     });
   } catch (error) {
     logger.error('Error sending RemoteStartTransaction:', error);

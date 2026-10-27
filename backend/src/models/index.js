@@ -105,6 +105,8 @@ CompanyUser.belongsTo(SubscriptionCompany, { foreignKey: 'companyId', as: 'compa
 // MobileUser -> AuthorizedTag and Transaction associations (used by admin routes)
 MobileUser.hasOne(AuthorizedTag, { foreignKey: 'tagId', sourceKey: 'tagId', as: 'authorizedTag' });
 MobileUser.hasMany(Transaction, { foreignKey: 'idTag', sourceKey: 'tagId', as: 'transactions' });
+MobileUser.hasOne(AuthorizedTag, { foreignKey: 'tagId', sourceKey: 'legacyTagId', as: 'legacyAuthorizedTag' });
+MobileUser.hasMany(Transaction, { foreignKey: 'idTag', sourceKey: 'legacyTagId', as: 'legacyTransactions' });
 
 // Reservation relationships
 Reservation.belongsTo(ChargingStation, { foreignKey: 'chargePointId', targetKey: 'chargePointId', as: 'station' });

@@ -14,6 +14,7 @@ const logger = require('../utils/logger');
 const { Transaction, ChargingStation, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const ocppServer = require('../ocpp/server');
+const { findMobileUserByTag } = require('./chargerTagService');
 
 /**
  * Reconcile transactions for a specific station within a date range
@@ -289,7 +290,7 @@ async function correctWalletDifference(transaction, billedAmount, correctAmount)
 
     if (Math.abs(difference) < 1) return; // Too small to correct
 
-    const user = await MobileUser.findOne({ where: { tagId: transaction.idTag } });
+    const user = await findMobileUserByTag(transaction.idTag);
     if (!user) {
       logger.warn(`Cannot correct wallet: user not found for idTag ${transaction.idTag}`);
       return;

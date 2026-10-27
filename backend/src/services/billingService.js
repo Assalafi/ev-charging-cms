@@ -18,6 +18,7 @@ const logger = require('../utils/logger');
 const { Sequelize } = require('sequelize');
 const { Transaction, MobileUser, Wallet, PaymentTransaction, sequelize } = require('../models');
 const { Op } = require('sequelize');
+const { findMobileUserByTag } = require('./chargerTagService');
 
 let reconciliationInterval = null;
 let reconciliationRunning = false;
@@ -75,10 +76,7 @@ async function billTransaction(transactionId) {
     }
 
     // 2. Find user via idTag
-    const user = await MobileUser.findOne({
-      where: { tagId: chargingTx.idTag },
-      transaction: dbTx
-    });
+    const user = await findMobileUserByTag(chargingTx.idTag, { transaction: dbTx });
 
     if (!user) {
       await dbTx.rollback();
@@ -183,10 +181,7 @@ async function reconcileCompletedBilling(transactionId, updates) {
     const difference = Math.round((newAmount - oldAmount) * 100) / 100;
 
     if (chargingTx.billedAt && Math.abs(difference) >= 0.01) {
-      const user = await MobileUser.findOne({
-        where: { tagId: chargingTx.idTag },
-        transaction: dbTx
-      });
+      const user = await findMobileUserByTag(chargingTx.idTag, { transaction: dbTx });
       if (!user) throw new Error(`No user found for idTag ${chargingTx.idTag}`);
 
       const wallet = await Wallet.findOne({
@@ -287,10 +282,7 @@ async function reopenNetworkDisconnectedTransaction(transactionId) {
 
     const billedAmount = Number(chargingTx.amount) || 0;
     if (chargingTx.billedAt && billedAmount > 0) {
-      const user = await MobileUser.findOne({
-        where: { tagId: chargingTx.idTag },
-        transaction: dbTx
-      });
+      const user = await findMobileUserByTag(chargingTx.idTag, { transaction: dbTx });
       if (!user) throw new Error(`No user found for idTag ${chargingTx.idTag}`);
       const wallet = await Wallet.findOne({
         where: { userId: user.id },

@@ -38,7 +38,13 @@ module.exports = (sequelize) => {
       type: DataTypes.STRING,
       allowNull: true,
       unique: true,
-      comment: 'OCPP idTag linked to authorized_tags table, derived from phone number'
+      comment: 'Canonical vendor-compatible OCPP idTag (D + 9 hexadecimal characters)'
+    },
+    legacyTagId: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: 'legacy_tag_id',
+      comment: 'Previous OCPP idTag retained for historical transactions and charger compatibility'
     },
     active: {
       type: DataTypes.BOOLEAN,
@@ -99,10 +105,20 @@ module.exports = (sequelize) => {
       sourceKey: 'tagId',
       as: 'authorizedTag'
     });
+    MobileUser.hasOne(models.AuthorizedTag, {
+      foreignKey: 'tagId',
+      sourceKey: 'legacyTagId',
+      as: 'legacyAuthorizedTag'
+    });
     MobileUser.hasMany(models.Transaction, {
       foreignKey: 'idTag',
       sourceKey: 'tagId',
       as: 'transactions'
+    });
+    MobileUser.hasMany(models.Transaction, {
+      foreignKey: 'idTag',
+      sourceKey: 'legacyTagId',
+      as: 'legacyTransactions'
     });
   };
 

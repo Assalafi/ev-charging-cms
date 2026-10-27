@@ -1,4 +1,5 @@
 const { ChargingStation, Location, MobileUser, SubscriptionCompany } = require('../models');
+const { findMobileUserByTag } = require('./chargerTagService');
 
 const DEFAULT_PRICING = Object.freeze({ pricePerWh: 0.4, minimumCharge: 150 });
 
@@ -40,7 +41,7 @@ async function getChargingPricing({ chargePointId, idTag, userId, companyId } = 
   if (!resolvedCompanyId && (userId || idTag)) {
     const user = userId
       ? await MobileUser.findByPk(userId, { attributes: ['id', 'companyId'] })
-      : await MobileUser.findOne({ where: { tagId: idTag }, attributes: ['id', 'companyId'] });
+      : await findMobileUserByTag(idTag, { attributes: ['id', 'companyId'] });
     resolvedCompanyId = user?.companyId || null;
   }
 
