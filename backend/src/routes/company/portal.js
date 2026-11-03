@@ -168,8 +168,10 @@ function paystackRequest({ method = 'GET', path, secretKey, payload }) {
   });
 }
 
-async function companyTags(companyId) {
-  const users = await MobileUser.findAll({ where: { companyId, status: { [Op.ne]: 'deleted' } }, attributes: ['id', 'name', 'tagId', 'legacyTagId', 'status', 'active'] });
+async function companyTags(companyId, includeDeleted = false) {
+  const where = { companyId };
+  if (!includeDeleted) where.status = { [Op.ne]: 'deleted' };
+  const users = await MobileUser.findAll({ where, attributes: ['id', 'name', 'email', 'phone', 'tagId', 'legacyTagId', 'status', 'active'] });
   return { users, tags: [...new Set(users.flatMap(user => tagAliases(user)))] };
 }
 
@@ -218,6 +220,104 @@ router.get('/monitor', async (req, res) => {
     const data = locations.map(location => { const json = location.toJSON(); const stations = (json.stations || []).map(station => ({ ...station, isOnline: ONLINE.has(station.status) })); return { ...json, stations, stationCount: stations.length, onlineStations: stations.filter(station => station.isOnline).length, offlineStations: stations.filter(station => !station.isOnline).length }; });
     res.json({ success: true, generatedAt: new Date().toISOString(), locations: data });
   } catch (error) { logger.error('Company monitor error:', error); res.status(500).json({ success: false, message: 'Failed to load company monitor' }); }
+});
+
+router.get('/transactions/stations', async (req, res) => {
+  try {
+    const { tags } = await companyTags(req.companyId, true);
+    if (!tags.length) return res.json({ success: true, stations: [] });
+    const rows = await Transaction.findAll({ where: { idTag: { [Op.in]: tags } }, attributes: ['chargePointId'], raw: true });
+    const chargePointIds = [...new Set(rows.map(row => row.chargePointId).filter(Boolean))];
+    const stations = chargePointIds.length
+      ? await ChargingStation.findAll({ where: { chargePointId: { [Op.in]: chargePointIds } }, attributes: ['chargePointId', 'name', 'status', 'location'] })
+      : [];
+    res.json({ success: true, stations });
+  } catch (error) {
+    logger.error('Company transaction station filter error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load transaction stations' });
+  }
+});
+
+router.get('/transactions', async (req, res) => {
+  try {
+    const { users, tags } = await companyTags(req.companyId, true);
+    const userById = new Map(users.map(user => [Number(user.id), user]));
+    let filteredUsers = users;
+    if (req.query.userId && Number.isInteger(Number(req.query.userId))) {
+      filteredUsers = users.filter(user => Number(user.id) === Number(req.query.userId));
+    }
+    const search = String(req.query.search || '').trim().slice(0, 100);
+    if (search) {
+      const term = search.toLowerCase();
+      const matchingUsers = users.filter(user => [user.name, user.email, user.phone, user.tagId, user.legacyTagId].some(value => String(value || '').toLowerCase().includes(term)));
+      const matchingTags = new Set(matchingUsers.flatMap(user => tagAliases(user)));
+      if (matchingUsers.length) filteredUsers = filteredUsers.filter(user => matchingUsers.some(match => Number(match.id) === Number(user.id)));
+      const pattern = `%${search}%`;
+      const searchParts = [
+        { idTag: { [Op.iLike]: pattern } },
+        { chargePointId: { [Op.iLike]: pattern } }
+      ];
+      if (Number.isInteger(Number(search))) searchParts.push({ transactionId: Number(search) });
+      if (matchingTags.size) searchParts.push({ idTag: { [Op.in]: [...matchingTags] } });
+      req.companyTransactionSearch = searchParts;
+    }
+
+    const selectedTags = [...new Set(filteredUsers.flatMap(user => tagAliases(user)))];
+    const requestedTag = String(req.query.idTag || '').trim().toLowerCase();
+    const allowedTags = requestedTag ? selectedTags.filter(tag => String(tag).toLowerCase().includes(requestedTag)) : selectedTags;
+    const where = { idTag: { [Op.in]: allowedTags.length ? allowedTags : ['__NO_COMPANY_TAG__'] } };
+    const statuses = new Set(['InProgress', 'Completed', 'Stopped']);
+    if (statuses.has(String(req.query.status || ''))) where.status = String(req.query.status);
+    if (req.query.chargePointId) where.chargePointId = String(req.query.chargePointId).trim().slice(0, 160);
+    const from = req.query.from || req.query.startDate;
+    const to = req.query.to || req.query.endDate;
+    if (from || to) {
+      let start;
+      let end;
+      try {
+        start = from ? parseLagosDate(String(from)) : new Date(0);
+        end = to ? parseLagosDate(String(to), true) : new Date();
+      } catch (error) {
+        return res.status(400).json({ success: false, message: 'Dates must use YYYY-MM-DD format' });
+      }
+      if (start > end) return res.status(400).json({ success: false, message: 'The start date must be before the end date' });
+      where.startTime = { [Op.between]: [start, end] };
+    }
+    if (req.companyTransactionSearch) where[Op.or] = req.companyTransactionSearch;
+
+    const { page, limit, offset } = parsePage(req.query);
+    const [result, totalEnergy, totalAmount, activeCount] = await Promise.all([
+      Transaction.findAndCountAll({ where, order: [['startTime', 'DESC']], limit, offset, distinct: true }),
+      Transaction.sum('energyDelivered', { where }),
+      Transaction.sum('amount', { where }),
+      Transaction.count({ where: { ...where, status: 'InProgress' } })
+    ]);
+    const chargePointIds = [...new Set(result.rows.map(row => row.chargePointId).filter(Boolean))];
+    const stationRows = chargePointIds.length
+      ? await ChargingStation.findAll({ where: { chargePointId: { [Op.in]: chargePointIds } }, attributes: ['chargePointId', 'name', 'status', 'location'], raw: true })
+      : [];
+    const stationById = new Map(stationRows.map(station => [station.chargePointId, station]));
+    const tagToUser = new Map();
+    users.forEach(user => tagAliases(user).forEach(tag => tagToUser.set(String(tag).toLowerCase(), user)));
+    const transactions = result.rows.map(row => {
+      const transaction = row.toJSON();
+      const mobileUser = tagToUser.get(String(transaction.idTag || '').toLowerCase());
+      return {
+        ...transaction,
+        mobileUser: mobileUser ? { id: mobileUser.id, name: mobileUser.name, email: mobileUser.email, phone: mobileUser.phone, tagId: mobileUser.tagId, legacyTagId: mobileUser.legacyTagId } : null,
+        chargingStation: stationById.get(transaction.chargePointId) || null
+      };
+    });
+    res.json({
+      success: true,
+      transactions,
+      summary: { sessions: result.count, active: Number(activeCount) || 0, energyWh: Number(totalEnergy) || 0, amount: Number(totalAmount) || 0 },
+      pagination: { page, limit, total: result.count, pages: Math.ceil(result.count / limit) }
+    });
+  } catch (error) {
+    logger.error('Company transactions error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load company transactions' });
+  }
 });
 
 router.get('/users', async (req, res) => {

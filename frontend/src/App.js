@@ -40,6 +40,7 @@ import CompanyLogin from './pages/company/CompanyLogin';
 import CompanyDashboard from './pages/company/CompanyDashboard';
 import CompanyMonitor from './pages/company/CompanyMonitor';
 import CompanyUsers from './pages/company/CompanyUsers';
+import CompanyTransactions from './pages/company/CompanyTransactions';
 import CompanyWallet from './pages/company/CompanyWallet';
 import CompanyFunding from './pages/company/CompanyFunding';
 import CompanyLayout from './components/CompanyLayout';
@@ -139,6 +140,7 @@ function App() {
         <Route path="dashboard" element={<CompanyDashboard />} />
         <Route path="monitor" element={<CompanyMonitor />} />
         <Route path="users" element={<CompanyUsers />} />
+        <Route path="transactions" element={<CompanyTransactions />} />
         <Route path="wallet" element={<CompanyWallet />} />
         <Route path="funding" element={<CompanyFunding />} />
       </Route>

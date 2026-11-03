@@ -1,0 +1,84 @@
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Collapse, Dialog,
+  DialogContent, DialogTitle, Divider, FormControl, Grid, IconButton, InputAdornment,
+  InputLabel, MenuItem, Select, Stack, Table, TableBody, TableCell, TableContainer,
+  TableHead, TablePagination, TableRow, TextField, Tooltip, Typography, useMediaQuery,
+  useTheme
+} from '@mui/material';
+import {
+  BoltRounded, CheckCircleRounded,
+  CloseRounded, FilterAltOffRounded, FilterAltRounded, GroupsRounded, PaymentsRounded,
+  ReceiptLongRounded, RefreshRounded, SearchRounded, TimelapseRounded, VisibilityRounded
+} from '@mui/icons-material';
+import companyPortalService from '../../services/companyPortalService';
+import { formatDateTime } from '../../utils/timezone';
+
+const EMPTY_FILTERS = { search: '', idTag: '', status: '', chargePointId: '', from: '', to: '' };
+const statusColor = status => ({ Completed: 'success', InProgress: 'primary', Stopped: 'warning' }[status] || 'default');
+const money = value => new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(Number(value) || 0);
+const energy = value => `${(Math.max(Number(value) || 0, 0) / 1000).toFixed(2)} kWh`;
+const date = value => value ? formatDateTime(value) : '—';
+
+const paramsFor = (filters, page, limit) => {
+  const params = { page: page + 1, limit };
+  Object.entries(filters).forEach(([key, value]) => { if (String(value || '').trim()) params[key] = String(value).trim(); });
+  return params;
+};
+
+function Metric({ label, value, helper, icon, color = 'primary' }) {
+  return <Card variant="outlined" sx={{ height: '100%', borderRadius: 3.2 }}><CardContent sx={{ p: { xs: 1.8, sm: 2.2 }, '&:last-child': { pb: { xs: 1.8, sm: 2.2 } } }}><Stack direction="row" justifyContent="space-between" spacing={1}><Box><Typography variant="caption" color="text.secondary" fontWeight={800}>{label.toUpperCase()}</Typography><Typography variant="h6" fontWeight={900} sx={{ mt: .5 }}>{value}</Typography><Typography variant="caption" color="text.secondary">{helper}</Typography></Box><Box sx={{ width: 38, height: 38, borderRadius: 2, display: 'grid', placeItems: 'center', bgcolor: `${color}.lighter`, color: `${color}.main` }}>{icon}</Box></Stack></CardContent></Card>;
+}
+
+export default function CompanyTransactions() {
+  const theme = useTheme();
+  const mobile = useMediaQuery(theme.breakpoints.down('md'));
+  const [transactions, setTransactions] = useState([]);
+  const [stations, setStations] = useState([]);
+  const [summary, setSummary] = useState({ sessions: 0, active: 0, energyWh: 0, amount: 0 });
+  const [pagination, setPagination] = useState({ page: 1, limit: 25, total: 0, pages: 0 });
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [appliedFilters, setAppliedFilters] = useState(EMPTY_FILTERS);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+  const [filtersOpen, setFiltersOpen] = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const loadStations = useCallback(async () => {
+    try { const response = await companyPortalService.transactionStations(); setStations(response.data?.stations || []); } catch (requestError) { setStations([]); }
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const response = await companyPortalService.companyTransactions(paramsFor(appliedFilters, page, rowsPerPage));
+      setTransactions(response.data?.transactions || []);
+      setSummary(response.data?.summary || { sessions: 0, active: 0, energyWh: 0, amount: 0 });
+      setPagination(response.data?.pagination || { page: 1, limit: rowsPerPage, total: 0, pages: 0 });
+    } catch (requestError) {
+      setTransactions([]); setSummary({ sessions: 0, active: 0, energyWh: 0, amount: 0 });
+      setError(requestError.serverMessage || requestError.message || 'Unable to load company transactions');
+    } finally { setLoading(false); }
+  }, [appliedFilters, page, rowsPerPage]);
+
+  useEffect(() => { loadStations(); }, [loadStations]);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { const timer = setInterval(load, 15000); return () => clearInterval(timer); }, [load]);
+
+  const updateFilter = (key, value) => setFilters(previous => ({ ...previous, [key]: value }));
+  const applyFilters = () => { setPage(0); setAppliedFilters({ ...filters }); };
+  const clearFilters = () => { setFilters(EMPTY_FILTERS); setAppliedFilters(EMPTY_FILTERS); setPage(0); };
+  const filterCount = Object.values(appliedFilters).filter(Boolean).length;
+  const changed = JSON.stringify(filters) !== JSON.stringify(appliedFilters);
+
+  return <Stack spacing={{ xs: 2, md: 3 }}>
+    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} gap={2}><Box><Typography variant="overline" color="primary.main" fontWeight={800} letterSpacing=".12em">Charging activity</Typography><Typography variant="h3" sx={{ mt: .5, fontSize: { xs: '2rem', sm: '2.5rem' } }}>Transactions</Typography><Typography color="text.secondary">Review every charging session initiated by your company drivers.</Typography></Box><Button variant="outlined" startIcon={<RefreshRounded />} onClick={load} disabled={loading}>Refresh</Button></Stack>
+    <Grid container spacing={1.5}><Grid item xs={6} md={3}><Metric label="Matching sessions" value={Number(summary.sessions || 0).toLocaleString()} helper="In the selected range" icon={<ReceiptLongRounded />} /></Grid><Grid item xs={6} md={3}><Metric label="Active now" value={Number(summary.active || 0).toLocaleString()} helper="Currently in progress" icon={<TimelapseRounded />} color="success" /></Grid><Grid item xs={6} md={3}><Metric label="Energy delivered" value={energy(summary.energyWh)} helper="Completed and running" icon={<BoltRounded />} color="warning" /></Grid><Grid item xs={6} md={3}><Metric label="Charged amount" value={money(summary.amount)} helper="Recorded session charges" icon={<PaymentsRounded />} color="info" /></Grid></Grid>
+    <Card variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}><CardContent sx={{ p: { xs: 1.5, sm: 2.5 } }}><Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ md: 'center' }} gap={1.5}><Box><Stack direction="row" spacing={1} alignItems="center"><FilterAltRounded color="primary" /><Typography variant="h6" fontWeight={850}>Transaction filters</Typography></Stack><Typography variant="body2" color="text.secondary">Filter by driver, tag, station, status, or any WAT date range.</Typography></Box><Stack direction="row" spacing={1}><Button size="small" onClick={() => setFiltersOpen(value => !value)}>{filtersOpen ? 'Hide filters' : 'Show filters'}</Button>{filterCount > 0 && <Button size="small" color="inherit" startIcon={<FilterAltOffRounded />} onClick={clearFilters}>Clear</Button>}</Stack></Stack><Collapse in={filtersOpen}><Grid container spacing={1.5} sx={{ mt: .5 }}><Grid item xs={12} md={4}><TextField fullWidth size="small" label="Search driver, station, tag or session" placeholder="Name, email, phone, station or transaction ID" value={filters.search} onChange={event => updateFilter('search', event.target.value)} InputProps={{ startAdornment: <InputAdornment position="start"><SearchRounded fontSize="small" /></InputAdornment> }} /></Grid><Grid item xs={12} sm={6} md={2}><TextField fullWidth size="small" label="Exact / partial ID tag" value={filters.idTag} onChange={event => updateFilter('idTag', event.target.value)} /></Grid><Grid item xs={12} sm={6} md={2}><FormControl fullWidth size="small"><InputLabel>Driver station</InputLabel><Select label="Driver station" value={filters.chargePointId} onChange={event => updateFilter('chargePointId', event.target.value)}><MenuItem value="">All stations</MenuItem>{stations.map(station => <MenuItem key={station.chargePointId} value={station.chargePointId}>{station.name || station.chargePointId}</MenuItem>)}</Select></FormControl></Grid><Grid item xs={6} md={1.5}><FormControl fullWidth size="small"><InputLabel>Status</InputLabel><Select label="Status" value={filters.status} onChange={event => updateFilter('status', event.target.value)}><MenuItem value="">All statuses</MenuItem><MenuItem value="InProgress">In progress</MenuItem><MenuItem value="Completed">Completed</MenuItem><MenuItem value="Stopped">Stopped</MenuItem></Select></FormControl></Grid><Grid item xs={6} md={1.25}><TextField fullWidth size="small" type="date" label="From (WAT)" value={filters.from} onChange={event => updateFilter('from', event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ max: filters.to || undefined }} /></Grid><Grid item xs={6} md={1.25}><TextField fullWidth size="small" type="date" label="To (WAT)" value={filters.to} onChange={event => updateFilter('to', event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ min: filters.from || undefined }} /></Grid><Grid item xs={12}><Stack direction="row" justifyContent="flex-end" spacing={1}><Button size="small" onClick={clearFilters}>Reset</Button><Button variant="contained" size="small" onClick={applyFilters} disabled={!changed} startIcon={<FilterAltRounded />}>Apply filters</Button></Stack></Grid></Grid></Collapse></CardContent></Card>
+    {error && <Alert severity="error" action={<Button color="inherit" size="small" onClick={load}>Retry</Button>}>{error}</Alert>}
+    <Card variant="outlined" sx={{ borderRadius: 3.5, overflow: 'hidden' }}><CardContent sx={{ p: 0 }}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} gap={1} sx={{ p: { xs: 1.5, sm: 2.5 }, pb: 1.5 }}><Box><Typography variant="h6" fontWeight={850}>Driver charging sessions</Typography><Typography variant="body2" color="text.secondary">{Number(pagination.total || 0).toLocaleString()} matching records · updates every 15 seconds</Typography></Box><Chip size="small" icon={<GroupsRounded />} label="Company drivers only" variant="outlined" /></Stack><Divider />{loading ? <Box sx={{ minHeight: 320, display: 'grid', placeItems: 'center' }}><CircularProgress /></Box> : !transactions.length ? <Stack alignItems="center" spacing={1} sx={{ py: 8, px: 2, textAlign: 'center' }}><ReceiptLongRounded sx={{ fontSize: 52, color: 'text.disabled' }} /><Typography variant="h6" fontWeight={800}>No charging sessions found</Typography><Typography color="text.secondary">Try clearing a filter or selecting a wider date range.</Typography></Stack> : mobile ? <Stack spacing={1.25} sx={{ p: 1.5 }}>{transactions.map(transaction => <Card key={transaction.id} variant="outlined" sx={{ borderRadius: 3, cursor: 'pointer' }} onClick={() => setSelected(transaction)}><CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}><Stack direction="row" spacing={1.2} alignItems="flex-start"><Box sx={{ width: 42, height: 42, borderRadius: 2.5, bgcolor: 'primary.50', color: 'primary.main', display: 'grid', placeItems: 'center', flexShrink: 0 }}><BoltRounded /></Box><Box sx={{ flex: 1, minWidth: 0 }}><Typography fontWeight={800}>TX {transaction.transactionId}</Typography><Typography variant="body2" noWrap>{transaction.mobileUser?.name || transaction.idTag}</Typography><Typography variant="caption" color="text.secondary" noWrap>{transaction.chargingStation?.name || transaction.chargePointId}</Typography></Box><Chip size="small" label={transaction.status} color={statusColor(transaction.status)} /></Stack><Grid container spacing={1} sx={{ mt: 1.5 }}><Grid item xs={6}><Typography variant="caption" color="text.secondary">Energy</Typography><Typography variant="body2" fontWeight={750}>{energy(transaction.energyDelivered)}</Typography></Grid><Grid item xs={6}><Typography variant="caption" color="text.secondary">Amount</Typography><Typography variant="body2" fontWeight={800}>{money(transaction.amount)}</Typography></Grid></Grid></CardContent></Card>)}</Stack> : <TableContainer sx={{ overflowX: 'auto' }}><Table sx={{ minWidth: 1050 }}><TableHead><TableRow><TableCell>Session</TableCell><TableCell>Driver</TableCell><TableCell>Station</TableCell><TableCell>Status</TableCell><TableCell>Started (WAT)</TableCell><TableCell align="right">Energy</TableCell><TableCell align="right">Amount</TableCell><TableCell align="right">View</TableCell></TableRow></TableHead><TableBody>{transactions.map(transaction => <TableRow hover key={transaction.id} onClick={() => setSelected(transaction)} sx={{ cursor: 'pointer' }}><TableCell><Typography fontWeight={800}>TX {transaction.transactionId}</Typography><Typography variant="caption" color="text.secondary">Connector {transaction.connectorId || '—'}</Typography></TableCell><TableCell><Typography fontWeight={750}>{transaction.mobileUser?.name || 'Unknown driver'}</Typography><Typography variant="caption" color="text.secondary">{transaction.mobileUser?.email || transaction.idTag}</Typography></TableCell><TableCell><Typography fontWeight={700}>{transaction.chargingStation?.name || transaction.chargePointId}</Typography><Typography variant="caption" color="text.secondary">{transaction.chargePointId}</Typography></TableCell><TableCell><Chip size="small" label={transaction.status} color={statusColor(transaction.status)} icon={transaction.status === 'Completed' ? <CheckCircleRounded /> : undefined} /></TableCell><TableCell><Typography variant="body2">{date(transaction.startTime)}</Typography><Typography variant="caption" color="text.secondary">{transaction.stopTime ? `Ended ${date(transaction.stopTime)}` : 'Still running'}</Typography></TableCell><TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{energy(transaction.energyDelivered)}</TableCell><TableCell align="right" sx={{ fontWeight: 800, whiteSpace: 'nowrap' }}>{money(transaction.amount)}</TableCell><TableCell align="right"><Tooltip title="View details"><IconButton size="small" color="primary" onClick={event => { event.stopPropagation(); setSelected(transaction); }}><VisibilityRounded fontSize="small" /></IconButton></Tooltip></TableCell></TableRow>)}</TableBody></Table></TableContainer>}<Divider /><TablePagination component="div" count={pagination.total || 0} page={page} rowsPerPage={rowsPerPage} rowsPerPageOptions={[10, 25, 50, 100]} onPageChange={(_, nextPage) => setPage(nextPage)} onRowsPerPageChange={event => { setRowsPerPage(Number(event.target.value)); setPage(0); }} /></CardContent></Card>
+    <Dialog open={Boolean(selected)} onClose={() => setSelected(null)} fullWidth maxWidth="sm"><DialogTitle sx={{ pr: 6 }}>Transaction details<IconButton onClick={() => setSelected(null)} sx={{ position: 'absolute', right: 12, top: 12 }}><CloseRounded /></IconButton></DialogTitle><DialogContent dividers>{selected && <Stack spacing={2}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h6" fontWeight={850}>TX {selected.transactionId}</Typography><Typography variant="body2" color="text.secondary">{date(selected.startTime)}</Typography></Box><Chip label={selected.status} color={statusColor(selected.status)} /></Stack><Grid container spacing={1.5}><Grid item xs={6}><Typography variant="caption" color="text.secondary">Driver</Typography><Typography fontWeight={750}>{selected.mobileUser?.name || selected.idTag}</Typography><Typography variant="caption" color="text.secondary">{selected.mobileUser?.email || '—'}</Typography></Grid><Grid item xs={6}><Typography variant="caption" color="text.secondary">Station</Typography><Typography fontWeight={750}>{selected.chargingStation?.name || selected.chargePointId}</Typography><Typography variant="caption" color="text.secondary">Connector {selected.connectorId || '—'}</Typography></Grid><Grid item xs={6}><Typography variant="caption" color="text.secondary">Energy delivered</Typography><Typography fontWeight={800}>{energy(selected.energyDelivered)}</Typography></Grid><Grid item xs={6}><Typography variant="caption" color="text.secondary">Charged amount</Typography><Typography fontWeight={800}>{money(selected.amount)}</Typography></Grid><Grid item xs={6}><Typography variant="caption" color="text.secondary">Start meter</Typography><Typography>{Number(selected.startMeterValue || 0).toLocaleString()} Wh</Typography></Grid><Grid item xs={6}><Typography variant="caption" color="text.secondary">Stop meter</Typography><Typography>{selected.stopMeterValue == null ? '—' : `${Number(selected.stopMeterValue).toLocaleString()} Wh`}</Typography></Grid><Grid item xs={12}><Typography variant="caption" color="text.secondary">ID tag</Typography><Typography fontWeight={750}>{selected.idTag}</Typography></Grid></Grid></Stack>}</DialogContent></Dialog>
+  </Stack>;
+}

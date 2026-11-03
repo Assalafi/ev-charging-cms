@@ -3,6 +3,8 @@ import companyApi from './companyApi';
 const companyPortalService = {
   dashboard: () => companyApi.get('/company/dashboard'),
   monitor: () => companyApi.get('/company/monitor'),
+  companyTransactions: (params = {}) => companyApi.get('/company/transactions', { params }),
+  transactionStations: () => companyApi.get('/company/transactions/stations'),
   users: (params = {}) => companyApi.get('/company/users', { params }),
   userActivity: (id, params = {}) => companyApi.get(`/company/users/${id}/activity`, { params }),
   createUser: payload => companyApi.post('/company/users', payload),

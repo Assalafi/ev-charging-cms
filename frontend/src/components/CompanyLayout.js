@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { AppBar, Avatar, Box, Chip, Divider, Drawer, IconButton, List, ListItemButton, ListItemIcon, ListItemText, Stack, Toolbar, Tooltip, Typography, useMediaQuery, useTheme } from '@mui/material';
-import { AccountBalanceWalletRounded, BoltRounded, DashboardRounded, GroupsRounded, LogoutRounded, MapRounded, MenuRounded, ScheduleRounded } from '@mui/icons-material';
+import { AccountBalanceWalletRounded, BoltRounded, DashboardRounded, GroupsRounded, LogoutRounded, MapRounded, MenuRounded, ReceiptLongRounded, ScheduleRounded } from '@mui/icons-material';
 import { useCompanyAuth } from '../contexts/CompanyAuthContext';
 import { useBranding } from '../contexts/BrandingContext';
 
@@ -10,6 +10,7 @@ const navItems = [
   { label: 'Overview', path: '/company/dashboard', icon: <DashboardRounded /> },
   { label: 'Live network', path: '/company/monitor', icon: <MapRounded /> },
   { label: 'Mobile users', path: '/company/users', icon: <GroupsRounded /> },
+  { label: 'Transactions', path: '/company/transactions', icon: <ReceiptLongRounded /> },
   { label: 'Wallet & billing', path: '/company/wallet', icon: <AccountBalanceWalletRounded /> },
   { label: 'Auto funding', path: '/company/funding', icon: <ScheduleRounded /> }
 ];
