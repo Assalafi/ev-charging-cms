@@ -1,7 +1,7 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const {
-  SubscriptionCompany, CompanyUser, CompanyWallet, CompanyWalletTransaction, CompanyFundingRule,
+  User, SubscriptionCompany, CompanyUser, CompanyWallet, CompanyWalletTransaction, CompanyFundingRule,
   MobileUser, Wallet, PaymentTransaction, AuthorizedTag, PaymentSettings, Location, ChargingStation, Connector, Transaction, sequelize
 } = require('../../models');
 const { companyAuthenticate, companyAuthorize } = require('../../middleware/companyAuth');
@@ -118,6 +118,35 @@ function summarizeWalletRows(rows) {
   });
   summary.net = summary.credits - summary.debits;
   return { summary, daily: Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date)) };
+}
+
+async function addWalletPerformers(rows, companyId) {
+  const values = rows.map(row => row.toJSON ? row.toJSON() : row);
+  const performerIds = [...new Set(values.map(row => Number(row.performedBy)).filter(Number.isInteger))];
+  if (!performerIds.length) return values.map(row => ({ ...row, performer: null }));
+
+  const [companyUsers, admins] = await Promise.all([
+    CompanyUser.findAll({ where: { companyId, id: { [Op.in]: performerIds } }, attributes: ['id', 'name', 'email', 'role'], raw: true }),
+    User.findAll({ where: { id: { [Op.in]: performerIds } }, attributes: ['id', 'username', 'fullName', 'email', 'role'], raw: true })
+  ]);
+  const companyById = new Map(companyUsers.map(user => [Number(user.id), user]));
+  const adminById = new Map(admins.map(user => [Number(user.id), user]));
+
+  return values.map(row => {
+    const id = Number(row.performedBy);
+    const companyUser = companyById.get(id);
+    const admin = adminById.get(id);
+    const metadata = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+    const source = String(metadata.source || '').toLowerCase();
+    const description = String(row.description || '').toLowerCase();
+    let performer = null;
+    if (source === 'admin_console' && admin) performer = { ...admin, name: admin.fullName || admin.username, type: 'admin' };
+    else if (source === 'company_portal' && companyUser) performer = { ...companyUser, type: 'company_user' };
+    else if (companyUser && (!admin || description.includes(String(companyUser.name || '').toLowerCase()))) performer = { ...companyUser, type: 'company_user' };
+    else if (admin) performer = { ...admin, name: admin.fullName || admin.username, type: 'admin' };
+    else if (companyUser) performer = { ...companyUser, type: 'company_user' };
+    return { ...row, performer };
+  });
 }
 
 function safeMobileUser(user) {
@@ -336,9 +365,10 @@ router.get('/wallet/transactions', async (req, res) => {
       offset,
       distinct: true
     });
+    const transactions = await addWalletPerformers(result.rows, req.companyId);
     res.json({
       success: true,
-      transactions: result.rows,
+      transactions,
       pagination: { page, limit, total: result.count, pages: Math.ceil(result.count / limit) }
     });
   } catch (error) {
@@ -354,6 +384,7 @@ router.get('/wallet/report', async (req, res) => {
       include,
       order: [['createdAt', 'ASC']]
     });
+    const transactions = await addWalletPerformers(rows, req.companyId);
     const { summary, daily } = summarizeWalletRows(rows);
     const wallet = await CompanyWallet.findOne({ where: { companyId: req.companyId } });
     res.json({
@@ -373,7 +404,7 @@ router.get('/wallet/report', async (req, res) => {
         currency: wallet?.currency || 'NGN',
         summary,
         daily,
-        transactions: rows
+        transactions
       }
     });
   } catch (error) {
