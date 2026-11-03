@@ -21,6 +21,104 @@ function parsePage(query) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
+function walletTransactionFilters(query, companyId) {
+  const where = { companyId };
+  const include = [{
+    model: MobileUser,
+    as: 'beneficiary',
+    attributes: ['id', 'name', 'email', 'phone'],
+    required: false
+  }];
+  const allowedTypes = new Set(['CREDIT', 'DEBIT']);
+  const allowedStatuses = new Set(['PENDING', 'SUCCESS', 'FAILED', 'REVERSED']);
+
+  if (allowedTypes.has(String(query.type || '').toUpperCase())) {
+    where.type = String(query.type).toUpperCase();
+  }
+  if (allowedStatuses.has(String(query.status || '').toUpperCase())) {
+    where.status = String(query.status).toUpperCase();
+  }
+  if (query.method && String(query.method).trim()) {
+    where.method = String(query.method).trim().slice(0, 60);
+  }
+  if (query.beneficiaryUserId && Number.isInteger(Number(query.beneficiaryUserId))) {
+    where.beneficiaryUserId = Number(query.beneficiaryUserId);
+  }
+
+  const from = query.from || query.startDate;
+  const to = query.to || query.endDate;
+  if (from || to) {
+    let start;
+    let end;
+    try {
+      start = from ? parseLagosDate(String(from)) : new Date(0);
+      end = to ? parseLagosDate(String(to), true) : new Date();
+    } catch (error) {
+      throw new Error('Dates must use YYYY-MM-DD format');
+    }
+    if (start > end) throw new Error('The start date must be before the end date');
+    where.createdAt = { [Op.between]: [start, end] };
+  }
+
+  const search = String(query.search || '').trim().slice(0, 100);
+  if (search) {
+    const pattern = `%${search}%`;
+    where[Op.or] = [
+      { reference: { [Op.iLike]: pattern } },
+      { description: { [Op.iLike]: pattern } },
+      { method: { [Op.iLike]: pattern } },
+      { '$beneficiary.name$': { [Op.iLike]: pattern } },
+      { '$beneficiary.email$': { [Op.iLike]: pattern } },
+      { '$beneficiary.phone$': { [Op.iLike]: pattern } }
+    ];
+  }
+
+  return { where, include };
+}
+
+function summarizeWalletRows(rows) {
+  const summary = {
+    count: rows.length,
+    credits: 0,
+    debits: 0,
+    creditCount: 0,
+    debitCount: 0,
+    pending: 0,
+    failed: 0,
+    reversed: 0,
+    successful: 0,
+    net: 0
+  };
+  const byDay = new Map();
+  rows.forEach(row => {
+    const item = row.toJSON ? row.toJSON() : row;
+    const amount = Number(item.amount) || 0;
+    if (item.type === 'CREDIT') {
+      summary.credits += amount;
+      summary.creditCount += 1;
+    } else if (item.type === 'DEBIT') {
+      summary.debits += amount;
+      summary.debitCount += 1;
+    }
+    if (item.status === 'SUCCESS') summary.successful += 1;
+    if (item.status === 'PENDING') summary.pending += 1;
+    if (item.status === 'FAILED') summary.failed += 1;
+    if (item.status === 'REVERSED') summary.reversed += 1;
+
+    const date = new Date(item.createdAt);
+    const local = new Date(date.getTime() + 60 * 60 * 1000);
+    const day = `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, '0')}-${String(local.getUTCDate()).padStart(2, '0')}`;
+    const bucket = byDay.get(day) || { date: day, credits: 0, debits: 0, net: 0, count: 0 };
+    if (item.type === 'CREDIT') bucket.credits += amount;
+    if (item.type === 'DEBIT') bucket.debits += amount;
+    bucket.net = bucket.credits - bucket.debits;
+    bucket.count += 1;
+    byDay.set(day, bucket);
+  });
+  summary.net = summary.credits - summary.debits;
+  return { summary, daily: Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date)) };
+}
+
 function safeMobileUser(user) {
   const value = user.toJSON ? user.toJSON() : user;
   const { password, ...safe } = value;
@@ -225,7 +323,62 @@ router.post('/users/:userId/recover', ...companyAuthorize(['owner', 'manager']),
 });
 
 router.get('/wallet', async (req, res) => { const wallet = await CompanyWallet.findOne({ where: { companyId: req.companyId } }); const balance = Number(wallet?.balance || 0); res.json({ success: true, wallet: { ...(wallet ? wallet.toJSON() : { balance: 0, currency: 'NGN' }), debtEnabled: req.company.debtEnabled === true, debtOutstanding: Math.max(0, -balance) } }); });
-router.get('/wallet/transactions', async (req, res) => { const { page, limit, offset } = parsePage(req.query); const result = await CompanyWalletTransaction.findAndCountAll({ where: { companyId: req.companyId }, include: [{ model: MobileUser, as: 'beneficiary', attributes: ['id', 'name'], required: false }], order: [['createdAt', 'DESC']], limit, offset }); res.json({ success: true, transactions: result.rows, pagination: { page, limit, total: result.count, pages: Math.ceil(result.count / limit) } }); });
+router.get('/wallet/transactions', async (req, res) => {
+  try {
+    const { page, limit, offset } = parsePage(req.query);
+    const { where, include } = walletTransactionFilters(req.query, req.companyId);
+    const result = await CompanyWalletTransaction.findAndCountAll({
+      where,
+      include,
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset,
+      distinct: true
+    });
+    res.json({
+      success: true,
+      transactions: result.rows,
+      pagination: { page, limit, total: result.count, pages: Math.ceil(result.count / limit) }
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message || 'Failed to fetch company wallet history' });
+  }
+});
+
+router.get('/wallet/report', async (req, res) => {
+  try {
+    const { where, include } = walletTransactionFilters(req.query, req.companyId);
+    const rows = await CompanyWalletTransaction.findAll({
+      where,
+      include,
+      order: [['createdAt', 'ASC']]
+    });
+    const { summary, daily } = summarizeWalletRows(rows);
+    const wallet = await CompanyWallet.findOne({ where: { companyId: req.companyId } });
+    res.json({
+      success: true,
+      report: {
+        generatedAt: new Date().toISOString(),
+        filters: {
+          from: req.query.from || req.query.startDate || null,
+          to: req.query.to || req.query.endDate || null,
+          type: req.query.type || 'ALL',
+          status: req.query.status || 'ALL',
+          method: req.query.method || 'ALL',
+          search: req.query.search || ''
+        },
+        currentBalance: Number(wallet?.balance || 0),
+        debtOutstanding: Math.max(0, -Number(wallet?.balance || 0)),
+        currency: wallet?.currency || 'NGN',
+        summary,
+        daily,
+        transactions: rows
+      }
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message || 'Failed to generate wallet report' });
+  }
+});
 
 router.post('/wallet/fund/paystack', ...companyAuthorize(['owner', 'manager']), async (req, res) => {
   let pending; try { const amount = Number(req.body.amount); if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ success: false, message: 'Amount must be greater than 0' }); const email = String(req.body.email || req.company.email || '').trim().toLowerCase(); if (!email) return res.status(400).json({ success: false, message: 'A company email is required for gateway funding' }); const settings = await PaymentSettings.getCategorySettings('paystack'); if (!settings.secretKey) return res.status(503).json({ success: false, message: 'Payment service is not configured' }); pending = await initializeCompanyGatewayFunding({ companyId: req.companyId, amount, method: 'paystack', description: 'Company wallet funding via Paystack', performedBy: req.companyUser.id, metadata: { source: 'company_portal', email } }); const response = await paystackRequest({ method: 'POST', path: '/transaction/initialize', secretKey: settings.secretKey, payload: { amount: Math.round(amount * 100), email, reference: pending.ledger.reference, currency: 'NGN', ...(req.body.callbackUrl ? { callback_url: req.body.callbackUrl } : {}), metadata: { companyId: req.companyId, companyWalletTransactionId: pending.ledger.id } } }); if (!response.body.status || !response.body.data?.authorization_url) { await settleCompanyGatewayFunding({ companyId: req.companyId, reference: pending.ledger.reference, status: 'FAILED', gatewayResponse: response.body }); return res.status(400).json({ success: false, message: response.body.message || 'Payment initialization failed' }); } await pending.ledger.update({ metadata: { ...(pending.ledger.metadata || {}), initializeResponse: response.body } }); res.status(201).json({ success: true, reference: pending.ledger.reference, authorization_url: response.body.data.authorization_url }); } catch (error) { if (pending?.ledger) { try { await settleCompanyGatewayFunding({ companyId: req.companyId, reference: pending.ledger.reference, status: 'FAILED', gatewayResponse: { message: error.message } }); } catch (settleError) { logger.error('Company payment failure settlement error:', settleError); } } res.status(502).json({ success: false, message: error.message || 'Failed to initialize payment' }); }

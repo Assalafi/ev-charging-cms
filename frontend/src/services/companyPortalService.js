@@ -11,6 +11,7 @@ const companyPortalService = {
   recoverUser: (id, payload) => companyApi.post(`/company/users/${id}/recover`, payload),
   wallet: () => companyApi.get('/company/wallet'),
   transactions: (params = {}) => companyApi.get('/company/wallet/transactions', { params }),
+  walletReport: (params = {}) => companyApi.get('/company/wallet/report', { params }),
   initializeFunding: payload => companyApi.post('/company/wallet/fund/paystack', payload),
   verifyFunding: reference => companyApi.get('/company/wallet/fund/paystack/verify', { params: { reference } }),
   rules: () => companyApi.get('/company/funding-rules'),
