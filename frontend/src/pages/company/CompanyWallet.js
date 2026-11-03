@@ -30,6 +30,10 @@ const cleanParams = (filters, page, limit) => {
   return params;
 };
 
+const cleanFilterParams = filters => Object.fromEntries(
+  Object.entries(filters).filter(([, value]) => value && value !== 'ALL')
+);
+
 function SummaryTile({ label, value, helper, icon, tone = 'primary' }) {
   const color = tone === 'success' ? '#039855' : tone === 'error' ? '#D92D20' : '#2563EB';
   return <Card variant="outlined" sx={{ height: '100%', borderRadius: 3, borderColor: alpha(color, .18), background: `linear-gradient(145deg, ${alpha(color, .06)}, #fff)` }}>
@@ -62,7 +66,7 @@ export default function CompanyWallet() {
     try {
       setError(''); setReportLoading(true);
       const [walletResponse, transactionResponse, reportResponse] = await Promise.all([
-        companyPortalService.wallet(), companyPortalService.transactions(params), companyPortalService.walletReport(appliedFilters)
+        companyPortalService.wallet(), companyPortalService.transactions(params), companyPortalService.walletReport(cleanFilterParams(appliedFilters))
       ]);
       setWallet(walletResponse.data.wallet);
       setTransactions(transactionResponse.data.transactions || []);

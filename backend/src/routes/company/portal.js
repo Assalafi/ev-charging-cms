@@ -38,8 +38,9 @@ function walletTransactionFilters(query, companyId) {
   if (allowedStatuses.has(String(query.status || '').toUpperCase())) {
     where.status = String(query.status).toUpperCase();
   }
-  if (query.method && String(query.method).trim()) {
-    where.method = String(query.method).trim().slice(0, 60);
+  const method = String(query.method || '').trim();
+  if (method && method.toUpperCase() !== 'ALL') {
+    where.method = method.slice(0, 60);
   }
   if (query.beneficiaryUserId && Number.isInteger(Number(query.beneficiaryUserId))) {
     where.beneficiaryUserId = Number(query.beneficiaryUserId);
