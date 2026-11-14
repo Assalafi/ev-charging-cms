@@ -9,6 +9,7 @@ const companyPortalService = {
   userActivity: (id, params = {}) => companyApi.get(`/company/users/${id}/activity`, { params }),
   createUser: payload => companyApi.post('/company/users', payload),
   setUserStatus: (id, status) => companyApi.put(`/company/users/${id}/status`, { status }),
+  deleteUser: id => companyApi.delete(`/company/users/${id}`),
   fundUser: (id, payload) => companyApi.post(`/company/users/${id}/fund`, payload),
   recoverUser: (id, payload) => companyApi.post(`/company/users/${id}/recover`, payload),
   wallet: () => companyApi.get('/company/wallet'),

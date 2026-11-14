@@ -323,11 +323,15 @@ router.get('/transactions', async (req, res) => {
 router.get('/users', async (req, res) => {
   try {
     const { page, limit, offset } = parsePage(req.query); const where = { companyId: req.companyId };
+    // Released/deactivated drivers belong to the system-admin mobile-user
+    // directory and must not remain in the company's driver directory. An
+    // explicit status filter is still accepted for backwards compatibility.
     if (req.query.status && req.query.status !== 'all') where.status = req.query.status;
+    else where.status = { [Op.ne]: 'deleted' };
     if (req.query.search) { const search = `%${String(req.query.search).trim()}%`; where[Op.or] = [{ name: { [Op.iLike]: search } }, { email: { [Op.iLike]: search } }, { phone: { [Op.iLike]: search } }, { tagId: { [Op.iLike]: search } }, { legacyTagId: { [Op.iLike]: search } }]; }
     const [result, statusRows] = await Promise.all([
       MobileUser.findAndCountAll({ where, attributes: { exclude: ['password'] }, include: [{ model: Wallet, as: 'wallet', attributes: ['id', 'balance', 'currency', 'isActive'], required: false }], order: [['name', 'ASC']], limit, offset, distinct: true }),
-      MobileUser.findAll({ where: { companyId: req.companyId }, attributes: ['status', [sequelize.fn('COUNT', sequelize.col('id')), 'count']], group: ['status'], raw: true })
+      MobileUser.findAll({ where: { companyId: req.companyId, status: { [Op.ne]: 'deleted' } }, attributes: ['status', [sequelize.fn('COUNT', sequelize.col('id')), 'count']], group: ['status'], raw: true })
     ]);
     const stats = statusRows.reduce((summary, row) => {
       const count = Number(row.count) || 0;
@@ -438,7 +442,35 @@ router.post('/users', ...companyAuthorize(['owner', 'manager']), async (req, res
 
 router.put('/users/:userId/status', ...companyAuthorize(['owner', 'manager']), async (req, res) => {
   const status = req.body.status; if (!['active', 'suspended', 'deleted'].includes(status)) return res.status(400).json({ success: false, message: 'Invalid user status' });
-  try { const user = await MobileUser.findOne({ where: { id: req.params.userId, companyId: req.companyId } }); if (!user) return res.status(404).json({ success: false, message: 'Company mobile user not found' }); await user.update({ status, active: status === 'active', deletedAt: status === 'deleted' ? new Date() : null }); await AuthorizedTag.update({ status: status === 'active' ? 'Active' : 'Blocked', blocked: status !== 'active' }, { where: { tagId: { [Op.in]: tagAliases(user) } } }); res.json({ success: true, message: `Mobile user ${status === 'deleted' ? 'deactivated' : status}`, user: safeMobileUser(user) }); } catch (error) { res.status(500).json({ success: false, message: 'Failed to update mobile user' }); }
+  try {
+    const user = await MobileUser.findOne({ where: { id: req.params.userId, companyId: req.companyId } });
+    if (!user) return res.status(404).json({ success: false, message: 'Company mobile user not found' });
+    const released = status === 'deleted';
+    await user.update({
+      status,
+      active: status === 'active',
+      deletedAt: released ? new Date() : null,
+      ...(released ? { companyId: null } : {})
+    });
+    await AuthorizedTag.update({ status: status === 'active' ? 'Active' : 'Blocked', blocked: status !== 'active' }, { where: { tagId: { [Op.in]: tagAliases(user) } } });
+    res.json({ success: true, message: released ? 'Mobile user deleted from company and deactivated' : `Mobile user ${status}`, user: safeMobileUser(user) });
+  } catch (error) { logger.error('Company mobile user status error:', error); res.status(500).json({ success: false, message: 'Failed to update mobile user' }); }
+});
+
+// Release a company driver to the system-admin mobile-user directory. This is
+// a soft delete: the account, wallet, tags and all historical activity remain
+// stored, while access is disabled and the company assignment is removed.
+router.delete('/users/:userId', ...companyAuthorize(['owner', 'manager']), async (req, res) => {
+  try {
+    const user = await MobileUser.findOne({ where: { id: req.params.userId, companyId: req.companyId } });
+    if (!user) return res.status(404).json({ success: false, message: 'Company mobile user not found' });
+    await user.update({ companyId: null, status: 'deleted', active: false, deletedAt: new Date() });
+    await AuthorizedTag.update({ status: 'Blocked', blocked: true }, { where: { tagId: { [Op.in]: tagAliases(user) } } });
+    res.json({ success: true, message: 'Mobile user deleted from company and deactivated', user: safeMobileUser(user) });
+  } catch (error) {
+    logger.error('Company mobile user delete error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete mobile user' });
+  }
 });
 
 router.post('/users/:userId/fund', ...companyAuthorize(['owner', 'manager']), async (req, res) => {

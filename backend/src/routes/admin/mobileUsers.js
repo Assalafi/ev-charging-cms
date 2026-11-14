@@ -13,22 +13,24 @@ router.get('/', authenticate, requirePermission('mobile_users.view'), async (req
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const search = req.query.search || '';
+    const requestedStatus = String(req.query.status || 'all').toLowerCase();
+    const statusFilter = ['active', 'suspended', 'deleted'].includes(requestedStatus)
+      ? { status: requestedStatus }
+      : {};
     const offset = (page - 1) * limit;
 
-    const whereClause = search ? {
-      [require('sequelize').Op.and]: [
-        {
-          [require('sequelize').Op.or]: [
-            { name: { [require('sequelize').Op.iLike]: `%${search}%` } },
-            { email: { [require('sequelize').Op.iLike]: `%${search}%` } },
-            { phone: { [require('sequelize').Op.iLike]: `%${search}%` } },
-            { tagId: { [require('sequelize').Op.iLike]: `%${search}%` } },
-            { legacyTagId: { [require('sequelize').Op.iLike]: `%${search}%` } }
-          ]
-        },
-        { status: { [require('sequelize').Op.ne]: 'deleted' } }
+    const searchWhere = {
+      [require('sequelize').Op.or]: [
+        { name: { [require('sequelize').Op.iLike]: `%${search}%` } },
+        { email: { [require('sequelize').Op.iLike]: `%${search}%` } },
+        { phone: { [require('sequelize').Op.iLike]: `%${search}%` } },
+        { tagId: { [require('sequelize').Op.iLike]: `%${search}%` } },
+        { legacyTagId: { [require('sequelize').Op.iLike]: `%${search}%` } }
       ]
-    } : { status: { [require('sequelize').Op.ne]: 'deleted' } };
+    };
+    const whereClause = search
+      ? { [require('sequelize').Op.and]: [searchWhere, ...(Object.keys(statusFilter).length ? [statusFilter] : [])] }
+      : statusFilter;
 
     const { count, rows: users } = await MobileUser.findAndCountAll({
       where: whereClause,

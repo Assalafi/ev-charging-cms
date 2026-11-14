@@ -127,9 +127,9 @@ export default function CompanyUsers() {
 
   const deactivate = async user => {
     closeMenu();
-    if (!window.confirm(`Deactivate ${user.name}? Their charging access will be blocked.`)) return;
-    try { await companyPortalService.setUserStatus(user.id, 'deleted'); await loadUsers({ silent: true }); }
-    catch (requestError) { setError(requestError.serverMessage || requestError.message || 'Failed to deactivate user'); }
+    if (!window.confirm(`Delete ${user.name} from this company? Their mobile account will be deactivated and moved to the system-admin mobile-user list.`)) return;
+    try { await companyPortalService.deleteUser(user.id); await loadUsers({ silent: true }); }
+    catch (requestError) { setError(requestError.serverMessage || requestError.message || 'Failed to delete user'); }
   };
 
   const fund = async () => {

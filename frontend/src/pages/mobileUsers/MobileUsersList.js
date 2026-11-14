@@ -145,11 +145,12 @@ const MobileUsersList = () => {
     const status = user.status || (user.active !== false ? 'active' : 'suspended');
     const color = status === 'active' ? 'success' : status === 'suspended' ? 'warning' : 'error';
     const icon = status === 'active' ? <CheckCircleIcon /> : status === 'suspended' ? <BlockIcon /> : <DeleteIcon />;
+    const label = status === 'deleted' ? 'Deactivated' : status.charAt(0).toUpperCase() + status.slice(1);
     
     return (
       <Chip
         icon={icon}
-        label={status.charAt(0).toUpperCase() + status.slice(1)}
+        label={label}
         color={color}
         size="small"
       />
