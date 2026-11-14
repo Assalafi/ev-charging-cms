@@ -12,6 +12,7 @@ const {
   tagAliases,
   generateChargerTag
 } = require('../services/chargerTagService');
+const offlineTransactionRecovery = require('../services/offlineTransactionRecovery');
 
 const router = express.Router();
 
@@ -878,26 +879,70 @@ router.post('/charging/stop', mobileAuth, async (req, res) => {
     });
 
     if (!transaction) {
-      // Fallback: find any InProgress transaction at this station
-      const fallbackTx = await Transaction.findOne({
-        where: { chargePointId, status: 'InProgress' },
-        order: [['startTime', 'DESC']]
-      });
-
-      if (!fallbackTx) {
-        return res.status(404).json({ success: false, message: 'No active charging session found' });
-      }
+      // Never fall back to another driver's transaction. A mobile stop request
+      // must be proven against the authenticated user's tag aliases, otherwise
+      // one driver could stop (and potentially bill) another driver's session.
+      return res.status(404).json({ success: false, message: 'No active charging session found for your account' });
     }
 
     if (!ocppServer.isConnected(chargePointId)) {
-      return res.status(503).json({ success: false, message: 'Station is offline' });
+      // The charger cannot receive a RemoteStopTransaction while its OCPP
+      // socket is down. Finalize the CMS record from the latest accepted meter
+      // value instead of making the driver wait for the 24-hour recovery timer.
+      // Keep the canonical NetworkDisconnected reason so a later reconnect can
+      // safely reopen/refund this provisional billing if the charger proves it
+      // continued charging offline.
+      const finalized = await offlineTransactionRecovery.completeOfflineTransaction(
+        transaction,
+        new Date(),
+        {
+          reason: 'NetworkDisconnected',
+          stopReason: 'Stopped by driver while station was offline'
+        }
+      );
+
+      if (!finalized.completed) {
+        const current = await Transaction.findOne({
+          where: { transactionId: transaction.transactionId }
+        });
+        if (current && ['Completed', 'Stopped'].includes(current.status)) {
+          return res.json({
+            success: true,
+            transactionId: current.transactionId,
+            status: current.status,
+            amount: Number(current.amount) || 0,
+            energyDelivered: Number(current.energyDelivered) || 0,
+            billed: Boolean(current.billedAt),
+            message: 'Your charging session was already completed'
+          });
+        }
+        return res.status(409).json({
+          success: false,
+          message: finalized.reason || 'The charging session could not be finalized safely'
+        });
+      }
+
+      const completed = await Transaction.findOne({
+        where: { transactionId: transaction.transactionId }
+      });
+      return res.json({
+        success: true,
+        offlineFinalized: true,
+        transactionId: transaction.transactionId,
+        status: completed?.status || 'Completed',
+        amount: Number(completed?.amount) || 0,
+        energyDelivered: Number(completed?.energyDelivered) || 0,
+        billed: Boolean(completed?.billedAt),
+        billing: finalized.billing,
+        message: finalized.billing?.success === false
+          ? 'Session completed; billing will retry automatically'
+          : 'Session completed and billed from the latest meter value'
+      });
     }
 
     // Mark user-initiated stop reason
-    const activeTx = transaction || await Transaction.findOne({ where: { chargePointId, status: 'InProgress' }, order: [['startTime', 'DESC']] });
-    if (activeTx) {
-      await activeTx.update({ stopReason: 'Stopped by you' });
-    }
+    const activeTx = transaction;
+    await activeTx.update({ stopReason: 'Stopped by you' });
 
     // currentTransaction can point to an internal recovery row. Resolve the
     // OCPP ID from the latest charger telemetry before sending the stop.

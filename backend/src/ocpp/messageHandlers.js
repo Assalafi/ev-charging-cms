@@ -55,6 +55,13 @@ const terminalRecoveryTimers = new Map()
 // frame while the charger is processing the previous stop request.
 const automaticStopRequests = new Map()
 const AUTOMATIC_STOP_RETRY_MS = 60 * 1000
+// A driver may close a session from the mobile app while the charger is
+// offline. When it reconnects and sends a newer meter register, the session
+// is reopened only to reconcile that extra energy; this map prevents one
+// RemoteStopTransaction from being sent for every subsequent MeterValues
+// frame while the charger processes the first command.
+const offlineStopRequests = new Map()
+const OFFLINE_STOP_RETRY_MS = 60 * 1000
 const NETWORK_SESSION_RESUME_WINDOW_MS = Number.parseInt(
   process.env.OCPP_NETWORK_SESSION_RESUME_WINDOW_MS || String(7 * 24 * 60 * 60 * 1000),
   10
@@ -63,6 +70,87 @@ const TERMINAL_STATUS_GRACE_MS = Number.parseInt(
   process.env.OCPP_TERMINAL_STATUS_GRACE_MS || "30000",
   10
 )
+
+function isDriverStopRequested(transaction) {
+  return [
+    "Stopped by driver while station was offline",
+    "Stopped by you",
+  ].includes(String(transaction?.stopReason || ""))
+}
+
+async function requestOfflineDriverStop({
+  chargePointId,
+  connectorId,
+  transaction,
+  reportedTransactionId,
+}) {
+  if (!isDriverStopRequested(transaction)) return { sent: false, reason: "not requested" }
+
+  const key = `${chargePointId}:${connectorId}:${transaction.transactionId}`
+  const previous = offlineStopRequests.get(key)
+  if (previous && Date.now() - previous < OFFLINE_STOP_RETRY_MS) {
+    return { sent: false, reason: "already requested" }
+  }
+
+  const reportedId = Number(reportedTransactionId)
+  const linkedId = Number(transaction.ocppTransactionId)
+  let commandTransactionId =
+    Number.isSafeInteger(reportedId) && reportedId > 0
+      ? reportedId
+      : Number.isSafeInteger(linkedId) && linkedId > 0
+        ? linkedId
+        : null
+
+  // Do not send an internal CMS recovery ID to the charger. If the current
+  // frame did not contain the original OCPP ID, resolve it from the durable
+  // StartTransaction/MeterValues evidence instead.
+  if (!commandTransactionId) {
+    commandTransactionId = await resolveCanonicalOcppTransactionId({
+      chargePointId,
+      connectorId,
+      fallbackTransactionId: transaction.transactionId,
+    })
+  }
+  if (!Number.isSafeInteger(Number(commandTransactionId)) || Number(commandTransactionId) <= 0) {
+    logger.warn(
+      `Offline-stop recovery has no safe charger transaction ID for ` +
+        `${chargePointId}:${connectorId} (CMS tx ${transaction.transactionId})`
+    )
+    return { sent: false, reason: "charger transaction ID unavailable" }
+  }
+
+  const ocppServer = require("./server")
+  if (!ocppServer.isConnected(chargePointId)) {
+    return { sent: false, reason: "station disconnected again" }
+  }
+
+  offlineStopRequests.set(key, Date.now())
+  try {
+    const result = await ocppServer.sendOcppRequest(chargePointId, "RemoteStopTransaction", {
+      transactionId: Number(commandTransactionId),
+    })
+    if (!result?.success) {
+      offlineStopRequests.delete(key)
+      logger.warn(
+        `Offline-stop recovery was rejected for ${chargePointId}:${connectorId} ` +
+          `(OCPP tx ${commandTransactionId}): ${result?.error || "unknown error"}`
+      )
+      return { sent: false, reason: result?.error || "charger rejected stop" }
+    }
+
+    logger.warn(
+      `Offline-stop recovery sent RemoteStopTransaction for ${chargePointId}:${connectorId} ` +
+        `(OCPP tx ${commandTransactionId}, CMS tx ${transaction.transactionId})`
+    )
+    return { sent: true, commandTransactionId: Number(commandTransactionId) }
+  } catch (error) {
+    offlineStopRequests.delete(key)
+    logger.error(
+      `Offline-stop recovery failed for ${chargePointId}:${connectorId}: ${error.message}`
+    )
+    return { sent: false, reason: error.message }
+  }
+}
 
 async function withStationSessionLock(chargePointId, operation) {
   const key = String(chargePointId)
@@ -480,9 +568,30 @@ async function resolveMeterValuesTransactionUnlocked({
     reported.offlineSince &&
     reported.stopTime &&
     Date.now() - new Date(reported.stopTime).getTime() <= NETWORK_SESSION_RESUME_WINDOW_MS &&
-    chargingSignal &&
     Number.isFinite(meterValueWh) &&
-    meterValueWh >= (Number(reported.stopMeterValue) || Number(reported.startMeterValue) || 0)
+    meterValueWh >= (Number(reported.stopMeterValue) || Number(reported.startMeterValue) || 0) &&
+    (
+      // A normal reconnect requires positive power/current evidence. A driver
+      // stop made while offline is stricter in a different way: the charger
+      // must report the same OCPP transaction and a newer cumulative meter.
+      // This catches chargers that omit Power.Active.Import/Current.Import
+      // while still preventing an unrelated user's telemetry from reopening
+      // the billed record.
+      chargingSignal ||
+      (
+        isDriverStopRequested(reported) &&
+        Number(reportedTransactionId) > 0 &&
+        (
+          Number(reported.ocppTransactionId) === Number(reportedTransactionId) ||
+          (
+            Number(reported.transactionId) === Number(reportedTransactionId) &&
+            !String(reported.reason || "").startsWith("OCPP_") &&
+            !String(reported.ownershipSource || "").includes("recovery")
+          )
+        ) &&
+        meterValueWh > (Number(reported.stopMeterValue) || Number(reported.startMeterValue) || 0)
+      )
+    )
   ) {
     const remoteStartIntent = await findVerifiedRemoteStartIntent({
       chargePointId,
@@ -1698,6 +1807,9 @@ async function handleStopTransaction(chargePointId, uniqueId, payload) {
       if (transaction) {
         normalizedPayload.transactionId = transaction.transactionId
         clearTerminalRecovery(chargePointId, transaction.connectorId)
+        offlineStopRequests.delete(
+          `${chargePointId}:${transaction.connectorId}:${transaction.transactionId}`
+        )
       }
 
       if (!transaction) {
@@ -2384,6 +2496,7 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
     let transactionId = reportedTransactionId
     const meterValues = payload.meterValue || []
     let internalTransactionId = null
+    let offlineStopIntent = null
 
     if (meterValues.length > 0) {
       const energyEvidence = meterValues
@@ -2430,6 +2543,12 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
             resolvedTransaction = null
           } else {
             resolvedTransaction = reopened.transaction
+            if (isDriverStopRequested(resolvedTransaction)) {
+              offlineStopIntent = {
+                transaction: resolvedTransaction,
+                reportedTransactionId,
+              }
+            }
             await updateConnectorStatus(
               chargePointId,
               connectorId,
@@ -2453,6 +2572,12 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
         if (resolvedTransaction) {
           transactionId = resolvedTransaction.transactionId
           internalTransactionId = resolvedTransaction.id
+          if (isDriverStopRequested(resolvedTransaction)) {
+            offlineStopIntent = {
+              transaction: resolvedTransaction,
+              reportedTransactionId,
+            }
+          }
           clearTerminalRecovery(chargePointId, connectorId)
         }
       } else if (reportedTransactionId) {
@@ -2924,6 +3049,20 @@ async function handleMeterValues(chargePointId, uniqueId, payload) {
           dbError
         )
       }
+    }
+
+    // The mobile app may have finalized this session while the station was
+    // offline. Once a newer meter sample proves the charger is still running,
+    // reconcile that sample above and immediately ask the charger to stop the
+    // same OCPP transaction. The request is deduplicated and retried only
+    // after a short interval if the charger rejects it.
+    if (offlineStopIntent) {
+      await requestOfflineDriverStop({
+        chargePointId,
+        connectorId,
+        transaction: offlineStopIntent.transaction,
+        reportedTransactionId: offlineStopIntent.reportedTransactionId,
+      })
     }
 
     // Return OCPP 1.6 compliant response (empty payload)
