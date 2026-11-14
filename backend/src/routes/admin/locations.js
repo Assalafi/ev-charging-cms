@@ -180,11 +180,15 @@ async function loadLocationActivity(locationId, req, exportAll = false) {
     if (filters.from) eventWhere.timestamp[Op.gte] = filters.from;
     if (filters.to) eventWhere.timestamp[Op.lte] = filters.to;
   }
-  const events = await OcppMessage.findAll({
+  const eventPage = Math.max(Number.parseInt(req.query.eventPage, 10) || 1, 1);
+  const eventLimit = Math.min(Math.max(Number.parseInt(req.query.eventLimit, 10) || 20, 1), 100);
+  const eventOffset = (eventPage - 1) * eventLimit;
+  const { rows: eventRows, count: eventTotal } = await OcppMessage.findAndCountAll({
     where: eventWhere,
     attributes: ['id', 'chargePointId', 'message_type', 'status', 'direction', 'timestamp', 'createdAt', 'errorCode', 'errorDescription'],
     order: [['timestamp', 'DESC'], ['createdAt', 'DESC']],
-    limit: 100
+    limit: eventLimit,
+    offset: eventOffset
   });
 
   return {
@@ -200,9 +204,10 @@ async function loadLocationActivity(locationId, req, exportAll = false) {
     stationSummary: summaryData.stationSummary,
     summary: summaryData.summary,
     daily: summaryData.daily,
-    events: events.map(event => event.toJSON()),
+    events: eventRows.map(event => event.toJSON()),
     transactions,
-    pagination: { page, limit, total: summaryRows.length, pages: Math.ceil(summaryRows.length / limit) }
+    pagination: { page, limit, total: summaryRows.length, pages: Math.ceil(summaryRows.length / limit) },
+    eventPagination: { page: eventPage, limit: eventLimit, total: eventTotal, pages: Math.ceil(eventTotal / eventLimit) }
   };
 }
 
