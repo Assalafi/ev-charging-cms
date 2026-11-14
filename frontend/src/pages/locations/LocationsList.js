@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Alert,
   Box,
@@ -42,7 +43,8 @@ import {
   MapRounded,
   PaymentsRounded,
   RefreshRounded,
-  SearchRounded
+  SearchRounded,
+  VisibilityRounded
 } from '@mui/icons-material';
 import api from '../../services/api';
 import nigerianStates from '../../utils/nigerian-states';
@@ -66,6 +68,7 @@ function stationTone(status) {
 }
 
 function LocationsList() {
+  const navigate = useNavigate();
   const theme = useTheme();
   const compactDialog = useMediaQuery(theme.breakpoints.down('sm'));
   const { hasPermission } = useAuth();
@@ -283,8 +286,11 @@ function LocationsList() {
                       <Box sx={{ p: 1.25, borderRadius: 2.5, bgcolor: 'action.hover' }}><Typography variant="caption" color="text.secondary">Minimum</Typography><Typography fontWeight={760} noWrap>{naira(location.minimumCharge)}</Typography></Box>
                     </Box>
 
-                    <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mt: 2 }}>
-                      <Button size="small" color="inherit" endIcon={<ExpandMoreRounded sx={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 180ms' }} />} onClick={() => setExpanded(previous => ({ ...previous, [location.id]: !previous[location.id] }))}>{isExpanded ? 'Hide stations' : 'View stations'}</Button>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ mt: 2 }}>
+                      <Stack direction="row" spacing={0.5} flexWrap="wrap">
+                        <Button size="small" variant="contained" startIcon={<VisibilityRounded />} onClick={() => navigate(`/locations/${location.id}`)}>View activity</Button>
+                        <Button size="small" color="inherit" endIcon={<ExpandMoreRounded sx={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 180ms' }} />} onClick={() => setExpanded(previous => ({ ...previous, [location.id]: !previous[location.id] }))}>{isExpanded ? 'Hide stations' : 'View stations'}</Button>
+                      </Stack>
                       {canUpdate && <Button size="small" variant="outlined" startIcon={<LinkRounded />} onClick={() => openAssign(location)}>Assign station</Button>}
                     </Stack>
                   </Box>

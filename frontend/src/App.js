@@ -17,6 +17,7 @@ import Settings from './pages/Settings';
 import AppUpdate from './pages/AppUpdate';
 import MobileUsersList from './pages/mobileUsers/MobileUsersList';
 import LocationsList from './pages/locations/LocationsList';
+import LocationDetail from './pages/locations/LocationDetail';
 import AdsBoardList from './pages/adsBoard/AdsBoardList';
 import PaymentManagement from './pages/PaymentManagement';
 import PartnerList from './pages/partners/PartnerList';
@@ -94,7 +95,10 @@ function App() {
         </Route>
         
         <Route path="mobile-users" element={<PrivateRoute permission="mobile_users.view"><MobileUsersList /></PrivateRoute>} />
-        <Route path="locations" element={<PrivateRoute permission="locations.view"><LocationsList /></PrivateRoute>} />
+        <Route path="locations">
+          <Route index element={<PrivateRoute permission="locations.view"><LocationsList /></PrivateRoute>} />
+          <Route path=":id" element={<PrivateRoute permission="locations.view"><LocationDetail /></PrivateRoute>} />
+        </Route>
         <Route path="monitor" element={<PrivateRoute permission="monitor.view"><AdminMonitorMap /></PrivateRoute>} />
         <Route path="payments" element={<PrivateRoute permission="payments.view"><PaymentManagement /></PrivateRoute>} />
         <Route path="ads-board" element={<PrivateRoute permission="ads.view"><AdsBoardList /></PrivateRoute>} />
