@@ -183,13 +183,14 @@ async function loadLocationActivity(locationId, req, exportAll = false) {
   const eventPage = Math.max(Number.parseInt(req.query.eventPage, 10) || 1, 1);
   const eventLimit = Math.min(Math.max(Number.parseInt(req.query.eventLimit, 10) || 20, 1), 100);
   const eventOffset = (eventPage - 1) * eventLimit;
-  const { rows: eventRows, count: eventTotal } = await OcppMessage.findAndCountAll({
+  const eventRows = await OcppMessage.findAll({
     where: eventWhere,
     attributes: ['id', 'chargePointId', 'message_type', 'status', 'direction', 'timestamp', 'createdAt', 'errorCode', 'errorDescription'],
-    order: [['timestamp', 'DESC'], ['createdAt', 'DESC']],
-    limit: eventLimit,
+    order: [['createdAt', 'DESC'], ['timestamp', 'DESC'], ['id', 'DESC']],
+    limit: eventLimit + 1,
     offset: eventOffset
   });
+  const hasMoreEvents = eventRows.length > eventLimit;
 
   return {
     location: location.toJSON(),
@@ -204,10 +205,10 @@ async function loadLocationActivity(locationId, req, exportAll = false) {
     stationSummary: summaryData.stationSummary,
     summary: summaryData.summary,
     daily: summaryData.daily,
-    events: eventRows.map(event => event.toJSON()),
+    events: eventRows.slice(0, eventLimit).map(event => event.toJSON()),
     transactions,
     pagination: { page, limit, total: summaryRows.length, pages: Math.ceil(summaryRows.length / limit) },
-    eventPagination: { page: eventPage, limit: eventLimit, total: eventTotal, pages: Math.ceil(eventTotal / eventLimit) }
+    eventPagination: { page: eventPage, limit: eventLimit, hasNext: hasMoreEvents, hasPrevious: eventPage > 1 }
   };
 }
 
