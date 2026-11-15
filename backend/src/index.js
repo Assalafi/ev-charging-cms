@@ -70,11 +70,20 @@ const rateLimitWindowMs = positiveInteger(
   15 * 60 * 1000
 );
 
+// Keep failed-login protection isolated to the attempted account as well as
+// the client address. A shared office/mobile-carrier IP must not lock every
+// administrator out because another user mistyped their password.
+const loginKeyGenerator = req => {
+  const username = String(req.body?.username || '').trim().toLowerCase().slice(0, 160);
+  return `${req.ip}:${username || 'unknown'}`;
+};
+
 // Login attempts have their own bucket. This prevents normal authenticated API
 // traffic (especially live dashboard polling) from locking users out of login.
 const loginLimiter = rateLimit({
   windowMs: positiveInteger(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
   limit: positiveInteger(process.env.AUTH_RATE_LIMIT_MAX, isProduction ? 10 : 50),
+  keyGenerator: loginKeyGenerator,
   skipSuccessfulRequests: true,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
