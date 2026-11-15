@@ -11,6 +11,12 @@ const { validatePricingSettings } = require('../utils/pricingValidator');
  */
 async function pricingValidationMiddleware(req, res, next) {
   try {
+    // Pricing is no longer a platform-wide prerequisite: locations, companies
+    // and authentication can use their own tariff context. Charging/billing
+    // handlers validate pricing at the point where a price is actually needed.
+    // Keep the old gate available only for an explicit legacy deployment.
+    if (process.env.ENFORCE_GLOBAL_PRICING !== 'true') return next();
+
     // Skip pricing validation for certain routes
     const skipValidationRoutes = [
       '/api/auth/login',
@@ -26,7 +32,8 @@ async function pricingValidationMiddleware(req, res, next) {
     ];
     
     // Check if we should skip validation
-    const shouldSkip = skipValidationRoutes.includes(req.path) || 
+    const shouldSkip = req.path.startsWith('/api/auth/') ||
+                      skipValidationRoutes.includes(req.path) ||
                       skipValidationPrefixes.some(prefix => req.path.startsWith(prefix));
     
     if (shouldSkip) {
