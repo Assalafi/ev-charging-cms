@@ -22,6 +22,66 @@ const energy = value => {
 const dateTime = value => value ? new Intl.DateTimeFormat('en-NG', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Africa/Lagos' }).format(new Date(value)) : '—';
 const statusColor = status => status === 'Completed' || status === 'Available' || status === 'SUCCESS' ? 'success' : status === 'InProgress' || status === 'Charging' || status === 'Pending' ? 'warning' : status === 'Faulted' || status === 'FAILED' ? 'error' : 'default';
 
+const datePresetOptions = [
+  ['all', 'All time'],
+  ['today', 'Today'],
+  ['yesterday', 'Yesterday'],
+  ['last7Days', 'Last 7 days'],
+  ['last30Days', 'Last 30 days'],
+  ['thisWeek', 'This week'],
+  ['lastWeek', 'Last week'],
+  ['thisMonth', 'This month'],
+  ['lastMonth', 'Last month'],
+  ['thisQuarter', 'This quarter'],
+  ['lastQuarter', 'Last quarter'],
+  ['thisYear', 'This year'],
+  ['lastYear', 'Last year'],
+  ['custom', 'Custom date range']
+];
+
+function watCalendarDate(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Lagos', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const values = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]));
+  return new Date(Date.UTC(values.year, values.month - 1, values.day));
+}
+
+function dateKey(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function shiftDate(date, days) {
+  const shifted = new Date(date);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted;
+}
+
+function resolveDatePreset(preset) {
+  const today = watCalendarDate();
+  if (preset === 'all') return { from: '', to: '' };
+  if (preset === 'today') return { from: dateKey(today), to: dateKey(today) };
+  if (preset === 'yesterday') { const day = shiftDate(today, -1); return { from: dateKey(day), to: dateKey(day) }; }
+  if (preset === 'last7Days') return { from: dateKey(shiftDate(today, -6)), to: dateKey(today) };
+  if (preset === 'last30Days') return { from: dateKey(shiftDate(today, -29)), to: dateKey(today) };
+
+  const mondayOffset = (today.getUTCDay() + 6) % 7;
+  const thisWeek = shiftDate(today, -mondayOffset);
+  if (preset === 'thisWeek') return { from: dateKey(thisWeek), to: dateKey(shiftDate(thisWeek, 6)) };
+  if (preset === 'lastWeek') { const start = shiftDate(thisWeek, -7); return { from: dateKey(start), to: dateKey(shiftDate(start, 6)) }; }
+
+  const thisMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  if (preset === 'thisMonth') return { from: dateKey(thisMonth), to: dateKey(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 0))) };
+  if (preset === 'lastMonth') return { from: dateKey(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1))), to: dateKey(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 0))) };
+  const quarter = Math.floor(today.getUTCMonth() / 3);
+  if (preset === 'thisQuarter') return { from: dateKey(new Date(Date.UTC(today.getUTCFullYear(), quarter * 3, 1))), to: dateKey(new Date(Date.UTC(today.getUTCFullYear(), quarter * 3 + 3, 0))) };
+  if (preset === 'lastQuarter') {
+    const startMonth = quarter * 3 - 3;
+    return { from: dateKey(new Date(Date.UTC(today.getUTCFullYear(), startMonth, 1))), to: dateKey(new Date(Date.UTC(today.getUTCFullYear(), startMonth + 3, 0))) };
+  }
+  if (preset === 'thisYear') return { from: `${today.getUTCFullYear()}-01-01`, to: `${today.getUTCFullYear()}-12-31` };
+  if (preset === 'lastYear') return { from: `${today.getUTCFullYear() - 1}-01-01`, to: `${today.getUTCFullYear() - 1}-12-31` };
+  return { from: '', to: '' };
+}
+
 function Metric({ label, value, helper, icon, color = 'primary' }) {
   return <Card sx={{ height: '100%', border: '1px solid', borderColor: 'divider' }}><CardContent sx={{ p: { xs: 1.75, sm: 2.25 } }}><Stack direction="row" justifyContent="space-between" spacing={1.5}><Box><Typography variant="caption" color="text.secondary" fontWeight={700}>{label}</Typography><Typography variant="h5" fontWeight={850} sx={{ mt: .5 }}>{value}</Typography><Typography variant="caption" color="text.secondary">{helper}</Typography></Box><Box sx={{ width: 42, height: 42, borderRadius: 2.5, display: 'grid', placeItems: 'center', color: `${color}.main`, bgcolor: `${color}.50` }}>{icon}</Box></Stack></CardContent></Card>;
 }
@@ -63,7 +123,7 @@ export default function LocationDetail() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
-  const [filters, setFilters] = useState({ from: '', to: '', station: '', status: 'all', search: '', page: 1, limit: 20, eventPage: 1, eventLimit: 20 });
+  const [filters, setFilters] = useState({ from: '', to: '', datePreset: 'all', station: '', status: 'all', search: '', page: 1, limit: 20, eventPage: 1, eventLimit: 20 });
 
   const load = useCallback(async ({ silent = false } = {}) => {
     try {
@@ -83,8 +143,9 @@ export default function LocationDetail() {
     ...changes,
     ...(resetTransactionPage && !Object.prototype.hasOwnProperty.call(changes, 'page') ? { page: 1 } : {})
   }));
-  const clearFilters = () => setFilters(previous => ({ ...previous, from: '', to: '', station: '', status: 'all', search: '', page: 1, eventPage: 1 }));
-  const hasFilters = Boolean(filters.from || filters.to || filters.station || filters.search || filters.status !== 'all');
+  const clearFilters = () => setFilters(previous => ({ ...previous, from: '', to: '', datePreset: 'all', station: '', status: 'all', search: '', page: 1, eventPage: 1 }));
+  const applyDatePreset = preset => setFilters(previous => ({ ...previous, datePreset: preset, ...resolveDatePreset(preset), page: 1, eventPage: 1 }));
+  const hasFilters = Boolean(filters.from || filters.to || filters.station || filters.search || filters.status !== 'all' || filters.datePreset !== 'all');
   const stationSummary = report?.stationSummary || [];
   const summary = report?.summary || {};
   const pagination = report?.pagination || { page: 1, limit: filters.limit, total: 0, pages: 0 };
@@ -138,7 +199,7 @@ export default function LocationDetail() {
       <Grid item xs={12} sm={6} md={4} xl={4}><Metric label="Stations online" value={`${stations.filter(station => ['Available', 'Charging', 'Preparing', 'SuspendedEV', 'SuspendedEVSE', 'Finishing', 'Reserved'].includes(station.status)).length}/${stations.length}`} helper="Available or charging" icon={<WifiRounded />} color="success" /></Grid>
     </Grid>
 
-    <Card variant="outlined"><CardContent sx={{ p: { xs: 1.5, md: 2 } }}><Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}><TuneRounded color="primary" /><Box><Typography fontWeight={800}>Find activity</Typography><Typography variant="caption" color="text.secondary">Search charging sessions by date, station, customer tag, or status.</Typography></Box></Stack><Grid container spacing={1.25} alignItems="center"><Grid item xs={12} md={4}><TextField fullWidth size="small" placeholder="Search session, customer tag or station" value={filters.search} onChange={event => updateFilter({ search: event.target.value })} InputProps={{ startAdornment: <InputAdornment position="start"><SearchRounded fontSize="small" /></InputAdornment> }} /></Grid><Grid item xs={6} md={2}><TextField fullWidth size="small" label="Start date" type="date" value={filters.from} onChange={event => updateFilter({ from: event.target.value })} InputLabelProps={{ shrink: true }} /></Grid><Grid item xs={6} md={2}><TextField fullWidth size="small" label="End date" type="date" value={filters.to} onChange={event => updateFilter({ to: event.target.value })} InputLabelProps={{ shrink: true }} /></Grid><Grid item xs={6} md={2}><FormControl fullWidth size="small"><InputLabel>Station</InputLabel><Select label="Station" value={filters.station} onChange={event => updateFilter({ station: event.target.value })}><MenuItem value="">All stations</MenuItem>{stations.map(station => <MenuItem key={station.chargePointId} value={station.chargePointId}>{station.name || station.chargePointId}</MenuItem>)}</Select></FormControl></Grid><Grid item xs={6} md={2}><FormControl fullWidth size="small"><InputLabel>Session status</InputLabel><Select label="Session status" value={filters.status} onChange={event => updateFilter({ status: event.target.value })}><MenuItem value="all">All statuses</MenuItem><MenuItem value="Completed">Completed</MenuItem><MenuItem value="InProgress">Charging now</MenuItem><MenuItem value="Stopped">Stopped</MenuItem></Select></FormControl></Grid></Grid>{hasFilters && <Button size="small" color="inherit" startIcon={<FilterAltOffRounded />} onClick={clearFilters} sx={{ mt: 1.25 }}>Clear search</Button>}</CardContent>{refreshing && <Box sx={{ height: 3, bgcolor: 'primary.main', opacity: .35 }} />}</Card>
+    <Card variant="outlined"><CardContent sx={{ p: { xs: 1.5, md: 2 } }}><Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}><TuneRounded color="primary" /><Box><Typography fontWeight={800}>Find activity</Typography><Typography variant="caption" color="text.secondary">Search charging sessions by date, station, customer tag, or status. Dates use West Africa Time.</Typography></Box></Stack><Grid container spacing={1.25} alignItems="center"><Grid item xs={12} md={4}><TextField fullWidth size="small" placeholder="Search session, customer tag or station" value={filters.search} onChange={event => updateFilter({ search: event.target.value })} InputProps={{ startAdornment: <InputAdornment position="start"><SearchRounded fontSize="small" /></InputAdornment> }} /></Grid><Grid item xs={12} sm={6} md={2}><FormControl fullWidth size="small"><InputLabel>Date range</InputLabel><Select label="Date range" value={filters.datePreset} onChange={event => applyDatePreset(event.target.value)}>{datePresetOptions.map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}</Select></FormControl></Grid>{filters.datePreset === 'custom' && <><Grid item xs={6} md={2}><TextField fullWidth size="small" label="Start date" type="date" value={filters.from} onChange={event => updateFilter({ from: event.target.value, datePreset: 'custom' })} InputLabelProps={{ shrink: true }} /></Grid><Grid item xs={6} md={2}><TextField fullWidth size="small" label="End date" type="date" value={filters.to} onChange={event => updateFilter({ to: event.target.value, datePreset: 'custom' })} InputLabelProps={{ shrink: true }} /></Grid></>}<Grid item xs={12} sm={6} md={2}><FormControl fullWidth size="small"><InputLabel>Station</InputLabel><Select label="Station" value={filters.station} onChange={event => updateFilter({ station: event.target.value })}><MenuItem value="">All stations</MenuItem>{stations.map(station => <MenuItem key={station.chargePointId} value={station.chargePointId}>{station.name || station.chargePointId}</MenuItem>)}</Select></FormControl></Grid><Grid item xs={12} sm={6} md={2}><FormControl fullWidth size="small"><InputLabel>Session status</InputLabel><Select label="Session status" value={filters.status} onChange={event => updateFilter({ status: event.target.value })}><MenuItem value="all">All statuses</MenuItem><MenuItem value="Completed">Completed</MenuItem><MenuItem value="InProgress">Charging now</MenuItem><MenuItem value="Stopped">Stopped</MenuItem></Select></FormControl></Grid></Grid>{filters.datePreset !== 'all' && filters.datePreset !== 'custom' && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>Showing {filters.from} to {filters.to}</Typography>}{hasFilters && <Button size="small" color="inherit" startIcon={<FilterAltOffRounded />} onClick={clearFilters} sx={{ mt: 1.25 }}>Clear search</Button>}</CardContent>{refreshing && <Box sx={{ height: 3, bgcolor: 'primary.main', opacity: .35 }} />}</Card>
 
     <Grid container spacing={2}>
       <Grid item xs={12} lg={7}><Card variant="outlined" sx={{ height: '100%' }}><CardContent><Stack direction="row" justifyContent="space-between" alignItems="center" gap={1}><Box><Typography variant="h6" fontWeight={800}>Station summary</Typography><Typography variant="body2" color="text.secondary">Current station status and charging contribution.</Typography></Box><Chip size="small" label={`${stations.length} station${stations.length === 1 ? '' : 's'}`} /></Stack><Stack spacing={1.1} sx={{ mt: 2 }}>{stationSummary.map(station => <Paper key={station.chargePointId} variant="outlined" sx={{ p: 1.35, borderRadius: 2.5 }}><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ sm: 'center' }}><EvStationRounded color="primary" /><Box sx={{ flex: 1, minWidth: 0 }}><Typography fontWeight={750} noWrap>{station.name || station.chargePointId}</Typography><Typography variant="caption" color="text.secondary">{station.chargePointId} · {station.sessions} sessions · {energy(station.energyWh)}</Typography></Box><Chip size="small" label={station.isOnline ? station.status : 'Offline'} color={station.isOnline ? statusColor(station.status) : 'default'} /><Typography variant="body2" fontWeight={750}>{money(station.amount)}</Typography></Stack></Paper>)}{!stationSummary.length && <Typography color="text.secondary" sx={{ py: 3 }}>No stations are assigned to this location.</Typography>}</Stack></CardContent></Card></Grid>
